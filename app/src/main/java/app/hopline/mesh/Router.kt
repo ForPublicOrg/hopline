@@ -175,9 +175,9 @@ class Router(
         }
         for (env in missing) {
             val copy = env.copy(); copy.hops = env.hops + 1
-            val s = copy.json.toString()
-            if (size + s.length > 24000) flush()
-            batch.put(copy.json); size += s.length; ids.add(env.id)
+            val bytes = copy.json.toString().toByteArray(Charsets.UTF_8).size   // Nearby caps a bytes payload at 32 KB
+            if (size + bytes > 24000) flush()
+            batch.put(copy.json); size += bytes; ids.add(env.id)
         }
         flush()
         listener.onLog("filled ${missing.size} for ${link.name}")
@@ -290,14 +290,14 @@ class Router(
     }
 
     fun sendChat(text: String): Message {
-        val env = newEnvelope(Envelope.CHAT, JSONObject().put("text", text))
+        val env = newEnvelope(Envelope.CHAT, JSONObject().put("text", text.take(MAX_TEXT)))
         val m = Message(env.id, Envelope.CHAT, me.id, me.name, null, text, env.ts).also { it.status = Message.QUEUED }
         addMessage(m); originate(env); listener.onChanged()
         return m
     }
 
     fun sendDm(to: String, text: String): Message {
-        val env = newEnvelope(Envelope.DM, JSONObject().put("text", text), to)
+        val env = newEnvelope(Envelope.DM, JSONObject().put("text", text.take(MAX_TEXT)), to)
         val m = Message(env.id, Envelope.DM, me.id, me.name, to, text, env.ts).also { it.status = Message.QUEUED }
         addMessage(m); originate(env); listener.onChanged()
         return m
@@ -366,7 +366,7 @@ class Router(
     fun completeErrand(id: String, ok: Boolean, title: String, text: String) {
         runningErrands.remove(id); doneErrands.add(id)
         errands[id]?.let { it.status = Errand.DONE; it.result = text }
-        val env = newEnvelope(Envelope.ERRAND_RESULT, JSONObject().put("eid", id).put("ok", ok).put("title", title).put("text", text))
+        val env = newEnvelope(Envelope.ERRAND_RESULT, JSONObject().put("eid", id).put("ok", ok).put("title", title.take(200)).put("text", text.take(MAX_RESULT)))
         val m = Message(env.id, Message.SYSTEM, me.id, me.name, null, if (title.isEmpty()) text else "$title\n$text", env.ts)
         m.errandId = id
         addMessage(m); originate(env); listener.onChanged()
@@ -456,5 +456,7 @@ class Router(
         const val IN_RANGE_MS = 120_000L
         const val CARRY_MS = 48 * 3600_000L
         const val RECEIPT_MS = 24 * 3600_000L
+        const val MAX_TEXT = 2000        // chars; keeps any single envelope far under the 32 KB radio payload cap
+        const val MAX_RESULT = 5000
     }
 }

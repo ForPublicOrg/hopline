@@ -110,7 +110,7 @@ object Errands {
         body = body.replace(Regex("<[^>]+>"), " ")
         body = clean(body)
         body = body.lines().map { it.trim() }.filter { it.length > 2 }.joinToString("\n")
-        if (body.length > 6000) body = body.take(6000) + "\n…(cut here to save data)"
+        if (body.length > 4800) body = body.take(4800) + "\n…(cut here to save data)"
         return Triple(true, "Web page: $title", body)
     }
 

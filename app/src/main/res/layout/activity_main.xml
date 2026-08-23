@@ -37,7 +37,7 @@
             android:paddingStart="14dp" android:paddingEnd="14dp" android:insetTop="0dp" android:insetBottom="0dp" />
 
         <EditText android:id="@+id/input" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
-            android:hint="@string/message_hint" android:inputType="textCapSentences|textMultiLine" android:maxLines="4"
+            android:hint="@string/message_hint" android:inputType="textCapSentences|textMultiLine" android:maxLines="4" android:maxLength="2000"
             android:textSize="18sp" android:background="@drawable/bg_input" android:padding="14dp" android:importantForAutofill="no" />
 
         <com.google.android.material.button.MaterialButton

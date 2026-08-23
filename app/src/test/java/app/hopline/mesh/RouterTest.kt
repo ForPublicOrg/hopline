@@ -12,6 +12,7 @@ import org.junit.Test
  */
 class FakeNet {
     var now = 1_700_000_000_000L
+    var maxFrameBytes = 0
     val nodes = LinkedHashMap<String, Node>()
     private val pending = ArrayDeque<Delivery>()
     private var payloadSeq = 0L
@@ -34,6 +35,7 @@ class FakeNet {
             override fun send(linkId: String, bytes: ByteArray): Long {
                 val (peer, peerLink) = peers[linkId] ?: return -1
                 val pid = ++payloadSeq
+                if (bytes.size > maxFrameBytes) maxFrameBytes = bytes.size
                 pending.addLast(Delivery(id, pid, peer, peerLink, bytes))
                 return pid
             }
@@ -230,5 +232,24 @@ class RouterTest {
         net.pump()
         net.node("C"); net.connect("B", "C")
         assertEquals(900, net.texts("C").size)
+    }
+}
+
+class PayloadSizeTest {
+    @Test fun `sync frames stay under the radio payload cap even with emoji`() {
+        val net = FakeNet(); net.line("A", "B")
+        val big = "🙂".repeat(1900)               // 1900 chars but 7600 bytes of UTF-8
+        repeat(30) { net.nodes["A"]!!.router.sendChat(big) }
+        net.pump()
+        net.node("C"); net.connect("B", "C")       // B fills C's 30-message gap in chunks
+        assertEquals(30, net.texts("C").size)
+        assertTrue("largest frame was ${net.maxFrameBytes} bytes", net.maxFrameBytes < 32_000)
+        assertTrue(net.maxFrameBytes > 8_000)      // and the chunks are not silly-small either
+    }
+
+    @Test fun `over-long text is trimmed so one envelope can never exceed the cap`() {
+        val net = FakeNet(); net.line("A", "B")
+        net.nodes["A"]!!.router.sendChat("x".repeat(50_000)); net.pump()
+        assertEquals(Router.MAX_TEXT, net.texts("B")[0].length)
     }
 }
