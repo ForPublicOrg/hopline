@@ -28,6 +28,7 @@ class GroupActivity : AppCompatActivity() {
         b = ActivityGroupBinding.inflate(layoutInflater)
         setContentView(b.root)
         val name = Core.store.name
+        if (name.isBlank()) { startActivity(Intent(this, WelcomeActivity::class.java)); finish(); return }
         b.hello.text = "Hi $name! 👋"
         b.groupName.setText("$name's group")
 

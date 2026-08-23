@@ -13,7 +13,7 @@
             android:textSize="13sp" android:textStyle="bold" android:textColor="@color/brand_dark" />
 
         <TextView android:id="@+id/text" android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:textSize="17sp" android:textColor="@color/text" android:textIsSelectable="true" android:autoLink="web|phone" />
+            android:textSize="17sp" android:textColor="@color/text" android:textIsSelectable="true" android:autoLink="web|phone" android:maxWidth="290dp" />
 
         <TextView android:id="@+id/meta" android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:layout_gravity="end" android:textSize="12sp" android:textColor="@color/text_muted" android:layout_marginTop="2dp" />

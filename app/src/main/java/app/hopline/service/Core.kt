@@ -63,7 +63,8 @@ object Core {
         val group = store.group() ?: return false
         if (!Permissions.allGranted(app)) return false
         if (router == null) build(group)
-        ContextCompat.startForegroundService(app, Intent(app, MeshService::class.java))
+        try { ContextCompat.startForegroundService(app, Intent(app, MeshService::class.java)) }
+        catch (e: Exception) { Log.w(TAG, "could not start service now", e); return false }
         return true
     }
 

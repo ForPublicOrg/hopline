@@ -20,6 +20,6 @@ class HoplineApp : Application() {
             override fun onActivitySaveInstanceState(a: Activity, b: Bundle) {}
             override fun onActivityDestroyed(a: Activity) {}
         })
-        if (Core.hasGroup()) Core.ensureRunning()
+        // The service restarts itself (START_STICKY); screens call Core.ensureRunning() when shown.
     }
 }

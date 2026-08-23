@@ -25,8 +25,13 @@ class MeshService : Service() {
     override fun onCreate() {
         super.onCreate()
         val notif = Notifications.service(this, "Starting…")
-        if (Build.VERSION.SDK_INT >= 29) startForeground(Notifications.ID_SERVICE, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        else startForeground(Notifications.ID_SERVICE, notif)
+        try {
+            if (Build.VERSION.SDK_INT >= 29) startForeground(Notifications.ID_SERVICE, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            else startForeground(Notifications.ID_SERVICE, notif)
+        } catch (e: Exception) {
+            // e.g. Nearby permissions revoked in Settings after a sticky restart — bail quietly, the app will re-ask.
+            android.util.Log.w("Hopline/Service", "startForeground refused", e); stopSelf(); return
+        }
         try {
             val pm = getSystemService(POWER_SERVICE) as PowerManager
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hopline:mesh").also { it.acquire() }
