@@ -169,7 +169,11 @@ object Core {
 
     // ------------------------------------------------------------------ device state
 
-    fun bluetoothOn(): Boolean = try { BluetoothAdapter.getDefaultAdapter()?.isEnabled == true } catch (e: Exception) { false }
+    fun bluetoothOn(): Boolean = try {
+        val adapter = (app.getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
+        val on = adapter != null && (adapter.isEnabled || adapter.state == BluetoothAdapter.STATE_ON)
+        on
+    } catch (e: Exception) { Log.w(TAG, "bluetooth check", e); false }
     fun wifiOn(): Boolean = try { (app.getSystemService(Context.WIFI_SERVICE) as WifiManager).isWifiEnabled } catch (e: Exception) { false }
 
     fun internetNow(): Boolean {

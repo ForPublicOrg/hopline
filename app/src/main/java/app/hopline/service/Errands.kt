@@ -50,8 +50,10 @@ object Errands {
 
     private fun weather(place: String): Triple<Boolean, String, String> {
         val q = URLEncoder.encode(place.trim(), "UTF-8")
-        val geo = JSONObject(get("https://geocoding-api.open-meteo.com/v1/search?name=$q&count=1&language=en&format=json"))
-        val hit = geo.optJSONArray("results")?.optJSONObject(0)
+        val geo = JSONObject(get("https://geocoding-api.open-meteo.com/v1/search?name=$q&count=5&language=en&format=json"))
+        val results = geo.optJSONArray("results")
+        // Several places share a name (there are Manalis in Himachal and Tamil Nadu); the best-known one is the biggest.
+        val hit = (0 until (results?.length() ?: 0)).mapNotNull { results!!.optJSONObject(it) }.maxByOrNull { it.optLong("population", 0) }
             ?: return Triple(false, "Weather for $place", "Couldn't find a place called \"$place\". Try a bigger town nearby.")
         val lat = hit.getDouble("latitude"); val lon = hit.getDouble("longitude")
         val where = listOfNotNull(hit.optString("name"), hit.optString("admin1").ifEmpty { null }, hit.optString("country").ifEmpty { null }).joinToString(", ")
