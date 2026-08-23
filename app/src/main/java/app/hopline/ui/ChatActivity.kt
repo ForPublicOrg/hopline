@@ -2,10 +2,13 @@ package app.hopline.ui
 
 import android.os.Bundle
 import android.view.View
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
+import app.hopline.R
 import app.hopline.databinding.ActivityChatBinding
 import app.hopline.mesh.Envelope
+import app.hopline.mesh.Message
 import app.hopline.service.Core
 
 /** A private chat with one person. Same rules as the group: held until their phone has it, then ✓✓. */
@@ -22,7 +25,6 @@ class ChatActivity : AppCompatActivity() {
         setContentView(b.root)
         b.toolbar.setNavigationOnClickListener { finish() }
         b.list.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
-        b.input.hint = "Private message…"
         b.send.setOnClickListener {
             val r = Core.router ?: return@setOnClickListener
             val text = b.input.text.toString().trim(); if (text.isEmpty()) return@setOnClickListener
@@ -36,13 +38,18 @@ class ChatActivity : AppCompatActivity() {
 
     private fun refresh() {
         val r = Core.router ?: return
-        if (adapter == null) { adapter = MessageAdapter(r, showNames = false); b.list.adapter = adapter }
+        if (adapter == null) {
+            adapter = MessageAdapter(r, showNames = false) { m ->
+                if (m.from == r.me.id) AlertDialog.Builder(this).setMessage(Ui.statusDetail(r, m)).setPositiveButton(R.string.ok, null).show()
+            }
+            b.list.adapter = adapter
+        }
         val p = r.people[peer]
         b.toolbar.title = p?.name?.ifEmpty { "Someone" } ?: "Someone"
         b.toolbar.subtitle = if (p != null) Ui.personStatus(r, p) else ""
         val shown = r.messages.filter { it.kind == Envelope.DM && ((it.from == peer && it.to == r.me.id) || (it.from == r.me.id && it.to == peer)) }
         adapter!!.submit(shown)
-        if (shown.size != lastCount) { lastCount = shown.size; b.list.post { b.list.scrollToPosition(maxOf(0, shown.size - 1)) } }
+        if (shown.size != lastCount) { lastCount = shown.size; b.list.post { b.list.scrollToPosition(maxOf(0, (b.list.adapter?.itemCount ?: 1) - 1)) } }
         val away = p != null && !r.isInRange(p)
         b.hint.visibility = if (away) View.VISIBLE else View.GONE
         b.hint.text = "${p?.name ?: "They"} is out of range. Your message will be held and delivered when any phone reaches them."

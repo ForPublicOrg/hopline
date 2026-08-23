@@ -37,13 +37,14 @@ class Envelope(val json: JSONObject) {
         const val DM = "dm"          // private message, carried by everyone, shown only to `to`
         const val RECEIPT = "rcpt"   // "my phone has message X"
         const val PRESENCE = "pres"  // "I'm alive, here's my name, do I have internet"
-        const val SOS = "sos"
         const val ERRAND = "errand"  // "someone with internet, please do this"
         const val ERRAND_RESULT = "errres"
 
         /** Kinds that are stored and handed to phones that missed them. */
-        val CARRIED = setOf(CHAT, DM, RECEIPT, SOS, ERRAND, ERRAND_RESULT)
-        const val MAX_HOPS = 16
+        val CARRIED = setOf(CHAT, DM, RECEIPT, ERRAND, ERRAND_RESULT)
+        // Generous ceiling: a dense crowd has a tiny diameter (each phone holds several links),
+        // and even a single-file line of thirty phones stays under this.
+        const val MAX_HOPS = 32
     }
 }
 
@@ -125,7 +126,6 @@ class Errand(
         const val WAITING = "waiting"   // nobody with internet yet
         const val ASKED = "asked"       // sent to a helper
         const val DONE = "done"
-        const val WEATHER = "weather"
         const val SEND = "send"
         const val READ = "read"
         fun fromJson(j: JSONObject): Errand = Errand(

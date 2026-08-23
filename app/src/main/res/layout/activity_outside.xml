@@ -19,10 +19,8 @@
                 android:layout_marginTop="12dp" android:padding="14dp" android:background="@drawable/bg_card"
                 android:textAppearance="@style/Text.Body" />
 
-            <com.google.android.material.button.MaterialButton android:id="@+id/weather" android:layout_width="match_parent"
-                android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="@string/weather_btn" />
             <com.google.android.material.button.MaterialButton android:id="@+id/sendout" android:layout_width="match_parent"
-                android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="@string/sendout_btn" />
+                android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="@string/sendout_btn" />
             <com.google.android.material.button.MaterialButton android:id="@+id/readlink" android:layout_width="match_parent"
                 android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="@string/readlink_btn" />
 

@@ -14,7 +14,6 @@ interface Transport {
 interface RouterListener {
     fun onChanged()
     fun onMessage(m: Message)        // a new message this phone should show / notify about
-    fun onSos(m: Message)
     fun onErrandRequest(e: Errand)   // this phone has internet and was asked to do something
     fun onGroupNamed(name: String) {} // joined by typed code; learned the group's name from a friend
     fun onLog(text: String) {}
@@ -29,7 +28,9 @@ interface RouterListener {
  *  - Every phone CARRIES every message for 48 h. When two phones link up they swap inventories
  *    and fill each other's gaps. That is what makes a chain that keeps breaking and re-forming
  *    still deliver everything — people walking between groups literally carry the backlog.
- *  - Receipts flow back the same way, so a sender sees "reached 7 of 9" truthfully.
+ *  - Receipts flow back the same way, so a sender sees "reached 7 of 9" truthfully — but only in
+ *    small groups. In a crowd, per-phone receipts would be N² traffic, so phones stop sending
+ *    them once the group outgrows RECEIPT_GROUP_LIMIT, and presence slows down as the crowd grows.
  *
  * Not thread-safe: call everything from one thread (the app uses the main thread).
  */
@@ -116,6 +117,7 @@ class Router(
                     touchPerson(link.nodeId, link.name, clock())
                     refreshDirect()
                     sendInventory(link)
+                    sendPresence()
                     listener.onLog("link authed ${link.name}")
                     listener.onChanged()
                 }
@@ -203,7 +205,10 @@ class Router(
         when (env.kind) {
             Envelope.CHAT -> {
                 val m = addMessage(Message(env.id, Envelope.CHAT, env.origin, env.originName, null, p.optString("text"), env.ts)) ?: return
-                sendReceipt(env); listener.onMessage(m)
+                // In a small group every phone confirms receipt ("reached 7 of 9"). In a crowd of
+                // hundreds that would be an N-squared flood, so big groups skip chat receipts.
+                if (people.size < RECEIPT_GROUP_LIMIT) sendReceipt(env)
+                listener.onMessage(m)
             }
             Envelope.DM -> {
                 if (env.to != me.id) return
@@ -228,10 +233,6 @@ class Router(
                 if (group.name.isEmpty() && gn.isNotEmpty()) { group.name = gn; listener.onGroupNamed(gn) }
                 assignWaitingErrands()
                 listener.onChanged()
-            }
-            Envelope.SOS -> {
-                val m = addMessage(Message(env.id, Envelope.SOS, env.origin, env.originName, null, p.optString("text"), env.ts)) ?: return
-                sendReceipt(env); listener.onSos(m)
             }
             Envelope.ERRAND -> {
                 val eid = p.optString("eid"); if (eid.isEmpty()) return
@@ -303,18 +304,6 @@ class Router(
         return m
     }
 
-    fun sendSos(): Message {
-        val near = links.values.filter { it.authed }.map { it.name }.distinct()
-        val text = buildString {
-            append(me.name).append(" needs help!")
-            if (near.isNotEmpty()) append(" Their phone is near: ").append(near.joinToString(", ")).append(".")
-        }
-        val env = newEnvelope(Envelope.SOS, JSONObject().put("text", text).put("near", JSONArray(near)))
-        val m = Message(env.id, Envelope.SOS, me.id, me.name, null, text, env.ts).also { it.status = Message.QUEUED }
-        addMessage(m); originate(env); listener.onChanged()
-        return m
-    }
-
     private fun sendReceipt(env: Envelope) {
         val r = JSONObject().put("id", "r.${env.id}.${me.id}").put("k", Envelope.RECEIPT).put("o", me.id).put("on", me.name)
             .put("ts", clock()).put("h", 0).put("to", env.origin)
@@ -332,7 +321,7 @@ class Router(
     /** Who can do internet things for us right now, nearest first. Includes me. */
     fun helpers(): List<Person> {
         val now = clock()
-        val list = people.values.filter { it.hasInternet && now - it.lastSeen < IN_RANGE_MS }.sortedBy { it.hops }.toMutableList()
+        val list = people.values.filter { it.hasInternet && isInRange(it) }.sortedBy { it.hops }.toMutableList()
         if (hasInternet && shareInternet) list.add(0, Person(me.id).also { it.name = me.name; it.hasInternet = true; it.hops = 0; it.lastSeen = now })
         return list
     }
@@ -377,7 +366,9 @@ class Router(
     /** Call every ~30 s. */
     fun tick() {
         val now = clock()
-        sendPresence()
+        // Presence scales down as the group scales up: 30 phones saying "I'm here" every 30 s is
+        // nothing; a thousand doing it would drown the radios. Everyone slows down together.
+        if (now - lastPresenceAt >= presenceInterval()) { lastPresenceAt = now; sendPresence() }
         // links that never finished the handshake are dead weight
         for (l in links.values.toList()) if (!l.authed && now - l.since > 25_000) drop(l, "handshake timeout")
         // keep trying to get my unsent messages off this phone
@@ -426,7 +417,7 @@ class Router(
     }
 
     fun message(id: String): Message? = messageById[id]
-    fun isInRange(p: Person): Boolean = clock() - p.lastSeen < IN_RANGE_MS
+    fun isInRange(p: Person): Boolean = clock() - p.lastSeen < maxOf(IN_RANGE_MS, presenceInterval() * 2 + 30_000L)
     fun peopleInRange(): Int = people.values.count { isInRange(it) }
     fun authedLinks(): List<Link> = links.values.filter { it.authed }
     fun carrySize(): Int = carry.size
@@ -452,8 +443,22 @@ class Router(
         shareInternet = j.optBoolean("shareInternet", true)
     }
 
+    private var lastPresenceAt = 0L
+
+    /** ≤30 people: every 30 s. Grows with the crowd, capped at 5 min. */
+    fun presenceInterval(): Long {
+        val n = people.size
+        return when {
+            n <= 30 -> 30_000L
+            n <= 150 -> 90_000L
+            n <= 500 -> 180_000L
+            else -> 300_000L
+        }
+    }
+
     companion object {
         const val IN_RANGE_MS = 120_000L
+        const val RECEIPT_GROUP_LIMIT = 13   // people (excluding me) below this => chat receipts on
         const val CARRY_MS = 48 * 3600_000L
         const val RECEIPT_MS = 24 * 3600_000L
         const val MAX_TEXT = 2000        // chars; keeps any single envelope far under the 32 KB radio payload cap

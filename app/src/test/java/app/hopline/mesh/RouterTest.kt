@@ -20,10 +20,9 @@ class FakeNet {
     class Delivery(val from: String, val pid: Long, val to: String, val toLink: String, val bytes: ByteArray)
 
     inner class Recorder : RouterListener {
-        val shown = ArrayList<Message>(); val sos = ArrayList<Message>(); val errands = ArrayList<Errand>(); val log = ArrayList<String>()
+        val shown = ArrayList<Message>(); val errands = ArrayList<Errand>(); val log = ArrayList<String>()
         override fun onChanged() {}
         override fun onMessage(m: Message) { shown.add(m) }
-        override fun onSos(m: Message) { sos.add(m) }
         override fun onErrandRequest(e: Errand) { errands.add(e) }
         override fun onLog(text: String) { log.add(text) }
     }
@@ -184,24 +183,40 @@ class RouterTest {
         assertEquals(0, a.peopleInRange())
     }
 
-    @Test fun `sos reaches everyone and says who the phone is near`() {
-        val net = FakeNet(); net.line("A", "B", "C")
-        net.nodes["C"]!!.router.sendSos(); net.pump()
-        assertEquals(1, net.nodes["A"]!!.rec.sos.size)
-        assertTrue(net.nodes["A"]!!.rec.sos[0].text.startsWith("C needs help!"))
-        assertTrue(net.nodes["A"]!!.rec.sos[0].text.contains("near: B"))
+    @Test fun `big groups skip chat receipts so a crowd cannot melt the radios`() {
+        val net = FakeNet()
+        // hub-and-spoke crowd: 20 phones all linked to A (people.size crosses the receipt limit)
+        net.node("A"); (1..20).forEach { net.node("N$it") }
+        (1..20).forEach { net.connect("A", "N$it") }
+        net.tickAll()
+        assertTrue(net.nodes["A"]!!.router.people.size >= Router.RECEIPT_GROUP_LIMIT)
+        val m = net.nodes["A"]!!.router.sendChat("crowd hello"); net.pump()
+        for (i in 1..20) assertEquals(listOf("crowd hello"), net.texts("N$i"))
+        assertTrue("no receipts expected in a crowd", m.reached.isEmpty())
+        // private messages still confirm person-to-person even in a crowd
+        val dm = net.nodes["A"]!!.router.sendDm("N7", "just you"); net.pump()
+        assertEquals(Message.DELIVERED, dm.status)
+    }
+
+    @Test fun `presence slows down as the group grows`() {
+        val net = FakeNet(); net.node("A")
+        assertEquals(30_000L, net.nodes["A"]!!.router.presenceInterval())
+        repeat(200) { net.nodes["A"]!!.router.people["p$it"] = Person("p$it") }
+        assertEquals(180_000L, net.nodes["A"]!!.router.presenceInterval())
+        repeat(400) { net.nodes["A"]!!.router.people["q$it"] = Person("q$it") }
+        assertEquals(300_000L, net.nodes["A"]!!.router.presenceInterval())
     }
 
     @Test fun `errand goes to the phone with internet and the answer comes back to all`() {
         val net = FakeNet(); net.line("A", "B", "C", "D", "E")
         val a = net.nodes["A"]!!.router; val e = net.nodes["E"]!!
-        val errand = a.requestErrand(Errand.WEATHER, JSONObject().put("place", "Manali")); net.pump()
+        val errand = a.requestErrand(Errand.READ, JSONObject().put("url", "http://weather.example")); net.pump()
         assertEquals(Errand.WAITING, errand.status)           // nobody has internet yet
         e.router.hasInternet = true
         net.tickAll()                                          // presence announces it; A dispatches
         assertEquals(Errand.ASKED, errand.status); assertEquals("E", errand.helper)
-        assertEquals(1, e.rec.errands.size); assertEquals("Manali", e.rec.errands[0].args.getString("place"))
-        e.router.completeErrand(errand.id, true, "Weather for Manali", "Sunny, 18°C"); net.pump()
+        assertEquals(1, e.rec.errands.size); assertEquals("http://weather.example", e.rec.errands[0].args.getString("url"))
+        e.router.completeErrand(errand.id, true, "Web page: weather.example", "Sunny, 18°C"); net.pump()
         assertEquals(Errand.DONE, errand.status)
         for (id in listOf("A", "C", "E")) assertTrue(net.texts(id).any { it.contains("Sunny, 18°C") })
         assertEquals(1, e.rec.errands.size)                   // not asked twice

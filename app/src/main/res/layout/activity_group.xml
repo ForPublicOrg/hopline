@@ -48,12 +48,12 @@
                             android:textSize="22sp" android:singleLine="true" android:imeOptions="actionDone" />
                     </com.google.android.material.textfield.TextInputLayout>
                     <TextView android:id="@+id/code_error" android:layout_width="match_parent" android:layout_height="wrap_content"
-                        android:text="@string/bad_code" android:textColor="@color/sos" android:visibility="gone" android:layout_marginTop="4dp" />
+                        android:text="@string/bad_code" android:textColor="@color/danger" android:visibility="gone" android:layout_marginTop="4dp" />
                     <com.google.android.material.button.MaterialButton android:id="@+id/join_btn" android:layout_width="match_parent"
                         android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/join" />
                     <com.google.android.material.button.MaterialButton android:id="@+id/scan_btn" android:layout_width="match_parent"
                         android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/scan_qr"
-                        style="@style/Widget.Hopline.Button.Outlined" />
+                        style="@style/Widget.Hopline.Button.Quiet" />
                 </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>

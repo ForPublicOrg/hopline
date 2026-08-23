@@ -16,9 +16,9 @@
             android:layout_height="wrap_content" android:text="Open &amp; send" android:minHeight="48dp" />
         <com.google.android.material.button.MaterialButton android:id="@+id/sent" android:layout_width="0dp" android:layout_weight="1"
             android:layout_height="wrap_content" android:layout_marginStart="8dp" android:text="@string/i_sent_it" android:minHeight="48dp"
-            style="@style/Widget.Hopline.Button.Outlined" />
+            style="@style/Widget.Hopline.Button.Quiet" />
         <com.google.android.material.button.MaterialButton android:id="@+id/failed" android:layout_width="wrap_content"
             android:layout_height="wrap_content" android:layout_marginStart="8dp" android:text="✕" android:minHeight="48dp" android:minWidth="48dp"
-            style="@style/Widget.Hopline.Button.Outlined" app:strokeColor="@color/sos" android:textColor="@color/sos" />
+            style="@style/Widget.Hopline.Button.Quiet" app:strokeColor="@color/danger" android:textColor="@color/danger" />
     </LinearLayout>
 </LinearLayout>

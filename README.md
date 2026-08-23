@@ -1,11 +1,13 @@
 # Hopline
 
-**Chat with your group when there's no signal. Messages hop from phone to phone.**
+**Chat with everyone around you when there's no signal. Messages hop from phone to phone.**
 
-Hopline is an Android app for treks, camps, festivals, village fairs, power cuts — anywhere
-a group of people with phones has no mobile signal and no WiFi. Phones link to each other
-directly over Bluetooth / WiFi, and every phone passes messages along for the others, so a
-message can travel down a line of hikers far beyond the range of any single phone.
+Hopline is an Android app for treks, camps, festivals, fairs, rallies, power cuts — anywhere
+people with phones have no mobile signal and no WiFi. Phones link to each other directly over
+Bluetooth / WiFi, and every phone passes messages along for the others, so a message can travel
+down a line of hikers or across a packed ground, far beyond the range of any single phone.
+It works the same for five friends or a crowd — the protocol automatically sheds overhead
+as the group grows (see *Built for a crowd* below).
 
 No internet. No mobile signal. No account. No server. No hotspot to set up.
 
@@ -36,17 +38,27 @@ There are only three things to know:
 | **Chat** | One group chat, like a WhatsApp group. Tap a name for a private chat. |
 
 Phones find each other on their own. Walk away and come back — the chat catches up by itself.
-Under each message you send, it tells you the truth in plain words: *Waiting for a phone in
-range…* → *Sent ✓* → *Reached 7 of 9 ✓*. A private message shows **Delivered ✓✓** only when
-the other person's phone actually has it.
-
-**HELP button** — hold for 2 seconds. Every phone in the group buzzes and shows a red screen
-with your name and which phones you're near. *This only reaches your own group. It does not
-call rescue services.* Carry a satellite messenger for real emergencies.
+The ticks never lie: ◷ while it waits for a phone in range, ✓ when it's on its way, ✓✓ when
+phones confirm. **Tap your own message** to see exactly who has it, by name.
 
 **The Outside World** (menu) — if **anyone** in the group has internet, everyone can use a
-sliver of it: get a weather forecast, read a web page as plain text, or send an SMS/email
-home through the friend's phone. Answers hop back and appear in the group chat for all.
+sliver of it: read a web page as plain text, or send an SMS/email home through the friend's
+phone. Answers hop back and appear in the group chat for all.
+
+## Built for a crowd, not just a trek
+
+A protocol that's lovely for 8 hikers can melt at a festival. Hopline changes behaviour as
+the group grows, and every phone follows the same rules on its own:
+
+- **Delivery receipts** — in a small group (under ~13 people) every phone confirms every
+  message, which powers "Reached 7 of 9" and named read-outs. In a crowd that would be N²
+  traffic, so chat receipts switch off automatically; private messages still confirm
+  person-to-person at any size.
+- **Presence beacons** — "I'm here" goes out every 30 s in a small group and slows to every
+  5 minutes in a crowd of hundreds, so the radios carry messages instead of roll calls.
+- **Dense mesh, short paths** — each phone keeps up to 6 direct links; in a packed venue the
+  network's diameter grows only logarithmically, and messages allow up to 32 hops.
+- **People list** — gets a search box once the group outgrows a trekking party.
 
 ## How it works (for the curious)
 
@@ -58,7 +70,7 @@ home through the friend's phone. Answers hop back and appear in the group chat f
   inventories and fill each other's gaps. That is what makes a chain that keeps breaking and
   re-forming still deliver everything — a person walking between two groups literally carries
   the backlog in their pocket.
-- Delivery receipts flow back the same way, so "Reached 7 of 9" is real, not a guess.
+- In small groups, delivery receipts flow back the same way, so "Reached 7 of 9" is real, not a guess.
 - A foreground service keeps relaying with the screen off.
 
 The mesh logic is plain Kotlin with no Android dependencies, so the whole thing is tested on a
@@ -102,7 +114,7 @@ app/src/main/java/app/hopline/
   core/      Crypto (group key, signing), Words (the 3-word codes)
   mesh/      Model, Router (flooding, carry, receipts, errands), NearbyTransport (radio)
   data/      Store (name, group, saved state)
-  service/   Core (glue), MeshService (foreground), Errands (weather / read / send), Notifications
+  service/   Core (glue), MeshService (foreground), Errands (read a page / send out), Notifications
   ui/        one Activity per screen; MessageAdapter
 app/src/test/ RouterTest — the simulated group
 ```

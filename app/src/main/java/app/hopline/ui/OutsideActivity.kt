@@ -12,7 +12,7 @@ import app.hopline.service.Core
 import app.hopline.service.Errands
 import org.json.JSONObject
 
-/** "The Outside World": borrow a sliver of whoever's internet to get weather, read a page, or send a message home. */
+/** "The Outside World": borrow a sliver of whoever has internet: read a page as text, or send a message home. */
 class OutsideActivity : AppCompatActivity() {
     private lateinit var b: ActivityOutsideBinding
 
@@ -22,11 +22,6 @@ class OutsideActivity : AppCompatActivity() {
         setContentView(b.root)
         b.toolbar.setNavigationOnClickListener { finish() }
 
-        b.weather.setOnClickListener {
-            Ui.ask(this, getString(R.string.weather_btn), listOf(getString(R.string.place_hint) to InputType.TYPE_CLASS_TEXT), getString(R.string.ask)) { v ->
-                if (v[0].isNotEmpty()) request(Errand.WEATHER, JSONObject().put("place", v[0]))
-            }
-        }
         b.sendout.setOnClickListener {
             Ui.ask(this, getString(R.string.sendout_btn),
                 listOf(getString(R.string.phone_or_email_hint) to InputType.TYPE_CLASS_TEXT,

@@ -10,19 +10,9 @@ import app.hopline.mesh.Envelope
 import app.hopline.mesh.Message
 import app.hopline.mesh.Person
 import app.hopline.mesh.Router
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /** Plain-English words for the things the mesh knows. No hops, nodes, relays or envelopes on screen. */
 object Ui {
-    private val timeFmt = SimpleDateFormat("HH:mm", Locale.getDefault())
-    private val dayFmt = SimpleDateFormat("EEE HH:mm", Locale.getDefault())
-
-    fun time(ts: Long): String {
-        val age = System.currentTimeMillis() - ts
-        return if (age < 20 * 3600_000L) timeFmt.format(Date(ts)) else dayFmt.format(Date(ts))
-    }
 
     fun ago(ts: Long): String {
         if (ts <= 0) return "never"
@@ -44,18 +34,25 @@ object Ui {
         return base + bat
     }
 
-    /** Status line under my own message. */
-    fun myStatus(r: Router, m: Message): String {
-        if (m.kind == Envelope.DM) return when (m.status) {
-            Message.DELIVERED -> "Delivered ✓✓"
-            Message.SENT -> "On its way ✓"
-            else -> "Waiting for a phone in range…"
+    /** The full truthful story of one of my messages, for the tap-on-bubble dialog. */
+    fun statusDetail(r: Router, m: Message): String {
+        if (m.status == Message.QUEUED) return "Waiting — no phone in range has taken this yet. It keeps trying on its own."
+        if (m.kind == Envelope.DM) {
+            val name = r.people[m.to]?.name?.ifEmpty { "them" } ?: "them"
+            return if (m.status == Message.DELIVERED) "Delivered — $name's phone has it. ✓✓"
+            else "On its way — handed to nearby phones, waiting for $name's phone to confirm."
         }
         val total = r.people.size
-        return when {
-            m.reached.isNotEmpty() -> "Reached ${m.reached.size} of $total ✓"
-            m.status == Message.SENT -> "Sent ✓"
-            else -> "Waiting for a phone in range…"
+        if (total == 0) return "Sent."
+        if (total >= Router.RECEIPT_GROUP_LIMIT) {
+            return "Sent to the group. In a group this big, phones don't send individual confirmations — that would flood the radios."
+        }
+        val got = m.reached.mapNotNull { r.people[it]?.name?.ifEmpty { null } }.sorted()
+        val waiting = r.people.values.filter { it.id !in m.reached }.mapNotNull { it.name.ifEmpty { null } }.sorted()
+        return buildString {
+            append("Reached ${m.reached.size} of $total phones.")
+            if (got.isNotEmpty()) append("\n\nGot it: ").append(got.joinToString(", "))
+            if (waiting.isNotEmpty()) append("\nStill waiting: ").append(waiting.joinToString(", "))
         }
     }
 

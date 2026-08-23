@@ -146,15 +146,10 @@ object Core {
             Notifications.message(app, m)
         }
 
-        override fun onSos(m: Message) {
-            changed()
-            Notifications.sos(app, m)
-        }
-
         override fun onErrandRequest(e: Errand) {
             changed()
             when (e.type) {
-                Errand.WEATHER, Errand.READ -> Errands.run(app, e) { ok, title, text -> router?.completeErrand(e.id, ok, title, text) }
+                Errand.READ -> Errands.run(app, e) { ok, title, text -> router?.completeErrand(e.id, ok, title, text) }
                 Errand.SEND -> Notifications.sendRequest(app, e)   // a human has to tap Send; the card is in the app
             }
         }

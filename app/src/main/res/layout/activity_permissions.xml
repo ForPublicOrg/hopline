@@ -17,10 +17,10 @@
 
         <TextView android:id="@+id/denied" android:layout_width="match_parent" android:layout_height="wrap_content"
             android:layout_marginTop="12dp" android:text="@string/perm_denied" android:textAppearance="@style/Text.Body"
-            android:textColor="@color/sos" android:visibility="gone" />
+            android:textColor="@color/danger" android:visibility="gone" />
         <com.google.android.material.button.MaterialButton
             android:id="@+id/settings" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="8dp" android:text="@string/open_settings" style="@style/Widget.Hopline.Button.Outlined" android:visibility="gone" />
+            android:layout_marginTop="8dp" android:text="@string/open_settings" style="@style/Widget.Hopline.Button.Quiet" android:visibility="gone" />
 
         <LinearLayout android:id="@+id/checks" android:layout_width="match_parent" android:layout_height="wrap_content"
             android:orientation="vertical" android:layout_marginTop="28dp" android:visibility="gone">
