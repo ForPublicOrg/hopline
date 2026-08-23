@@ -18,6 +18,7 @@ import app.hopline.service.Permissions
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 
+@android.annotation.SuppressLint("MissingPermission")  // the Bluetooth enable prompt is only offered after permissions are granted
 class PermissionsActivity : AppCompatActivity() {
     private lateinit var b: ActivityPermissionsBinding
     private var asked = false

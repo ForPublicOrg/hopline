@@ -47,6 +47,7 @@ class MeshService : Service() {
         return START_STICKY
     }
 
+    @android.annotation.SuppressLint("MissingPermission")  // notify() is wrapped in try/catch; the service notification itself needs no permission
     private fun refreshNotification() {
         val r = Core.router ?: return
         val links = r.authedLinks().size

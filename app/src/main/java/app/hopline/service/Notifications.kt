@@ -1,5 +1,6 @@
 package app.hopline.service
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -51,6 +52,7 @@ object Notifications {
     private fun canPost(ctx: Context): Boolean =
         Build.VERSION.SDK_INT < 33 || ctx.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
+    @SuppressLint("MissingPermission")  // guarded by canPost()
     fun message(ctx: Context, m: Message) {
         if (!canPost(ctx)) return
         val intent = if (m.kind == Envelope.DM) Intent(ctx, ChatActivity::class.java).putExtra("peer", m.from) else Intent(ctx, MainActivity::class.java)
@@ -71,6 +73,7 @@ object Notifications {
         NotificationManagerCompat.from(ctx).notify(msgSeq++, n)
     }
 
+    @SuppressLint("MissingPermission")  // guarded by canPost()
     fun sos(ctx: Context, m: Message) {
         vibrate(ctx)
         val intent = Intent(ctx, SosActivity::class.java).putExtra("text", m.text).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -90,6 +93,7 @@ object Notifications {
         NotificationManagerCompat.from(ctx).notify(ID_SOS, n)
     }
 
+    @SuppressLint("MissingPermission")  // guarded by canPost()
     fun sendRequest(ctx: Context, e: Errand) {
         if (!canPost(ctx)) return
         val n = NotificationCompat.Builder(ctx, CH_MESSAGES)
