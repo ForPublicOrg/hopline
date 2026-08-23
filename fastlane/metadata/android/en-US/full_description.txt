@@ -7,23 +7,29 @@ No internet. No mobile signal. No account. No server. No hotspot to set up.
 HOW IT WORKS
 - One person starts a group and gets a 3-word code, like "tiger river lamp".
 - Everyone else types the three words (or scans the QR). Done.
-- One group chat that looks and feels like the chat apps you already know, with private chats a tap away.
+- A familiar chat app: group chat, private chats, photos and small files.
 - Phones find each other on their own. Walk away and come back - the chat catches up by itself.
 
+PHOTOS AND FILES
+Tap the paperclip. Photos are shrunk hard (about 0.3 MB) so they hop in seconds; files up to 2 MB travel in pieces and are reassembled on every phone, even ones that were out of range when you sent them.
+
+MORE THAN ONE GROUP
+Keep a group for the trek, one for the family, one for the festival crew. Switching is one tap, and each group keeps its own history, unread counts and files.
+
 HONEST TICKS
-A clock while it waits for a phone in range, one tick when it is on its way, two ticks when phones confirm. Tap your own message to see exactly who has it, by name.
+A clock while it waits for a phone in range, one tick when it is on its way, two ticks when phones confirm. A photo's tick only appears when the whole photo is on the other phone. Tap your own message to see exactly who has it, by name.
 
 BUILT FOR A FEW FRIENDS OR A CROWD
-In a small group every phone confirms every message. In a crowd of hundreds or thousands the phones automatically stop chattering about receipts and slow their "I am here" beacons, so the radios carry your words instead of overhead.
+In a small group every phone confirms every message. In a crowd of hundreds or thousands the phones automatically stop chattering about receipts, slow their "I am here" beacons, and switch photos off, so the radios carry your words instead of overhead.
 
-THE OUTSIDE WORLD
-If anyone in the group has internet, everyone can use a sliver of it: read a web page as plain text, or send an SMS/email home through the friend's phone. The answer hops back to the whole group.
+SHARED INTERNET
+If anyone in the group gets signal, everyone can use a sliver of it: read a web page as plain text, or send an SMS/email home through the friend's phone. The answer hops back to the whole group. Your phone only shares while the "Share my internet" switch is on, and it only ever spends a few KB.
 
 LIMITS, STATED PLAINLY
 - Each hop is Bluetooth range: about 20-40 m in the open.
 - Android only. iPhones cannot join.
 - No end-to-end encryption - anyone with the 3-word code is in the group.
 - Bluetooth is flaky; links can take up to a minute to form.
-- Text only, on purpose.
+- Media is deliberately small: photos ~0.3 MB, files up to 2 MB.
 
 Open source (MIT). Install it on every phone before you need it.

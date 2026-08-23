@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Assembled photos and files received over the mesh. -->
+    <files-path name="blobs" path="blobs/" />
+    <!-- Camera shots on their way to being sent. -->
+    <cache-path name="camera" path="camera/" />
+</paths>

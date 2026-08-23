@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="vertical" android:gravity="center"
+    android:layout_marginStart="16dp" android:layout_marginEnd="16dp" android:layout_marginTop="16dp"
+    android:background="@drawable/bg_card" android:padding="24dp">
+
+    <ImageView android:layout_width="56dp" android:layout_height="56dp" android:src="@drawable/ic_chat"
+        android:alpha="0.5" android:importantForAccessibility="no" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="12dp"
+        android:text="@string/home_empty_title" android:textAppearance="@style/Text.Title" android:textSize="20sp" android:gravity="center" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+        android:text="@string/home_empty_body" android:textAppearance="@style/Text.Muted" android:gravity="center" />
+    <com.google.android.material.button.MaterialButton android:id="@+id/invite_btn" android:layout_width="wrap_content"
+        android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="@string/show_invite"
+        android:paddingStart="28dp" android:paddingEnd="28dp" />
+</LinearLayout>

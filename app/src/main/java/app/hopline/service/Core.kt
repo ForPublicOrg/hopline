@@ -8,6 +8,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
@@ -16,7 +17,9 @@ import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.MutableLiveData
+import app.hopline.core.Crypto
 import app.hopline.data.Store
+import app.hopline.mesh.Attachment
 import app.hopline.mesh.Envelope
 import app.hopline.mesh.Errand
 import app.hopline.mesh.Group
@@ -26,8 +29,9 @@ import app.hopline.mesh.Router
 import app.hopline.mesh.RouterListener
 
 /**
- * One per process. Owns the router + radio, keeps them alive via MeshService, and exposes a
- * `version` LiveData that screens observe to redraw. Everything here runs on the main thread.
+ * One per process. Owns the router + radio for the ACTIVE group, keeps them alive via MeshService,
+ * and exposes a `version` LiveData that screens observe to redraw. Other groups sleep on disk and
+ * wake instantly on switch. Everything here runs on the main thread except file byte-work.
  */
 object Core {
     private const val TAG = "Hopline/Core"
@@ -57,8 +61,9 @@ object Core {
     }
 
     fun hasGroup(): Boolean = store.group() != null
+    fun fingerprint(): String? = router?.group?.fingerprint ?: store.group()?.fingerprint
 
-    /** Build the router for the current group (idempotent) and start the background service. */
+    /** Build the router for the active group (idempotent) and start the background service. */
     fun ensureRunning(): Boolean {
         val group = store.group() ?: return false
         if (!Permissions.allGranted(app)) return false
@@ -81,8 +86,8 @@ object Core {
     private fun build(group: Group) {
         val me = store.identity()
         val t = NearbyTransport(app, group, me)
-        val r = Router(me, group, t, listener)
-        store.loadState()?.let { try { r.restore(it) } catch (e: Exception) { Log.w(TAG, "state restore failed", e) } }
+        val r = Router(me, group, t, listener, Blobs.chunkStore(app, group.fingerprint))
+        store.loadState(group.fingerprint)?.let { try { r.restore(it) } catch (e: Exception) { Log.w(TAG, "state restore failed", e) } }
         t.events = object : NearbyTransport.Events {
             override fun onLinkUp(linkId: String, nodeId: String, name: String) { r.onLinkUp(linkId, nodeId, name); changed() }
             override fun onLinkDown(linkId: String) { r.onLinkDown(linkId); changed() }
@@ -92,14 +97,118 @@ object Core {
             override fun onStatus(text: String) { radioProblem = text; changed() }
         }
         router = r; transport = t
+        finishInterruptedFiles(r, group.fingerprint)
     }
 
-    fun leaveGroup() {
-        app.stopService(Intent(app, MeshService::class.java))
+    /** After a restart: files whose last pieces arrived while we were dead get assembled now. */
+    private fun finishInterruptedFiles(r: Router, fp: String) {
+        val pending = r.messages.filter { it.att != null }
+        if (pending.isEmpty()) return
+        Thread {
+            for (m in pending) {
+                val att = m.att ?: continue
+                if (Blobs.fileFor(app, fp, att).exists() || Blobs.assemble(app, fp, r, m)) {
+                    handler.post { if (router === r) r.markFileReady(att.fid) }
+                }
+            }
+            handler.post { changed() }
+        }.start()
+    }
+
+    /** Point the radio at another saved group. Nothing is deleted; the old group sleeps on disk. */
+    fun switchGroup(code: String) {
+        if (router?.group?.code == code) return
+        saveNow()
         transport?.stop()
         router = null; transport = null
-        store.clearGroup()
+        store.setActive(code)
+        radioProblem = ""
+        ensureRunning()
         changed()
+    }
+
+    /** Leave the active group for good: its messages, files and read marks are deleted. */
+    fun leaveActiveGroup() {
+        val leaving = store.activeGroup() ?: return
+        transport?.stop()
+        router = null; transport = null
+        Blobs.deleteGroup(app, leaving.fingerprint)
+        store.removeGroup(leaving.code)
+        if (store.group() != null) ensureRunning()
+        else app.stopService(Intent(app, MeshService::class.java))
+        changed()
+    }
+
+    // ------------------------------------------------------------------ sending files
+
+    /**
+     * Shrink and send a photo. Byte-work runs off the main thread; `done` is called on the main
+     * thread with null on success or a problem description.
+     */
+    fun sendImage(uri: Uri, caption: String, to: String?, done: (String?) -> Unit) {
+        val r0 = router ?: return done("No group")
+        val fp = r0.group.fingerprint
+        Thread {
+            val prep = Blobs.prepareImage(app, uri)
+            handler.post {
+                // The user may have switched groups while we were shrinking the photo — a photo
+                // meant for one group must never be flooded into another.
+                if (router !== r0) { done("Group changed — photo not sent."); return@post }
+                if (prep == null) { done("Couldn't read that photo."); return@post }
+                val pieces = Blobs.chunkify(prep.bytes)
+                val att = Attachment.make(Crypto.randomId(12), prep.name, prep.mime,
+                    prep.bytes.size.toLong(), pieces.size, prep.width, prep.height, prep.thumbB64)
+                Blobs.saveOwn(app, fp, att, prep.bytes)
+                r0.sendFile(att, pieces, caption, to)
+                changed()
+                done(null)
+            }
+        }.start()
+    }
+
+    /** Send a picked document as-is. Same threading contract as sendImage. */
+    fun sendFileBytes(picked: Blobs.PickedFile, caption: String, to: String?, done: (String?) -> Unit) {
+        val r0 = router ?: return done("No group")
+        val fp = r0.group.fingerprint
+        Thread {
+            val pieces = Blobs.chunkify(picked.bytes)
+            handler.post {
+                if (router !== r0) { done("Group changed — file not sent."); return@post }
+                val att = Attachment.make(Crypto.randomId(12), picked.name, picked.mime,
+                    picked.bytes.size.toLong(), pieces.size, 0, 0, "")
+                Blobs.saveOwn(app, fp, att, picked.bytes)
+                r0.sendFile(att, pieces, caption, to)
+                changed()
+                done(null)
+            }
+        }.start()
+    }
+
+    // ------------------------------------------------------------------ unread
+
+    fun markRead(chat: String) {
+        val fp = fingerprint() ?: return
+        store.setLastRead(fp, chat, System.currentTimeMillis())
+        Notifications.clearChat(app, chat)
+    }
+
+    /** Unread counts compare LOCAL arrival times — sender clocks drift, and carried messages
+     *  can be hours old by their own clock while still brand new to this phone. */
+    fun unreadCount(chat: String): Int = unreadCounts()[chat] ?: 0
+
+    /** All chats' unread counts in one pass over the message list. */
+    fun unreadCounts(): Map<String, Int> {
+        val r = router ?: return emptyMap()
+        val fp = fingerprint() ?: return emptyMap()
+        val counts = HashMap<String, Int>()
+        val since = HashMap<String, Long>()
+        for (m in r.messages) {
+            if (m.from == r.me.id) continue
+            val chat = if (m.isGroup) GROUP else if (m.to == r.me.id) m.from else continue
+            val limit = since.getOrPut(chat) { store.lastRead(fp, chat) }
+            if (m.arrivedAt > limit) counts[chat] = (counts[chat] ?: 0) + 1
+        }
+        return counts
     }
 
     // ------------------------------------------------------------------ periodic
@@ -131,7 +240,12 @@ object Core {
     private fun save() {
         if (savePosted) return
         savePosted = true
-        handler.postDelayed({ savePosted = false; router?.let { store.saveState(it.snapshot()) } }, 2000)
+        handler.postDelayed({ savePosted = false; saveNow() }, 2000)
+    }
+
+    private fun saveNow() {
+        val r = router ?: return
+        store.saveState(r.group.fingerprint, r.snapshot())
     }
 
     // ------------------------------------------------------------------ router events
@@ -141,9 +255,23 @@ object Core {
 
         override fun onMessage(m: Message) {
             changed()
-            val chat = if (m.kind == Envelope.DM) m.from else GROUP
-            if (appVisible && openChat == chat) return
+            val chat = if (m.to != null) m.from else GROUP
+            if (appVisible && openChat == chat) { markRead(chat); return }
             Notifications.message(app, m)
+        }
+
+        override fun onFileReady(m: Message) {
+            val r = router ?: return
+            val fp = r.group.fingerprint
+            Thread {
+                val ok = Blobs.assemble(app, fp, r, m)
+                handler.post {
+                    // A failed assemble (I/O, storage full) must not stay latched: un-mark so the
+                    // next chunk arrival or restart retries.
+                    if (!ok && router === r) m.att?.let { r.unmarkFileReady(it.fid) }
+                    changed()
+                }
+            }.start()
         }
 
         override fun onErrandRequest(e: Errand) {
@@ -155,7 +283,7 @@ object Core {
         }
 
         override fun onGroupNamed(name: String) {
-            store.group()?.let { store.setGroup(it.code, name) }
+            store.activeGroup()?.let { store.renameGroup(it.code, name) }
             changed()
         }
 

@@ -25,7 +25,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Scanning a friend's QR code. -->
+    <!-- Scanning a friend's QR code, and taking a photo to send. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
@@ -57,15 +57,28 @@
             </intent-filter>
         </activity>
         <activity android:name=".ui.CodeActivity" />
-        <activity android:name=".ui.MainActivity" android:launchMode="singleTop" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.HomeActivity" android:launchMode="singleTop" />
+        <activity android:name=".ui.ChatActivity" android:launchMode="singleTop" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.PeopleActivity" />
-        <activity android:name=".ui.ChatActivity" android:windowSoftInputMode="adjustResize" />
-        <activity android:name=".ui.OutsideActivity" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.InternetActivity" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.SettingsActivity" />
+        <activity android:name=".ui.ViewerActivity" />
         <activity android:name="com.journeyapps.barcodescanner.CaptureActivity" android:screenOrientation="fullSensor" tools:replace="screenOrientation" />
 
         <service
             android:name=".service.MeshService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- Lets received photos/files be opened and shared with other apps. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="app.hopline.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

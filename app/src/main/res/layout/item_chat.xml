@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="horizontal" android:gravity="center_vertical"
+    android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="10dp" android:paddingBottom="10dp"
+    android:background="?attr/selectableItemBackground" android:minHeight="76dp">
+
+    <FrameLayout android:layout_width="52dp" android:layout_height="52dp">
+        <TextView android:id="@+id/avatar" android:layout_width="52dp" android:layout_height="52dp"
+            android:gravity="center" android:textSize="21sp" android:textStyle="bold" android:textColor="#FFFFFF"
+            android:background="@drawable/bg_avatar" />
+        <View android:id="@+id/dot" android:layout_width="14dp" android:layout_height="14dp"
+            android:layout_gravity="bottom|end" android:background="@drawable/bg_dot" android:visibility="gone" />
+    </FrameLayout>
+
+    <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+        android:orientation="vertical" android:layout_marginStart="14dp">
+        <TextView android:id="@+id/name" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="17sp" android:textStyle="bold" android:textColor="@color/text"
+            android:maxLines="1" android:ellipsize="end" />
+        <TextView android:id="@+id/preview" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="14sp" android:textColor="@color/text_muted" android:layout_marginTop="2dp"
+            android:maxLines="1" android:ellipsize="end" />
+    </LinearLayout>
+
+    <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:orientation="vertical" android:gravity="end" android:layout_marginStart="8dp">
+        <TextView android:id="@+id/time" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:textSize="12sp" android:textColor="@color/text_faint" />
+        <TextView android:id="@+id/unread" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="5dp" android:minWidth="22dp" android:gravity="center"
+            android:background="@drawable/bg_unread" android:textColor="@color/unread_text"
+            android:textSize="12sp" android:textStyle="bold"
+            android:paddingStart="7dp" android:paddingEnd="7dp" android:paddingTop="2dp" android:paddingBottom="2dp"
+            android:visibility="gone" />
+    </LinearLayout>
+</LinearLayout>

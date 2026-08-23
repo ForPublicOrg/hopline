@@ -39,32 +39,68 @@ class Envelope(val json: JSONObject) {
         const val PRESENCE = "pres"  // "I'm alive, here's my name, do I have internet"
         const val ERRAND = "errand"  // "someone with internet, please do this"
         const val ERRAND_RESULT = "errres"
+        const val FILE = "file"      // a photo/file message: caption + attachment meta (name, size, chunk count, thumb)
+        const val CHUNK = "fchk"     // one piece of a file's data; id is deterministic: f.<fid>.<index>
 
-        /** Kinds that are stored and handed to phones that missed them. */
-        val CARRIED = setOf(CHAT, DM, RECEIPT, ERRAND, ERRAND_RESULT)
+        /** Kinds that are stored and handed to phones that missed them (chunks are carried separately, on disk). */
+        val CARRIED = setOf(CHAT, DM, RECEIPT, ERRAND, ERRAND_RESULT, FILE)
         // Generous ceiling: a dense crowd has a tiny diameter (each phone holds several links),
         // and even a single-file line of thirty phones stays under this.
         const val MAX_HOPS = 32
+
+        fun chunkId(fid: String, index: Int): String = "f.$fid.$index"
+    }
+}
+
+/**
+ * What one file message carries in its envelope: everything a phone needs to show a placeholder
+ * (name, size, a tiny thumbnail) and to know when it has all the pieces.
+ */
+class Attachment(val json: JSONObject) {
+    val fid: String get() = json.getString("fid")
+    val name: String get() = json.optString("name", "file")
+    val mime: String get() = json.optString("mime", "application/octet-stream")
+    val size: Long get() = json.optLong("size", 0)
+    val chunks: Int get() = json.optInt("n", 0)
+    val width: Int get() = json.optInt("w", 0)
+    val height: Int get() = json.optInt("h", 0)
+    val thumb: String get() = json.optString("tb", "")   // tiny base64 JPEG, shown while pieces arrive
+    val isImage: Boolean get() = mime.startsWith("image/")
+
+    companion object {
+        fun make(fid: String, name: String, mime: String, size: Long, chunks: Int, w: Int, h: Int, thumb: String): Attachment =
+            Attachment(JSONObject().apply {
+                put("fid", fid); put("name", name); put("mime", mime); put("size", size); put("n", chunks)
+                if (w > 0) put("w", w); if (h > 0) put("h", h); if (thumb.isNotEmpty()) put("tb", thumb)
+            })
     }
 }
 
 class Message(
     val id: String,
-    val kind: String,          // Envelope.CHAT / DM / SOS, or SYSTEM
+    val kind: String,          // Envelope.CHAT / DM / FILE, or SYSTEM
     val from: String,
     val fromName: String,
     val to: String?,           // DM target, else null
-    val text: String,
+    val text: String,          // for FILE messages this is the caption (may be empty)
     val ts: Long,
+    val att: Attachment? = null,
 ) {
     var status: String = SENT            // only meaningful for my own messages
+    /** When THIS phone got it (its own clock). Unread badges use this — sender clocks drift. */
+    var arrivedAt: Long = ts
     val reached: MutableSet<String> = LinkedHashSet()   // node ids whose phone confirmed it
     var errandId: String? = null
+
+    /** True for a group-chat-visible message (not a DM). */
+    val isGroup: Boolean get() = to == null
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id); put("kind", kind); put("from", from); put("fromName", fromName)
         if (to != null) put("to", to); put("text", text); put("ts", ts); put("status", status)
+        put("at", arrivedAt)
         put("reached", JSONArray(reached.toList())); if (errandId != null) put("errandId", errandId)
+        if (att != null) put("att", att.json)
     }
 
     companion object {
@@ -76,8 +112,10 @@ class Message(
         fun fromJson(j: JSONObject): Message = Message(
             j.getString("id"), j.getString("kind"), j.getString("from"), j.optString("fromName", ""),
             j.optString("to", "").ifEmpty { null }, j.getString("text"), j.getLong("ts"),
+            j.optJSONObject("att")?.let { Attachment(it) },
         ).also { m ->
             m.status = j.optString("status", SENT)
+            m.arrivedAt = j.optLong("at", m.ts)
             val r = j.optJSONArray("reached"); if (r != null) for (i in 0 until r.length()) m.reached.add(r.getString(i))
             m.errandId = j.optString("errandId", "").ifEmpty { null }
         }

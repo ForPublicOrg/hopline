@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Night twins of values/colors.xml — deep navy night, embers stay warm. -->
+
+    <color name="ember">#FF8A5C</color>
+    <color name="ember_deep">#FF6B35</color>
+    <color name="ember_soft">#33231B</color>
+    <color name="ink">#ECEFF4</color>
+
+    <color name="bg">#10141E</color>
+    <color name="surface">#1A2030</color>
+    <color name="surface_variant">#242C3F</color>
+    <color name="divider">#252D40</color>
+
+    <color name="text">#ECEFF4</color>
+    <color name="text_muted">#98A1B3</color>
+    <color name="text_faint">#6B7488</color>
+
+    <color name="on_ember">#1A1109</color>
+
+    <color name="bubble_out">#C8431D</color>
+    <color name="bubble_out_text">#FFFFFF</color>
+    <color name="bubble_out_meta">#FFE7DC</color>
+    <color name="bubble_in">#232B3D</color>
+    <color name="bubble_in_text">#ECEFF4</color>
+    <color name="bubble_in_meta">#8A93A6</color>
+    <color name="bubble_system">#1E2A44</color>
+    <color name="bubble_system_text">#B9C6E3</color>
+
+    <color name="name_0">#F48FB1</color>
+    <color name="name_1">#CE93D8</color>
+    <color name="name_2">#B39DDB</color>
+    <color name="name_3">#9FA8DA</color>
+    <color name="name_4">#90CAF9</color>
+    <color name="name_5">#80CBC4</color>
+    <color name="name_6">#FFAB91</color>
+    <color name="name_7">#BCAAA4</color>
+
+    <color name="wallpaper">#0D1119</color>
+
+    <color name="tick">#FFE7DC</color>
+    <color name="tick_delivered">#A9E4FF</color>
+    <color name="online">#2ECC71</color>
+    <color name="offline">#586074</color>
+    <color name="internet_badge">#7CA9FF</color>
+    <color name="internet_badge_bg">#1D2A47</color>
+    <color name="warn_bg">#3A3212</color>
+    <color name="warn_text">#F5D573</color>
+    <color name="danger">#FF6B5E</color>
+
+    <color name="chip_bg">#1A2030</color>
+    <color name="chip_text">#98A1B3</color>
+    <color name="field_bg">#242C3F</color>
+
+    <color name="unread">#FF6B35</color>
+    <color name="unread_text">#1A1109</color>
+
+    <color name="launcher_bg">#1A2130</color>
+</resources>

@@ -6,7 +6,7 @@ import androidx.appcompat.app.AppCompatActivity
 import app.hopline.service.Core
 import app.hopline.service.Permissions
 
-/** Decides which screen you need: name → permissions → group → chat. Never shows anything itself. */
+/** Decides which screen you need: name → permissions → group → home. Never shows anything itself. */
 class LaunchActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -16,7 +16,7 @@ class LaunchActivity : AppCompatActivity() {
             !Permissions.allGranted(this) -> PermissionsActivity::class.java
             !store.permissionsDone -> PermissionsActivity::class.java
             store.group() == null -> GroupActivity::class.java
-            else -> MainActivity::class.java
+            else -> HomeActivity::class.java
         }
         startActivity(Intent(this, next))
         finish()

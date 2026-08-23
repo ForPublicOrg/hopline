@@ -16,13 +16,22 @@ import app.hopline.mesh.Envelope
 import app.hopline.mesh.Errand
 import app.hopline.mesh.Message
 import app.hopline.ui.ChatActivity
-import app.hopline.ui.MainActivity
+import app.hopline.ui.HomeActivity
 
 object Notifications {
     const val CH_SERVICE = "service"
     const val CH_MESSAGES = "messages"
     const val ID_SERVICE = 1
-    private var msgSeq = 100
+    private const val ID_ERRAND = 2
+    /** Messages waiting in each chat's single notification (main thread only). */
+    private val chatCounts = HashMap<String, Int>()
+
+    private fun idFor(chat: String): Int = 1000 + (chat.hashCode() and 0xFFFF)
+
+    /** The chat was opened — its notification and count go away. */
+    fun clearChat(ctx: Context, chat: String) {
+        if (chatCounts.remove(chat) != null) NotificationManagerCompat.from(ctx).cancel(idFor(chat))
+    }
 
     fun createChannels(ctx: Context) {
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -37,37 +46,57 @@ object Notifications {
             .setContentText(text)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setContentIntent(open(ctx, Intent(ctx, MainActivity::class.java)))
+            .setContentIntent(open(ctx, Intent(ctx, HomeActivity::class.java)))
             .build()
 
     private fun canPost(ctx: Context): Boolean =
         Build.VERSION.SDK_INT < 33 || ctx.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
+    /** What one message looks like in a one-line preview. */
+    fun preview(ctx: Context, m: Message): String {
+        val att = m.att
+        val body = when {
+            att == null -> m.text
+            att.isImage -> ctx.getString(R.string.photo_label) + if (m.text.isNotEmpty()) " ${m.text}" else ""
+            else -> "${ctx.getString(R.string.file_label)} ${att.name}"
+        }
+        return if (m.kind == Message.SYSTEM) "🌐 $body" else body
+    }
+
+    /**
+     * One notification per chat, updated in place. A reunion after hours apart delivers a whole
+     * backlog in seconds — that must read as "23 new messages", not 23 separate heads-ups.
+     */
     @SuppressLint("MissingPermission")  // guarded by canPost()
     fun message(ctx: Context, m: Message) {
         if (!canPost(ctx)) return
-        val intent = if (m.kind == Envelope.DM) Intent(ctx, ChatActivity::class.java).putExtra("peer", m.from) else Intent(ctx, MainActivity::class.java)
+        val private = m.to != null
+        val chat = if (private) m.from else Core.GROUP
+        val count = (chatCounts[chat] ?: 0) + 1
+        chatCounts[chat] = count
+        val intent = Intent(ctx, ChatActivity::class.java).apply { if (private) putExtra("peer", m.from) }
         val group = Core.store.group()?.name?.ifEmpty { null }
-        val title = when (m.kind) {
-            Envelope.DM -> "${m.fromName} (private)"
+        val title = when {
+            private -> "${m.fromName} (private)"
             else -> group ?: "Hopline"
         }
-        val body = when (m.kind) {
-            Envelope.DM -> m.text
-            Message.SYSTEM -> "🌐 ${m.text}"
-            else -> "${m.fromName}: ${m.text}"
-        }
+        val body = if (private || m.kind == Message.SYSTEM) preview(ctx, m) else "${m.fromName}: ${preview(ctx, m)}"
+        // A message that spent a while hopping to us is history, not breaking news: no buzz.
+        val backlog = System.currentTimeMillis() - m.ts > 2 * 60_000
         val n = NotificationCompat.Builder(ctx, CH_MESSAGES)
             .setSmallIcon(R.drawable.ic_notif)
-            .setColor(0xFF008069.toInt())
-            .setContentTitle(title)
+            .setColor(0xFFD9481F.toInt())
+            .setContentTitle(if (count > 1) "$title · $count new" else title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setNumber(count)
             .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(backlog)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(open(ctx, intent))
             .build()
-        NotificationManagerCompat.from(ctx).notify(msgSeq++, n)
+        NotificationManagerCompat.from(ctx).notify(idFor(chat), n)
     }
 
     @SuppressLint("MissingPermission")  // guarded by canPost()
@@ -79,9 +108,9 @@ object Notifications {
             .setContentText("Your phone has signal — open Hopline to send it.")
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setContentIntent(open(ctx, Intent(ctx, MainActivity::class.java)))
+            .setContentIntent(open(ctx, Intent(ctx, ChatActivity::class.java)))
             .build()
-        NotificationManagerCompat.from(ctx).notify(msgSeq++, n)
+        NotificationManagerCompat.from(ctx).notify(ID_ERRAND, n)
     }
 
     private fun open(ctx: Context, intent: Intent): PendingIntent =

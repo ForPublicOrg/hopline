@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:background="@color/bg">
+
+    <!-- Header: app name left, People + Settings right -->
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical"
+        android:paddingStart="20dp" android:paddingEnd="8dp" android:paddingTop="14dp" android:paddingBottom="4dp">
+        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:text="@string/chats" android:textSize="28sp" android:textStyle="bold" android:textColor="@color/text" />
+        <ImageButton android:id="@+id/btn_people" android:layout_width="48dp" android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_people"
+            android:contentDescription="@string/people" />
+        <ImageButton android:id="@+id/btn_settings" android:layout_width="48dp" android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_settings"
+            android:contentDescription="@string/settings" />
+    </LinearLayout>
+
+    <!-- Live status pill: "● 4 people in range" -->
+    <TextView android:id="@+id/status" android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:layout_marginStart="20dp" android:layout_marginBottom="8dp"
+        android:background="@drawable/bg_status_pill" android:paddingStart="12dp" android:paddingEnd="12dp"
+        android:paddingTop="6dp" android:paddingBottom="6dp"
+        android:textSize="13sp" android:textColor="@color/text_muted" />
+
+    <TextView android:id="@+id/warn" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:background="@color/warn_bg" android:textColor="@color/warn_text" android:padding="10dp" android:gravity="center"
+        android:textSize="14sp" android:visibility="gone" />
+
+    <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/list" android:layout_width="match_parent" android:layout_height="match_parent"
+            android:clipToPadding="false" android:paddingBottom="88dp" android:scrollbars="none" />
+
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fab" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end" android:layout_margin="20dp"
+            android:src="@drawable/ic_add" android:contentDescription="@string/add_group"
+            app:backgroundTint="@color/ember" app:tint="@color/on_ember" />
+    </FrameLayout>
+</LinearLayout>

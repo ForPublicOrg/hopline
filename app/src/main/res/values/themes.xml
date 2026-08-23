@@ -1,49 +1,96 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <style name="Theme.Hopline" parent="Theme.Material3.Light.NoActionBar">
-        <item name="colorPrimary">@color/brand</item>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Day/night follows the system. All colours come from the token files. -->
+    <style name="Theme.Hopline" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/ember</item>
         <item name="colorOnPrimary">#FFFFFF</item>
-        <item name="colorPrimaryContainer">@color/brand_light</item>
-        <item name="colorOnPrimaryContainer">@color/brand_deep</item>
-        <item name="colorSecondary">@color/accent</item>
+        <item name="colorPrimaryContainer">@color/ember_soft</item>
+        <item name="colorOnPrimaryContainer">@color/ember_deep</item>
+        <item name="colorSecondary">@color/ember</item>
         <item name="colorSurface">@color/surface</item>
+        <item name="colorSurfaceVariant">@color/surface_variant</item>
+        <item name="colorOutline">@color/divider</item>
         <item name="android:colorBackground">@color/bg</item>
-        <item name="android:statusBarColor">@color/brand_dark</item>
-        <item name="android:windowLightStatusBar">false</item>
-        <item name="android:navigationBarColor">#FFFFFF</item>
-        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1" xmlns:tools="http://schemas.android.com/tools">true</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">@color/surface</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
         <item name="android:textColorPrimary">@color/text</item>
         <item name="android:textColorSecondary">@color/text_muted</item>
         <item name="materialButtonStyle">@style/Widget.Hopline.Button</item>
-        <item name="colorControlActivated">@color/accent</item>
+        <item name="colorControlActivated">@color/ember</item>
+        <item name="bottomSheetDialogTheme">@style/Theme.Hopline.Sheet</item>
+        <item name="colorError">@color/danger</item>
     </style>
 
     <style name="Theme.Hopline.Splash">
-        <item name="android:windowBackground">@color/brand_deep</item>
+        <item name="android:windowBackground">@color/launcher_bg</item>
+        <item name="android:statusBarColor">@color/launcher_bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <!-- Bottom sheets with a rounded top and surface colour in both modes. -->
+    <style name="Theme.Hopline.Sheet" parent="ThemeOverlay.Material3.BottomSheetDialog">
+        <item name="bottomSheetStyle">@style/Widget.Hopline.SheetShape</item>
+    </style>
+    <style name="Widget.Hopline.SheetShape" parent="Widget.Material3.BottomSheet.Modal">
+        <item name="backgroundTint">@color/surface</item>
+        <item name="shapeAppearance">@style/Shape.Hopline.SheetTop</item>
+    </style>
+    <style name="Shape.Hopline.SheetTop" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSizeTopLeft">24dp</item>
+        <item name="cornerSizeTopRight">24dp</item>
     </style>
 
     <!-- Big, friendly, pill-shaped primary buttons. -->
     <style name="Widget.Hopline.Button" parent="Widget.Material3.Button">
         <item name="android:minHeight">54dp</item>
-        <item name="android:textSize">17sp</item>
+        <item name="android:textSize">16sp</item>
         <item name="android:textAllCaps">false</item>
         <item name="android:textStyle">bold</item>
         <item name="cornerRadius">27dp</item>
-        <item name="backgroundTint">@color/accent</item>
+        <item name="backgroundTint">@color/ember</item>
+        <item name="android:textColor">#FFFFFF</item>
     </style>
 
     <style name="Widget.Hopline.Button.Quiet" parent="Widget.Material3.Button.TonalButton">
         <item name="android:minHeight">54dp</item>
-        <item name="android:textSize">17sp</item>
+        <item name="android:textSize">16sp</item>
         <item name="android:textAllCaps">false</item>
+        <item name="android:textStyle">bold</item>
         <item name="cornerRadius">27dp</item>
-        <item name="backgroundTint">@color/field_bg</item>
-        <item name="android:textColor">@color/brand_deep</item>
+        <item name="backgroundTint">@color/surface_variant</item>
+        <item name="android:textColor">@color/text</item>
     </style>
 
-    <style name="Text.Title" parent="TextAppearance.Material3.HeadlineSmall">
+    <style name="Widget.Hopline.Button.Danger" parent="Widget.Material3.Button.TextButton">
+        <item name="android:minHeight">54dp</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textColor">@color/danger</item>
+    </style>
+
+    <!-- Rounded corners for photo bubbles. -->
+    <style name="Shape.Hopline.Image" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">14dp</item>
+    </style>
+
+    <style name="Text.Display" parent="TextAppearance.Material3.HeadlineMedium">
         <item name="android:textColor">@color/text</item>
         <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="Text.Title" parent="TextAppearance.Material3.TitleLarge">
+        <item name="android:textColor">@color/text</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="Text.Section" parent="TextAppearance.Material3.LabelLarge">
+        <item name="android:textColor">@color/text_muted</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">0.06</item>
     </style>
 
     <style name="Text.Body" parent="TextAppearance.Material3.BodyLarge">

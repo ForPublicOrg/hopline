@@ -1,27 +1,74 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Chat-app palette: deep green chrome, warm paper wallpaper, soft green outgoing bubbles. -->
-    <color name="brand">#008069</color>
-    <color name="brand_dark">#00705C</color>
-    <color name="brand_deep">#075E54</color>
-    <color name="brand_light">#D9FDD3</color>
-    <color name="accent">#00A884</color>
-    <color name="wallpaper">#ECE5DD</color>
-    <color name="bg">#F7F8FA</color>
-    <color name="surface">#FFFFFF</color>
-    <color name="text">#111B21</color>
-    <color name="text_muted">#667781</color>
-    <color name="text_on_brand_muted">#C9EDE4</color>
-    <color name="bubble_out">#D9FDD3</color>
-    <color name="bubble_in">#FFFFFF</color>
-    <color name="bubble_system">#FCF4CB</color>
-    <color name="chip_bg">#F5F3EF</color>
-    <color name="chip_text">#54656F</color>
-    <color name="tick">#8696A0</color>
-    <color name="tick_delivered">#53BDEB</color>
-    <color name="online">#25D366</color>
-    <color name="offline">#B7BDB9</color>
-    <color name="warn_bg">#FFF3C2</color>
-    <color name="danger">#EA4335</color>
-    <color name="field_bg">#F0F2F5</color>
+    <!--
+      Hopline design tokens — "ember at dusk".
+      Warm ember orange on deep ink navy: a campfire, a signal, a line of lights on a dark trail.
+      Every colour has a night twin in values-night/colors.xml — never hardcode a hex in a layout.
+    -->
+
+    <!-- Brand -->
+    <color name="ember">#D9481F</color>          <!-- primary actions, FAB, links -->
+    <color name="ember_deep">#B03A17</color>     <!-- pressed / emphasis -->
+    <color name="ember_soft">#FDEBE3</color>     <!-- tinted fills: chips, highlights -->
+    <color name="ink">#1A2130</color>            <!-- titles, primary text -->
+
+    <!-- Surfaces -->
+    <color name="bg">#F7F5F1</color>             <!-- warm paper window background -->
+    <color name="surface">#FFFFFF</color>        <!-- cards, sheets, toolbar -->
+    <color name="surface_variant">#EFECE6</color><!-- fields, dividers, pressed rows -->
+    <color name="divider">#E7E3DC</color>
+
+    <!-- Text -->
+    <color name="text">#1A2130</color>
+    <color name="text_muted">#6E7683</color>
+    <color name="text_faint">#9AA1AC</color>
+
+    <!-- Foreground on ember surfaces (send button, FAB); night flips it dark on bright ember -->
+    <color name="on_ember">#FFFFFF</color>
+
+    <!-- Chat bubbles -->
+    <color name="bubble_out">#C8431D</color>     <!-- my messages: terracotta, white text (~4.9:1) -->
+    <color name="bubble_out_text">#FFFFFF</color>
+    <color name="bubble_out_meta">#FFE7DC</color><!-- time + ticks inside my bubble -->
+    <color name="bubble_in">#FFFFFF</color>      <!-- their messages -->
+    <color name="bubble_in_text">#1A2130</color>
+    <color name="bubble_in_meta">#9AA1AC</color>
+    <color name="bubble_system">#EFF3FA</color>  <!-- internet answers: cool, clearly "not a person" -->
+    <color name="bubble_system_text">#33415C</color>
+
+    <!-- Sender-name palette (night twins are brighter so they read on dark bubbles) -->
+    <color name="name_0">#C2185B</color>
+    <color name="name_1">#7B1FA2</color>
+    <color name="name_2">#512DA8</color>
+    <color name="name_3">#303F9F</color>
+    <color name="name_4">#1976D2</color>
+    <color name="name_5">#00796B</color>
+    <color name="name_6">#E64A19</color>
+    <color name="name_7">#5D4037</color>
+
+    <!-- Chat wallpaper -->
+    <color name="wallpaper">#F2EEE8</color>
+
+    <!-- Status: plain ticks warm, "everyone/recipient confirmed" cool — clearly different hues -->
+    <color name="tick">#FFE7DC</color>
+    <color name="tick_delivered">#A9E4FF</color>
+    <color name="online">#22A65B</color>
+    <color name="offline">#B5BCC6</color>
+    <color name="internet_badge">#2563EB</color> <!-- "has internet" — blue = the outside world -->
+    <color name="internet_badge_bg">#E4EDFD</color>
+    <color name="warn_bg">#FFF4D6</color>
+    <color name="warn_text">#7A5A00</color>
+    <color name="danger">#D93025</color>
+
+    <!-- Chips / pills -->
+    <color name="chip_bg">#FFFFFF</color>
+    <color name="chip_text">#6E7683</color>
+    <color name="field_bg">#EFECE6</color>
+
+    <!-- Unread badge -->
+    <color name="unread">#D9481F</color>
+    <color name="unread_text">#FFFFFF</color>
+
+    <!-- Launcher -->
+    <color name="launcher_bg">#1A2130</color>
 </resources>

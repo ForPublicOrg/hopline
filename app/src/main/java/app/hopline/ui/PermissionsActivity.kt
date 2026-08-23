@@ -59,6 +59,7 @@ class PermissionsActivity : AppCompatActivity() {
         b.denied.visibility = if (deniedForGood) View.VISIBLE else View.GONE
         b.settings.visibility = if (deniedForGood) View.VISIBLE else View.GONE
         b.checks.visibility = if (granted) View.VISIBLE else View.GONE
+        b.next.visibility = if (granted) View.VISIBLE else View.GONE
         if (!granted) return
 
         val bt = Core.bluetoothOn(); val wifi = Core.wifiOn()

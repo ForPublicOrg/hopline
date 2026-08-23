@@ -35,15 +35,25 @@ There are only three things to know:
 |---|---|
 | **Start a group** | One person taps *Start a new group*. They get a **3-word code**, like `tiger river lamp`, and a QR. |
 | **Join** | Everyone else taps *Join a group* and types the three words (or scans the QR). That's it. |
-| **Chat** | One group chat, like a WhatsApp group. Tap a name for a private chat. |
+| **Chat** | A familiar chat app: group chat, private chats, photos and small files. |
 
 Phones find each other on their own. Walk away and come back — the chat catches up by itself.
 The ticks never lie: ◷ while it waits for a phone in range, ✓ when it's on its way, ✓✓ when
 phones confirm. **Tap your own message** to see exactly who has it, by name.
 
-**The Outside World** (menu) — if **anyone** in the group has internet, everyone can use a
-sliver of it: read a web page as plain text, or send an SMS/email home through the friend's
-phone. Answers hop back and appear in the group chat for all.
+**Photos and files** — tap the paperclip. Photos are shrunk hard (≈0.3 MB) so they hop in
+seconds; files up to 2 MB are carried in pieces and reassembled on every phone, even ones that
+were out of range when you sent them. A photo's ✓ only appears when the *whole* photo is on the
+other phone.
+
+**More than one group** — Home shows every group you've saved. The radio serves one group at a
+time; tap a paused group to switch. Nothing is deleted when you switch — each group keeps its
+own history, unread counts and files.
+
+**Shared internet** — if **anyone** in the group has signal, everyone can use a sliver of it:
+read a web page as plain text, or send an SMS/email home through the friend's phone. Answers hop
+back and appear in the group chat for all. Your own phone shares the same way only while the
+"Share my internet" switch is on — it only ever spends a few KB.
 
 ## Built for a crowd, not just a trek
 
@@ -54,6 +64,8 @@ the group grows, and every phone follows the same rules on its own:
   message, which powers "Reached 7 of 9" and named read-outs. In a crowd that would be N²
   traffic, so chat receipts switch off automatically; private messages still confirm
   person-to-person at any size.
+- **Photos and files** — switch off automatically once the group outgrows ~30 people; media
+  in a crowd would drown the radios everyone shares.
 - **Presence beacons** — "I'm here" goes out every 30 s in a small group and slows to every
   5 minutes in a crowd of hundreds, so the radios carry messages instead of roll calls.
 - **Dense mesh, short paths** — each phone keeps up to 6 direct links; in a packed venue the
@@ -66,6 +78,9 @@ the group grows, and every phone follows the same rules on its own:
   Bluetooth/WiFi links, no access point. Each phone keeps up to 6 links.
 - Every message is **signed with a key derived from the 3-word code** and **flooded** to every
   link. A phone with the wrong code can't join, can't read, can't forge.
+- Photos and files ride the same flood as **numbered ~19 KB chunks** (under the radio's 32 KB
+  payload cap). Chunks are carried on disk and gap-filled like everything else, so an image can
+  hop through phones whose owners never open it.
 - Every phone **carries every message for 48 hours**. When two phones link up they swap
   inventories and fill each other's gaps. That is what makes a chain that keeps breaking and
   re-forming still deliver everything — a person walking between two groups literally carries
@@ -76,7 +91,8 @@ the group grows, and every phone follows the same rules on its own:
 The mesh logic is plain Kotlin with no Android dependencies, so the whole thing is tested on a
 laptop with simulated phones: `./gradlew test` runs a chain of five, breaks it, heals it, walks
 a courier between two separated groups, rejects a phone with the wrong code, drops a forged
-message, routes an errand to the one phone with internet, and more.
+message, hops a photo down the line in pieces, routes an errand to the one phone with internet,
+and more.
 
 ## Honest limits
 
@@ -92,7 +108,10 @@ message, routes an errand to the one phone with internet, and more.
   own, but it is not instant.
 - **Battery**: expect roughly 5–8 % per hour while actively relaying for a group. Keep power
   banks. If a phone dies, messages it was carrying are still on every other phone that had them.
-- **Text only**, on purpose. One photo is bigger than every message the group will send in a week.
+- **Media is deliberately small.** Photos are recompressed to ≈0.3 MB and files cap at 2 MB —
+  one full-size photo would take longer to hop than everything the group says in a day.
+- **One group at a time on the radio.** You can save many groups and switch instantly, but the
+  phone only relays for the group you're in.
 - Messages older than 48 hours are no longer carried to people who missed them.
 
 ## Build from source
@@ -112,10 +131,11 @@ message, routes an errand to the one phone with internet, and more.
 ```
 app/src/main/java/app/hopline/
   core/      Crypto (group key, signing), Words (the 3-word codes)
-  mesh/      Model, Router (flooding, carry, receipts, errands), NearbyTransport (radio)
-  data/      Store (name, group, saved state)
-  service/   Core (glue), MeshService (foreground), Errands (read a page / send out), Notifications
-  ui/        one Activity per screen; MessageAdapter
+  mesh/      Model, Router (flooding, carry, receipts, files, errands), ChunkStore, NearbyTransport
+  data/      Store (name, saved groups, read marks, per-group state)
+  service/   Core (glue), MeshService (foreground), Blobs (photo shrinking, chunk disk store),
+             Errands (read a page / send out), Notifications
+  ui/        Home (all chats), Chat (group + private), People, Internet, Settings, onboarding
 app/src/test/ RouterTest — the simulated group
 ```
 

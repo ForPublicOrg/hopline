@@ -17,6 +17,7 @@ import app.hopline.mesh.Person
 import app.hopline.mesh.Router
 import app.hopline.service.Core
 
+/** Everyone the mesh has ever heard of in this group. Tap a person for a private chat. */
 class PeopleActivity : AppCompatActivity() {
     private lateinit var b: ActivityPeopleBinding
     private val adapter = PeopleAdapter { p -> startActivity(Intent(this, ChatActivity::class.java).putExtra("peer", p.id)) }
@@ -29,9 +30,6 @@ class PeopleActivity : AppCompatActivity() {
         b.toolbar.setNavigationOnClickListener { finish() }
         b.list.layoutManager = LinearLayoutManager(this)
         b.list.adapter = adapter
-        b.share.setOnCheckedChangeListener { _, on ->
-            Core.router?.let { if (it.shareInternet != on) { it.shareInternet = on; it.sendPresence() } }
-        }
         b.search.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(s: Editable?) { query = s.toString().trim(); refresh() }
             override fun beforeTextChanged(s: CharSequence?, a: Int, c: Int, d: Int) {}
@@ -44,10 +42,7 @@ class PeopleActivity : AppCompatActivity() {
 
     private fun refresh() {
         val r = Core.router ?: return
-        b.meName.text = "${r.me.name} (you)"
-        b.meStatus.text = if (r.hasInternet) "Your phone has internet right now" else "No internet on your phone right now"
-        b.share.isChecked = r.shareInternet
-        b.toolbar.subtitle = "${r.peopleInRange()} of ${r.people.size} in range"
+        b.toolbar.subtitle = getString(R.string.in_range_now, r.peopleInRange(), r.people.size)
 
         // A crowd needs a search box; a trekking group doesn't.
         b.search.visibility = if (r.people.size > 12) View.VISIBLE else View.GONE

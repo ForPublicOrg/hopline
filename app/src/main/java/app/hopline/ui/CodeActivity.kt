@@ -1,10 +1,15 @@
 package app.hopline.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Bundle
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import app.hopline.R
 import app.hopline.core.Words
 import app.hopline.databinding.ActivityCodeBinding
 import app.hopline.service.Core
@@ -23,13 +28,24 @@ class CodeActivity : AppCompatActivity() {
 
         val group = Core.store.group()
         if (group == null) { finish(); return }
+        val pretty = Words.pretty(group.code)
         b.groupName.text = group.name.ifEmpty { "Your group" }
-        b.code.text = Words.pretty(group.code).split(' ').joinToString("\n")
+        b.code.text = pretty.split(' ').joinToString("\n")
         b.qr.setImageBitmap(qr(GroupActivity.qrText(group.code, group.name), 600))
+
+        b.share.setOnClickListener {
+            val text = getString(R.string.invite_text, group.name.ifEmpty { "our group" }, pretty)
+            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), null))
+        }
+        b.copy.setOnClickListener {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("Hopline group code", pretty))
+            Toast.makeText(this, R.string.code_copied, Toast.LENGTH_SHORT).show()
+        }
 
         val first = intent.getBooleanExtra("first", false)
         b.done.setOnClickListener {
-            if (first) startActivity(Intent(this, MainActivity::class.java))
+            if (first) startActivity(Intent(this, HomeActivity::class.java))
             finish()
         }
     }

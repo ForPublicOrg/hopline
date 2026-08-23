@@ -6,16 +6,27 @@
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
         android:orientation="vertical" android:padding="24dp">
 
+        <ImageButton android:id="@+id/back" android:layout_width="48dp" android:layout_height="48dp"
+            android:layout_marginStart="-12dp" android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_back" android:contentDescription="@string/back" android:visibility="gone" />
+
         <TextView android:id="@+id/hello" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="16dp" android:textAppearance="@style/Text.Title" />
+            android:layout_marginTop="12dp" android:textAppearance="@style/Text.Display" android:textSize="28sp" />
 
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/card_start" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="24dp" app:cardCornerRadius="20dp" app:cardElevation="2dp" android:clickable="true" android:focusable="true">
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="22dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/start_group"
-                    android:textSize="22sp" android:textStyle="bold" android:textColor="@color/brand_dark" />
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+            android:layout_marginTop="24dp" app:cardCornerRadius="20dp" app:cardElevation="1dp"
+            app:cardBackgroundColor="@color/surface" android:clickable="true" android:focusable="true">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
+                    <FrameLayout android:layout_width="44dp" android:layout_height="44dp" android:background="@drawable/bg_icon_circle">
+                        <ImageView android:layout_width="24dp" android:layout_height="24dp" android:layout_gravity="center"
+                            android:src="@drawable/ic_add" app:tint="@color/ember" android:importantForAccessibility="no" />
+                    </FrameLayout>
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="14dp"
+                        android:text="@string/start_group" android:textSize="20sp" android:textStyle="bold" android:textColor="@color/text" />
+                </LinearLayout>
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
                     android:text="@string/start_group_sub" android:textAppearance="@style/Text.Muted" />
                 <LinearLayout android:id="@+id/start_panel" android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="vertical" android:visibility="gone" android:layout_marginTop="12dp">
@@ -33,11 +44,18 @@
 
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/card_join" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="16dp" app:cardCornerRadius="20dp" app:cardElevation="2dp" android:clickable="true" android:focusable="true">
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="22dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/join_group"
-                    android:textSize="22sp" android:textStyle="bold" android:textColor="@color/brand_dark" />
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+            android:layout_marginTop="16dp" app:cardCornerRadius="20dp" app:cardElevation="1dp"
+            app:cardBackgroundColor="@color/surface" android:clickable="true" android:focusable="true">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
+                    <FrameLayout android:layout_width="44dp" android:layout_height="44dp" android:background="@drawable/bg_icon_circle">
+                        <ImageView android:layout_width="24dp" android:layout_height="24dp" android:layout_gravity="center"
+                            android:src="@drawable/ic_qr" app:tint="@color/ember" android:importantForAccessibility="no" />
+                    </FrameLayout>
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="14dp"
+                        android:text="@string/join_group" android:textSize="20sp" android:textStyle="bold" android:textColor="@color/text" />
+                </LinearLayout>
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
                     android:text="@string/join_group_sub" android:textAppearance="@style/Text.Muted" />
                 <LinearLayout android:id="@+id/join_panel" android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="vertical" android:visibility="gone" android:layout_marginTop="12dp">

@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:background="@color/bg">
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/toolbar" android:layout_width="match_parent" android:layout_height="?attr/actionBarSize"
+        android:background="@color/surface" app:title="@string/settings" app:titleTextColor="@color/text"
+        app:navigationIcon="@drawable/ic_back" app:navigationIconTint="@color/text" android:elevation="2dp" />
+
+    <ScrollView android:layout_width="match_parent" android:layout_height="match_parent">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
+            android:padding="16dp">
+
+            <!-- Me -->
+            <LinearLayout android:id="@+id/me_row" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="horizontal" android:gravity="center_vertical"
+                android:background="@drawable/bg_card" android:padding="16dp">
+                <TextView android:id="@+id/me_avatar" android:layout_width="56dp" android:layout_height="56dp"
+                    android:gravity="center" android:textSize="24sp" android:textStyle="bold" android:textColor="#FFFFFF"
+                    android:background="@drawable/bg_avatar" />
+                <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                    android:orientation="vertical" android:layout_marginStart="16dp">
+                    <TextView android:id="@+id/me_name" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:textSize="18sp" android:textStyle="bold" android:textColor="@color/text" />
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp"
+                        android:text="@string/edit_name" android:textSize="13sp" android:textColor="@color/ember" />
+                </LinearLayout>
+                <ImageView android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_chevron"
+                    android:importantForAccessibility="no" />
+            </LinearLayout>
+
+            <!-- This group -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp"
+                android:layout_marginStart="4dp" android:text="@string/this_group" android:textAppearance="@style/Text.Section" android:textSize="12sp" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
+                android:layout_marginTop="8dp" android:background="@drawable/bg_card" android:padding="16dp">
+                <TextView android:id="@+id/group_name" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:textSize="18sp" android:textStyle="bold" android:textColor="@color/text" />
+                <TextView android:id="@+id/group_code" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp" android:textSize="15sp" android:textColor="@color/text_muted"
+                    android:fontFamily="monospace" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal"
+                    android:layout_marginTop="12dp">
+                    <com.google.android.material.button.MaterialButton android:id="@+id/show_code" android:layout_width="0dp"
+                        android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/show_invite"
+                        android:minHeight="48dp" style="@style/Widget.Hopline.Button.Quiet" app:icon="@drawable/ic_qr"
+                        app:iconTint="@color/text" app:iconGravity="textStart" />
+                    <com.google.android.material.button.MaterialButton android:id="@+id/rename" android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" android:layout_marginStart="8dp" android:text="@string/rename_group"
+                        android:minHeight="48dp" style="@style/Widget.Hopline.Button.Quiet" />
+                </LinearLayout>
+                <com.google.android.material.button.MaterialButton android:id="@+id/leave" android:layout_width="match_parent"
+                    android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="@string/leave_group"
+                    style="@style/Widget.Hopline.Button.Danger" />
+            </LinearLayout>
+
+            <!-- Internet sharing -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
+                android:layout_marginTop="12dp" android:background="@drawable/bg_card" android:padding="16dp">
+                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/share" android:layout_width="match_parent"
+                    android:layout_height="wrap_content" android:text="@string/share_internet" android:textSize="16sp"
+                    android:textStyle="bold" android:textColor="@color/text" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp"
+                    android:text="@string/share_internet_sub" android:textSize="13sp" android:textColor="@color/text_muted" />
+            </LinearLayout>
+
+            <!-- About -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp"
+                android:layout_marginStart="4dp" android:text="@string/about" android:textAppearance="@style/Text.Section" android:textSize="12sp" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
+                android:layout_marginTop="8dp" android:background="@drawable/bg_card">
+                <LinearLayout android:id="@+id/how" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:gravity="center_vertical" android:minHeight="56dp"
+                    android:paddingStart="16dp" android:paddingEnd="16dp" android:background="?attr/selectableItemBackground">
+                    <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                        android:text="@string/how_it_works" android:textSize="16sp" android:textColor="@color/text" />
+                    <ImageView android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_chevron"
+                        android:importantForAccessibility="no" />
+                </LinearLayout>
+                <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" />
+                <TextView android:id="@+id/version" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="14dp" android:paddingBottom="4dp"
+                    android:textSize="14sp" android:textColor="@color/text_muted" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingBottom="14dp"
+                    android:text="@string/made_for" android:textSize="13sp" android:textColor="@color/text_faint" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

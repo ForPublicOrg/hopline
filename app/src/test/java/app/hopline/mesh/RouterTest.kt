@@ -21,9 +21,11 @@ class FakeNet {
 
     inner class Recorder : RouterListener {
         val shown = ArrayList<Message>(); val errands = ArrayList<Errand>(); val log = ArrayList<String>()
+        val files = ArrayList<Message>()
         override fun onChanged() {}
         override fun onMessage(m: Message) { shown.add(m) }
         override fun onErrandRequest(e: Errand) { errands.add(e) }
+        override fun onFileReady(m: Message) { files.add(m) }
         override fun onLog(text: String) { log.add(text) }
     }
 
@@ -247,6 +249,135 @@ class RouterTest {
         net.pump()
         net.node("C"); net.connect("B", "C")
         assertEquals(900, net.texts("C").size)
+    }
+
+    // ---------------------------------------------------------------- photos & files
+
+    private fun makeFile(bytes: ByteArray): Pair<Attachment, List<String>> {
+        val pieces = ArrayList<String>()
+        var i = 0
+        while (i < bytes.size) {
+            val end = minOf(bytes.size, i + Router.CHUNK_RAW)
+            pieces.add(java.util.Base64.getEncoder().encodeToString(bytes.copyOfRange(i, end)))
+            i = end
+        }
+        val att = Attachment.make(Crypto.randomId(12), "photo.jpg", "image/jpeg", bytes.size.toLong(), pieces.size, 100, 75, "tb")
+        return att to pieces
+    }
+
+    private fun reassemble(r: Router, att: Attachment): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        for (i in 0 until att.chunks) {
+            val env = r.chunks.get(Envelope.chunkId(att.fid, i))!!
+            out.write(java.util.Base64.getDecoder().decode(env.payload.getString("d")))
+        }
+        return out.toByteArray()
+    }
+
+    @Test fun `photo hops down the line in pieces and arrives whole`() {
+        val net = FakeNet(); net.line("A", "B", "C", "D", "E")
+        val bytes = ByteArray(60_000) { (it % 251).toByte() }
+        val (att, pieces) = makeFile(bytes)
+        val m = net.nodes["A"]!!.router.sendFile(att, pieces, "sunset from the ridge"); net.pump()
+        val e = net.nodes["E"]!!
+        assertEquals(listOf("sunset from the ridge"), net.texts("E"))
+        assertTrue(e.router.fileComplete(att))
+        assertArrayEquals(bytes, reassemble(e.router, att))
+        assertEquals(1, e.rec.files.size)                       // onFileReady fired exactly once
+        assertEquals(setOf("B", "C", "D", "E"), m.reached)      // the ✓ waited for the last piece
+        assertTrue("frame was ${net.maxFrameBytes} bytes", net.maxFrameBytes < 32_000)
+    }
+
+    @Test fun `late joiner gets the photo pieces through gap fill`() {
+        val net = FakeNet(); net.line("A", "B")
+        val bytes = ByteArray(40_000) { (it * 7 % 256).toByte() }
+        val (att, pieces) = makeFile(bytes)
+        net.nodes["A"]!!.router.sendFile(att, pieces, ""); net.pump()
+        net.node("F"); net.connect("B", "F")
+        val f = net.nodes["F"]!!
+        assertTrue(f.router.fileComplete(att))
+        assertArrayEquals(bytes, reassemble(f.router, att))
+        assertEquals(1, f.rec.files.size)
+    }
+
+    @Test fun `private photo is carried by middlemen but shown only to its recipient`() {
+        val net = FakeNet(); net.line("A", "B", "C")
+        val (att, pieces) = makeFile(ByteArray(20_000) { it.toByte() })
+        val m = net.nodes["A"]!!.router.sendFile(att, pieces, "just for you", to = "C"); net.pump()
+        assertTrue(net.texts("B").isEmpty())                    // B carries but never sees it
+        assertEquals(listOf("just for you"), net.texts("C"))
+        assertTrue(net.nodes["B"]!!.router.chunks.ids().isNotEmpty())
+        assertEquals(Message.DELIVERED, m.status)               // ✓✓ once C has every piece
+    }
+
+    @Test fun `file receipt waits for the last piece`() {
+        // Feed B the meta by hand, without the pieces: no receipt, no onFileReady yet.
+        val net = FakeNet(); net.line("A", "B")
+        val a = net.nodes["A"]!!.router; val b = net.nodes["B"]!!
+        val (att, pieces) = makeFile(ByteArray(30_000) { it.toByte() })
+        val m = a.sendFile(att, pieces, "slow photo"); net.pump()
+        // Everything arrives in one pump here, so instead check a fresh phone that has only the meta.
+        assertEquals(setOf("B"), m.reached)
+        val loner = FakeNet(); val x = loner.node("X")
+        val metaOnly = JSONObject().put("messages", org.json.JSONArray(listOf(
+            Message(m.id, Envelope.FILE, "A", "A", null, "slow photo", loner.now, att).toJson())))
+        x.router.restore(metaOnly)
+        assertFalse(x.router.fileComplete(att))
+        assertEquals(0, x.rec.files.size)
+        assertEquals(0, x.router.fileProgress(att))
+    }
+
+    @Test fun `unknown envelope kinds from newer versions are ignored without crashing`() {
+        val net = FakeNet(); net.line("A", "B", "C")
+        val future = Envelope(JSONObject().put("id", Crypto.randomId(12)).put("k", "hologram").put("o", "A").put("on", "A")
+            .put("ts", net.now).put("h", 0).put("p", JSONObject().put("x", 1)))
+        future.sign(net.nodes["A"]!!.router.group.key)
+        net.nodes["B"]!!.router.onBytes("B>A", JSONObject().put("t", "env").put("e", future.json).toString().toByteArray())
+        net.pump()
+        assertTrue(net.texts("B").isEmpty()); assertTrue(net.texts("C").isEmpty())
+    }
+
+    @Test fun `files switch off in a crowd`() {
+        val net = FakeNet(); net.node("A")
+        assertTrue(net.nodes["A"]!!.router.canSendFiles())
+        repeat(Router.FILE_GROUP_LIMIT) { net.nodes["A"]!!.router.people["p$it"] = Person("p$it") }
+        assertFalse(net.nodes["A"]!!.router.canSendFiles())
+    }
+
+    @Test fun `a 1x peer is never flooded with the file backlog on link-up`() {
+        // A v2 phone with a photo backlog links to an old client (its hello carries no "v").
+        val frames = ArrayList<JSONObject>()
+        val silent = object : RouterListener {
+            override fun onChanged() {}
+            override fun onMessage(m: Message) {}
+            override fun onErrandRequest(e: Errand) {}
+        }
+        var now = 1_700_000_000_000L
+        val r = Router(Identity("aa", "Vet"), Group(FakeNet.CODE, "Trek"), object : Transport {
+            override fun send(linkId: String, bytes: ByteArray): Long {
+                frames.add(JSONObject(String(bytes, Charsets.UTF_8))); return frames.size.toLong()
+            }
+            override fun disconnect(linkId: String) {}
+        }, silent) { now }
+        val (att, pieces) = makeFile(ByteArray(40_000) { it.toByte() })
+        r.sendFile(att, pieces, "old sunset")
+        r.sendChat("plain text travels fine")
+        frames.clear()
+
+        r.onLinkUp("L", "zz", "OldPhone")
+        assertEquals(2, frames.first { it.optString("t") == "hello" }.optInt("v"))  // we announce v2
+        val myNonce = r.links["L"]!!.myNonce
+        r.onBytes("L", JSONObject().put("t", "hello").put("id", "zz").put("name", "OldPhone").put("nonce", "n1").toString().toByteArray())
+        val proof = Crypto.hmacHex(r.group.key, "$myNonce|zz")
+        r.onBytes("L", JSONObject().put("t", "proof").put("proof", proof).toString().toByteArray())
+        r.onBytes("L", JSONObject().put("t", "inv").put("n", 1).put("i", 0).put("ids", org.json.JSONArray()).toString().toByteArray())
+
+        // The old phone gets the text, but no chunk ids in inventory and no file envelopes at all.
+        val all = frames.joinToString("\n") { it.toString() }
+        assertTrue(all.contains("plain text travels fine"))
+        assertFalse(all.contains("\"fchk\""))
+        assertFalse(all.contains("\"f.${att.fid}"))
+        assertFalse(all.contains("old sunset"))
     }
 }
 

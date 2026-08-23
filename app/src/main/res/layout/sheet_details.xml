@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="vertical" android:paddingTop="16dp" android:paddingBottom="24dp"
+    android:paddingStart="24dp" android:paddingEnd="24dp">
+
+    <TextView android:id="@+id/details_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="@string/message_details" android:textAppearance="@style/Text.Title" android:textSize="20sp" />
+
+    <TextView android:id="@+id/details_body" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="10dp" android:textAppearance="@style/Text.Body" android:lineSpacingExtra="2dp" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/details_copy" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="18dp" android:text="@string/copy" style="@style/Widget.Hopline.Button.Quiet"
+        android:visibility="gone" />
+</LinearLayout>
