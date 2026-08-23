@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand">#1B7F5A</color>
+    <color name="brand_dark">#125C41</color>
+    <color name="brand_light">#D8F3E6</color>
+    <color name="accent">#FFB300</color>
+    <color name="bg">#F4F7F5</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="text">#1B1F1D</color>
+    <color name="text_muted">#6B736F</color>
+    <color name="bubble_mine">#D8F3E6</color>
+    <color name="bubble_theirs">#FFFFFF</color>
+    <color name="bubble_system">#FFF4D6</color>
+    <color name="bubble_sos">#FFD6D6</color>
+    <color name="sos">#D32F2F</color>
+    <color name="sos_dark">#9A1B1B</color>
+    <color name="online">#2FBF71</color>
+    <color name="offline">#B7BDB9</color>
+    <color name="tick">#1B7F5A</color>
+    <color name="tick_delivered">#1E88E5</color>
+</resources>

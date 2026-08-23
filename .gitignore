@@ -1,0 +1,17 @@
+# build
+.gradle/
+/build/
+/app/build/
+/local.properties
+.kotlin/
+*.iml
+.idea/
+.DS_Store
+/captures
+
+# signing key: never commit — see keystore/README.txt
+/keystore/*.jks
+/keystore/keystore.properties
+
+# scratch
+/opensourceplaystore/

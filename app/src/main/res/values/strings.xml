@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hopline</string>
+    <string name="tagline">Chat with your group when there\'s no signal.\nMessages hop from phone to phone.</string>
+
+    <!-- Welcome -->
+    <string name="whats_your_name">What\'s your name?</string>
+    <string name="name_hint">Your name</string>
+    <string name="lets_go">Let\'s go</string>
+
+    <!-- Permissions -->
+    <string name="perm_title">Hopline needs to find phones near you</string>
+    <string name="perm_body">It uses Bluetooth and WiFi to talk to your friends\' phones directly. No internet, no mobile signal, no account.\n\nTap Allow on the next screens.</string>
+    <string name="perm_allow">Allow</string>
+    <string name="perm_denied">Hopline can\'t find other phones without this. Please open Settings and allow Nearby devices.</string>
+    <string name="open_settings">Open Settings</string>
+    <string name="check_bluetooth">Bluetooth is on</string>
+    <string name="check_wifi">WiFi is on</string>
+    <string name="check_location">Location is on</string>
+    <string name="turn_on">Turn on</string>
+    <string name="continue_btn">Continue</string>
+    <string name="no_play_services">This phone doesn\'t have Google Play services, which Hopline uses to link phones. Sorry — it won\'t work here.</string>
+
+    <!-- Group -->
+    <string name="group_title">Your group</string>
+    <string name="start_group">Start a new group</string>
+    <string name="start_group_sub">You\'ll get a 3-word code to share with friends</string>
+    <string name="join_group">Join a group</string>
+    <string name="join_group_sub">Type the 3 words your friend shows you</string>
+    <string name="group_name_hint">Group name</string>
+    <string name="code_hint">three words, like: tiger river lamp</string>
+    <string name="scan_qr">Scan their QR code</string>
+    <string name="join">Join</string>
+    <string name="start">Start</string>
+    <string name="bad_code">That doesn\'t look right — the code is three words.</string>
+
+    <!-- Code -->
+    <string name="your_group_code">Your group code</string>
+    <string name="code_instructions">Friends: open Hopline → Join a group → type these three words, or scan this.</string>
+    <string name="done">Done</string>
+    <string name="show_code">Show group code</string>
+
+    <!-- Main -->
+    <string name="message_hint">Message everyone…</string>
+    <string name="send">Send</string>
+    <string name="people">People</string>
+    <string name="outside_world">The Outside World</string>
+    <string name="leave_group">Leave group</string>
+    <string name="leave_confirm">Leave this group? Messages on this phone will be deleted.</string>
+    <string name="leave">Leave</string>
+    <string name="cancel">Cancel</string>
+    <string name="help_btn">HELP</string>
+    <string name="help_hint">Hold the HELP button for 2 seconds to alert your whole group.</string>
+    <string name="sos_sent">Your group has been alerted. Stay where you are if you can.</string>
+    <string name="sos_disclaimer">This only reaches your own group. It does NOT call rescue services.</string>
+    <string name="nobody_nearby">Looking for your group\'s phones…</string>
+    <string name="alone_hint">Nobody in range yet. Messages you send now will be delivered when a phone comes close.</string>
+
+    <!-- Status words -->
+    <string name="status_queued">Waiting for a phone to come in range</string>
+    <string name="status_sent">Sent</string>
+    <string name="status_delivered">Delivered ✓✓</string>
+    <string name="in_range">In range</string>
+    <string name="out_of_range">Out of range</string>
+    <string name="has_internet">Has internet</string>
+    <string name="share_internet">Let the group use my internet</string>
+
+    <!-- Outside world -->
+    <string name="outside_intro">If anyone in the group has internet, everyone can use a little of it.</string>
+    <string name="weather_btn">Get the weather</string>
+    <string name="sendout_btn">Send a message out</string>
+    <string name="readlink_btn">Read a web page</string>
+    <string name="place_hint">Which place?</string>
+    <string name="phone_or_email_hint">Phone number or email</string>
+    <string name="message_out_hint">What should it say?</string>
+    <string name="link_hint">Paste the link</string>
+    <string name="ask">Ask</string>
+    <string name="no_helper">Nobody in the group has internet right now. We\'ll ask as soon as someone does.</string>
+
+    <!-- Errand card (on the helper's phone) -->
+    <string name="errand_send_title">%1$s asks you to send this</string>
+    <string name="errand_send_body">Your phone has signal, so Hopline will open your messaging app with this filled in. Just tap send, then come back and tap “I sent it”.</string>
+    <string name="i_sent_it">I sent it</string>
+    <string name="couldnt_send">Couldn\'t send</string>
+
+    <!-- SOS screen -->
+    <string name="sos_title">Someone needs help</string>
+    <string name="ok">OK</string>
+
+    <!-- Notifications -->
+    <string name="notif_service">Hopline is on</string>
+    <string name="channel_service">Running in background</string>
+    <string name="channel_messages">Messages</string>
+    <string name="channel_alerts">Help alerts</string>
+</resources>
