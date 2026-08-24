@@ -83,6 +83,11 @@ class Router(
     var hasInternet = false
     var shareInternet = true
     var battery = -1
+    /** Set while I share live location; rides presence beacons so it costs no extra envelopes. */
+    var myLoc: Loc? = null
+
+    /** Reactions that arrived before the message they belong to (links deliver in any order). */
+    private val pendingReactions = LinkedHashMap<String, ArrayList<Triple<String, String, Long>>>()
 
     // ---------------------------------------------------------------- transport events
 
@@ -204,6 +209,9 @@ class Router(
             if (env.id in theyHave) continue
             // A 1.x client can't show or carry file messages — don't re-send them on every link-up.
             if (link.version < 2 && env.kind == Envelope.FILE) continue
+            // Pre-2.1 clients don't carry reactions, so their inventory never lists them: sending
+            // the reaction backlog would repeat on every link-up. They still relay live ones.
+            if (link.version < 3 && env.kind == Envelope.REACT) continue
             val copy = env.copy(); copy.hops = env.hops + 1
             val bytes = copy.json.toString().toByteArray(Charsets.UTF_8).size
             if (size + bytes > 24000) flush()                   // Nearby caps a bytes payload at 32 KB
@@ -262,7 +270,9 @@ class Router(
         val p = env.payload
         when (env.kind) {
             Envelope.CHAT -> {
-                val m = addMessage(Message(env.id, Envelope.CHAT, env.origin, env.originName, null, p.optString("text"), env.ts).also { it.arrivedAt = clock() }) ?: return
+                val m = addMessage(Message(env.id, Envelope.CHAT, env.origin, env.originName, null, p.optString("text"), env.ts,
+                    loc = Loc.fromJson(p.optJSONObject("loc")), quote = Quote.fromJson(p.optJSONObject("re")),
+                    mentions = Message.mentionsFromJson(p.optJSONArray("mn"))).also { it.arrivedAt = clock() }) ?: return
                 // In a small group every phone confirms receipt ("reached 7 of 9"). In a crowd of
                 // hundreds that would be an N-squared flood, so big groups skip chat receipts.
                 if (people.size < RECEIPT_GROUP_LIMIT) sendReceipt(env.id, env.origin)
@@ -270,7 +280,9 @@ class Router(
             }
             Envelope.DM -> {
                 if (env.to != me.id) return
-                val m = addMessage(Message(env.id, Envelope.DM, env.origin, env.originName, me.id, p.optString("text"), env.ts).also { it.arrivedAt = clock() }) ?: return
+                val m = addMessage(Message(env.id, Envelope.DM, env.origin, env.originName, me.id, p.optString("text"), env.ts,
+                    loc = Loc.fromJson(p.optJSONObject("loc")), quote = Quote.fromJson(p.optJSONObject("re")),
+                    mentions = Message.mentionsFromJson(p.optJSONArray("mn"))).also { it.arrivedAt = clock() }) ?: return
                 sendReceipt(env.id, env.origin); listener.onMessage(m)
             }
             Envelope.FILE -> {
@@ -279,7 +291,8 @@ class Router(
                 if (att.chunks !in 1..MAX_CHUNKS || att.size !in 1..MAX_FILE) { listener.onLog("absurd attachment dropped"); return }
                 if (env.to != null && env.to != me.id) return   // someone else's private photo: carry, don't show
                 val to = if (env.to != null) me.id else null
-                val m = Message(env.id, Envelope.FILE, env.origin, env.originName, to, p.optString("text"), env.ts, att)
+                val m = Message(env.id, Envelope.FILE, env.origin, env.originName, to, p.optString("text"), env.ts, att,
+                    quote = Quote.fromJson(p.optJSONObject("re")))
                 m.arrivedAt = clock()
                 if (addMessage(m) == null) return
                 filesByFid[att.fid] = m
@@ -291,6 +304,7 @@ class Router(
                 if (fid.isNotEmpty() && filesByFid.containsKey(fid)) checkFileReady(fid)
                 listener.onChanged()
             }
+            Envelope.REACT -> applyReactionEnvelope(env)
             Envelope.RECEIPT -> {
                 val m = messageById[p.optString("m")] ?: return
                 if (m.from != me.id) return
@@ -305,6 +319,11 @@ class Router(
                 person.hasInternet = p.optBoolean("net", false)
                 person.hops = env.hops
                 person.battery = p.optInt("bat", -1)
+                // Live location rides presence: present while they share, gone the beacon after they stop.
+                // Only ever move forward — floods can replay an older beacon after a newer one — but
+                // clamp the clock so a forged far-future beacon can't pin a position for hours.
+                val locTs = minOf(env.ts, clock() + 5 * 60_000L)
+                if (locTs >= person.locAt) { person.loc = Loc.fromJson(p.optJSONObject("loc")); person.locAt = locTs }
                 val gn = p.optString("gn")
                 if (group.name.isEmpty() && gn.isNotEmpty()) { group.name = gn; listener.onGroupNamed(gn) }
                 assignWaitingErrands()
@@ -335,6 +354,23 @@ class Router(
                 listener.onMessage(m)
             }
         }
+    }
+
+    // ---------------------------------------------------------------- reactions
+
+    /** Shared by live receive and restore: point a reaction at its message, or hold it. */
+    private fun applyReactionEnvelope(env: Envelope) {
+        if (env.to != null && env.to != me.id) return   // a private chat's reaction: carry, don't show
+        val p = env.payload
+        val target = p.optString("m"); if (target.isEmpty() || target.length > 40) return
+        val emoji = p.optString("e", "").take(Message.MAX_EMOJI)
+        val m = messageById[target]
+        if (m == null) {
+            // The message may still be hopping toward us — hold the reaction for it, bounded.
+            val list = pendingReactions.getOrPut(target) { ArrayList() }
+            if (list.size < 40) list.add(Triple(env.origin, emoji, env.ts))
+            while (pendingReactions.size > 500) pendingReactions.remove(pendingReactions.keys.first())
+        } else if (m.applyReaction(env.origin, emoji, env.ts)) listener.onChanged()
     }
 
     // ---------------------------------------------------------------- files
@@ -381,9 +417,11 @@ class Router(
      * Send a file that has already been shrunk and cut into base64 pieces (see Blobs on the app
      * side). The meta envelope is the visible message; the chunks flood behind it.
      */
-    fun sendFile(att: Attachment, pieces: List<String>, caption: String, to: String? = null): Message {
-        val meta = newEnvelope(Envelope.FILE, JSONObject().put("text", caption.take(MAX_CAPTION)).put("att", att.json), to)
-        val m = Message(meta.id, Envelope.FILE, me.id, me.name, to, caption, meta.ts, att).also { it.status = Message.QUEUED }
+    fun sendFile(att: Attachment, pieces: List<String>, caption: String, to: String? = null, quote: Quote? = null): Message {
+        val p = JSONObject().put("text", caption.take(MAX_CAPTION)).put("att", att.json)
+        quote?.let { p.put("re", it.toJson()) }
+        val meta = newEnvelope(Envelope.FILE, p, to)
+        val m = Message(meta.id, Envelope.FILE, me.id, me.name, to, caption, meta.ts, att, quote = quote).also { it.status = Message.QUEUED }
         addMessage(m)
         filesByFid[att.fid] = m
         fileReadyFired.add(att.fid)   // the original is already on this phone
@@ -431,16 +469,51 @@ class Router(
         forward(env, null)
     }
 
-    fun sendChat(text: String): Message {
-        val env = newEnvelope(Envelope.CHAT, JSONObject().put("text", text.take(MAX_TEXT)))
-        val m = Message(env.id, Envelope.CHAT, me.id, me.name, null, text, env.ts).also { it.status = Message.QUEUED }
+    fun sendChat(text: String, quote: Quote? = null, mentions: List<String> = emptyList()): Message {
+        val mn = mentions.take(Message.MAX_MENTIONS)
+        val p = JSONObject().put("text", text.take(MAX_TEXT))
+        quote?.let { p.put("re", it.toJson()) }
+        if (mn.isNotEmpty()) p.put("mn", JSONArray(mn))
+        val env = newEnvelope(Envelope.CHAT, p)
+        val m = Message(env.id, Envelope.CHAT, me.id, me.name, null, text, env.ts, quote = quote, mentions = mn)
+            .also { it.status = Message.QUEUED }
         addMessage(m); originate(env); listener.onChanged()
         return m
     }
 
-    fun sendDm(to: String, text: String): Message {
-        val env = newEnvelope(Envelope.DM, JSONObject().put("text", text.take(MAX_TEXT)), to)
-        val m = Message(env.id, Envelope.DM, me.id, me.name, to, text, env.ts).also { it.status = Message.QUEUED }
+    fun sendDm(to: String, text: String, quote: Quote? = null): Message {
+        val p = JSONObject().put("text", text.take(MAX_TEXT))
+        quote?.let { p.put("re", it.toJson()) }
+        val env = newEnvelope(Envelope.DM, p, to)
+        val m = Message(env.id, Envelope.DM, me.id, me.name, to, text, env.ts, quote = quote)
+            .also { it.status = Message.QUEUED }
+        addMessage(m); originate(env); listener.onChanged()
+        return m
+    }
+
+    /**
+     * React to a message; an empty emoji takes mine back. A reaction is its own tiny envelope —
+     * carried and gap-filled like chat, so late joiners see it — and a private chat's reactions
+     * stay between its two people via the same `to` rule as DMs.
+     */
+    fun sendReaction(target: Message, emoji: String) {
+        val e = emoji.take(Message.MAX_EMOJI)
+        val to = if (target.isGroup) null else (if (target.from == me.id) target.to else target.from)
+        val env = newEnvelope(Envelope.REACT, JSONObject().put("m", target.id).put("e", e), to)
+        target.applyReaction(me.id, e, env.ts)
+        originate(env)
+        listener.onChanged()
+    }
+
+    /**
+     * Share a place. It rides a normal chat/DM envelope — tiny, so it works at any crowd size —
+     * with a maps link in the text so old clients (and copies) still land on the right spot.
+     */
+    fun sendLocation(loc: Loc, to: String? = null): Message {
+        val text = loc.fallbackText()
+        val kind = if (to == null) Envelope.CHAT else Envelope.DM
+        val env = newEnvelope(kind, JSONObject().put("text", text).put("loc", loc.toJson()), to)
+        val m = Message(env.id, kind, me.id, me.name, to, text, env.ts, loc = loc).also { it.status = Message.QUEUED }
         addMessage(m); originate(env); listener.onChanged()
         return m
     }
@@ -454,6 +527,7 @@ class Router(
 
     fun sendPresence() {
         val p = JSONObject().put("n", me.name).put("net", hasInternet && shareInternet).put("bat", battery).put("gn", group.name)
+        myLoc?.let { p.put("loc", it.toJson()) }
         forward(newEnvelope(Envelope.PRESENCE, p).also { seen[it.id] = true }, null)
     }
 
@@ -548,6 +622,10 @@ class Router(
         var i = messages.size
         while (i > 0 && messages[i - 1].ts > m.ts) i--
         messages.add(i, m)
+        // reactions that beat their message here have been waiting for it
+        pendingReactions.remove(m.id)?.let { held ->
+            for ((origin, emoji, ts) in held) m.applyReaction(origin, emoji, ts)
+        }
         return m
     }
 
@@ -560,6 +638,14 @@ class Router(
 
     fun message(id: String): Message? = messageById[id]
     fun isInRange(p: Person): Boolean = clock() - p.lastSeen < maxOf(IN_RANGE_MS, presenceInterval() * 2 + 30_000L)
+
+    /** A person's live position — only while they're in range and the beacon is believably fresh. */
+    fun liveLocOf(p: Person): Loc? {
+        val loc = p.loc ?: return null
+        if (!isInRange(p)) return null
+        if (clock() - p.locAt > presenceInterval() * 2 + 60_000L) return null
+        return loc
+    }
     fun peopleInRange(): Int = people.values.count { isInRange(it) }
     fun authedLinks(): List<Link> = links.values.filter { it.authed }
     fun carrySize(): Int = carry.size
@@ -582,6 +668,9 @@ class Router(
             seen[m.id] = true
             m.att?.let { filesByFid[it.fid] = m }
         }
+        // A reaction whose message hadn't arrived before the restart is still in carry — re-point
+        // it so it lands the moment the message hops in (applyReaction dedupes ones already shown).
+        for (e in carry.values) if (e.kind == Envelope.REACT) try { applyReactionEnvelope(e) } catch (ex: Exception) { }
         for (id in chunks.ids()) seen[id] = true
         j.optJSONArray("people")?.let { a -> for (i in 0 until a.length()) { val p = Person.fromJson(a.getJSONObject(i)); people[p.id] = p } }
         j.optJSONArray("errands")?.let { a -> for (i in 0 until a.length()) { val e = Errand.fromJson(a.getJSONObject(i)); errands[e.id] = e } }
@@ -615,8 +704,8 @@ class Router(
         const val CHUNK_RAW = 14 * 1024
         const val MAX_FILE = 2 * 1024 * 1024L
         val MAX_CHUNKS = ((MAX_FILE + CHUNK_RAW - 1) / CHUNK_RAW).toInt()
-        /** Protocol version announced in hello; 2 = carries file chunks. */
-        const val VERSION = 2
+        /** Protocol version announced in hello; 2 = carries file chunks, 3 = carries reactions. */
+        const val VERSION = 3
         /** Chunk envelopes in flight per link during a backlog fill (~19 KB each). */
         const val FILL_WINDOW = 4
     }

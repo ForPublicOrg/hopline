@@ -344,6 +344,231 @@ class RouterTest {
         assertFalse(net.nodes["A"]!!.router.canSendFiles())
     }
 
+    // ---------------------------------------------------------------- locations
+
+    @Test fun `location hops down the line with a maps link for old clients`() {
+        val net = FakeNet(); net.line("A", "B", "C", "D", "E")
+        val loc = Loc.of(12.9716, 77.5946, 8, "Base camp")!!
+        val m = net.nodes["A"]!!.router.sendLocation(loc); net.pump()
+        val got = net.nodes["E"]!!.router.messages.single()
+        assertNotNull(got.loc)
+        assertEquals(12.9716, got.loc!!.lat, 1e-6); assertEquals(77.5946, got.loc!!.lng, 1e-6)
+        assertEquals(8, got.loc!!.acc); assertEquals("Base camp", got.loc!!.label)
+        // The visible text is the 1.x fallback: a link Google Maps opens.
+        assertTrue(got.text.contains("maps.google.com/?q=12.971600,77.594600"))
+        assertTrue(got.text.contains("Base camp"))
+        assertEquals(setOf("B", "C", "D", "E"), m.reached)
+    }
+
+    @Test fun `private location is only shown to its recipient`() {
+        val net = FakeNet(); net.line("A", "B", "C")
+        val m = net.nodes["A"]!!.router.sendLocation(Loc.of(1.0, 2.0)!!, to = "C"); net.pump()
+        assertTrue(net.texts("B").isEmpty())
+        assertNotNull(net.nodes["C"]!!.router.messages.single().loc)
+        assertEquals(Message.DELIVERED, m.status)
+    }
+
+    @Test fun `absurd coordinates from a crafted client fall back to plain text`() {
+        val net = FakeNet(); net.line("A", "B")
+        val a = net.nodes["A"]!!.router
+        val forged = JSONObject().put("id", Crypto.randomId(12)).put("k", "chat").put("o", "A").put("on", "A")
+            .put("ts", net.now).put("h", 0)
+            .put("p", JSONObject().put("text", "meet here").put("loc", JSONObject().put("lat", 999_000_000L).put("lng", 0)))
+        val env = Envelope(forged).also { it.sign(a.group.key) }
+        net.nodes["B"]!!.router.onBytes("B>A", JSONObject().put("t", "env").put("e", env.json).toString().toByteArray())
+        net.pump()
+        val got = net.nodes["B"]!!.router.messages.single()
+        assertNull(got.loc); assertEquals("meet here", got.text)
+    }
+
+    // ---------------------------------------------------------------- replies, reactions, mentions
+
+    @Test fun `a reply carries its quote down the line`() {
+        val net = FakeNet(); net.line("A", "B", "C")
+        val original = net.nodes["A"]!!.router.sendChat("meet at the bridge"); net.pump()
+        net.nodes["C"]!!.router.sendChat("on my way", Quote.of(original)); net.pump()
+        val got = net.nodes["A"]!!.router.messages.first { it.text == "on my way" }
+        assertEquals(original.id, got.quote!!.id)
+        assertEquals("A", got.quote!!.name)
+        assertEquals("meet at the bridge", got.quote!!.text)
+    }
+
+    @Test fun `a photo sent as a reply carries the quote too`() {
+        val net = FakeNet(); net.line("A", "B")
+        val original = net.nodes["B"]!!.router.sendChat("which peak is that?"); net.pump()
+        val bytes = ByteArray(20_000) { it.toByte() }
+        val pieces = ArrayList<String>()
+        var i = 0
+        while (i < bytes.size) {
+            val end = minOf(bytes.size, i + Router.CHUNK_RAW)
+            pieces.add(java.util.Base64.getEncoder().encodeToString(bytes.copyOfRange(i, end)))
+            i = end
+        }
+        val att = Attachment.make(Crypto.randomId(12), "p.jpg", "image/jpeg", bytes.size.toLong(), pieces.size, 10, 10, "tb")
+        net.nodes["A"]!!.router.sendFile(att, pieces, "this one", quote = Quote.of(net.nodes["A"]!!.router.message(original.id)!!))
+        net.pump()
+        val got = net.nodes["B"]!!.router.messages.first { it.att != null }
+        assertEquals(original.id, got.quote!!.id)
+        assertEquals("which peak is that?", got.quote!!.text)
+    }
+
+    @Test fun `reactions add change and remove with last-write-wins`() {
+        val net = FakeNet(); net.line("A", "B", "C")
+        val m = net.nodes["A"]!!.router.sendChat("sunset!"); net.pump()
+        val onB = net.nodes["B"]!!.router.message(m.id)!!
+        net.nodes["B"]!!.router.sendReaction(onB, "👍"); net.pump()
+        assertEquals("👍", m.reactions["B"])
+        assertEquals("👍", net.nodes["C"]!!.router.message(m.id)!!.reactions["B"])
+        net.now += 1000
+        net.nodes["B"]!!.router.sendReaction(onB, "❤️"); net.pump()   // changed their mind
+        assertEquals("❤️", m.reactions["B"]); assertEquals(1, m.reactions.size)
+        net.now += 1000
+        net.nodes["B"]!!.router.sendReaction(onB, ""); net.pump()     // took it back
+        assertTrue(m.reactions.isEmpty())
+        assertTrue(net.nodes["C"]!!.router.message(m.id)!!.reactions.isEmpty())
+    }
+
+    @Test fun `late joiner sees reactions through gap fill`() {
+        val net = FakeNet(); net.line("A", "B")
+        val m = net.nodes["A"]!!.router.sendChat("group photo"); net.pump()
+        net.nodes["B"]!!.router.sendReaction(net.nodes["B"]!!.router.message(m.id)!!, "😂"); net.pump()
+        net.node("C"); net.connect("B", "C")
+        assertEquals("😂", net.nodes["C"]!!.router.message(m.id)!!.reactions["B"])
+    }
+
+    @Test fun `a reaction that arrives before its message waits for it`() {
+        val net = FakeNet(); net.line("A", "B")
+        val key = net.nodes["A"]!!.router.group.key
+        val chat = Envelope(JSONObject().put("id", "zmsgzmsgzmsg").put("k", "chat").put("o", "Z").put("on", "Zoe")
+            .put("ts", net.now).put("h", 0).put("p", JSONObject().put("text", "hello"))).also { it.sign(key) }
+        val react = Envelope(JSONObject().put("id", "zreactzreact").put("k", "reac").put("o", "Y").put("on", "Yan")
+            .put("ts", net.now + 1).put("h", 0).put("p", JSONObject().put("m", "zmsgzmsgzmsg").put("e", "🙏"))).also { it.sign(key) }
+        val b = net.nodes["B"]!!.router
+        b.onBytes("B>A", JSONObject().put("t", "env").put("e", react.json).toString().toByteArray())
+        assertNull(b.message("zmsgzmsgzmsg"))
+        b.onBytes("B>A", JSONObject().put("t", "env").put("e", chat.json).toString().toByteArray())
+        assertEquals("🙏", b.message("zmsgzmsgzmsg")!!.reactions["Y"])
+    }
+
+    @Test fun `private chat reactions stay between its two people`() {
+        val net = FakeNet(); net.line("A", "B", "C")
+        val dm = net.nodes["A"]!!.router.sendDm("C", "just us"); net.pump()
+        val onC = net.nodes["C"]!!.router.message(dm.id)!!
+        net.nodes["C"]!!.router.sendReaction(onC, "❤️"); net.pump()
+        assertEquals("❤️", dm.reactions["C"])              // the sender sees it
+        assertNull(net.nodes["B"]!!.router.message(dm.id)) // the middleman never had the message
+        assertTrue(net.nodes["B"]!!.router.carrySize() > 0)
+    }
+
+    @Test fun `an absurdly long reaction is clipped and reactions survive restore`() {
+        val net = FakeNet(); net.line("A", "B")
+        val m = net.nodes["A"]!!.router.sendChat("hi"); net.pump()
+        net.nodes["B"]!!.router.sendReaction(net.nodes["B"]!!.router.message(m.id)!!, "x".repeat(500)); net.pump()
+        assertEquals(8, m.reactions["B"]!!.length)
+        val fresh = FakeNet(); val a2 = fresh.node("A")
+        a2.router.restore(JSONObject(net.nodes["A"]!!.router.snapshot().toString()))
+        assertEquals(m.reactions["B"], a2.router.message(m.id)!!.reactions["B"])
+    }
+
+    @Test fun `mentions travel and are capped`() {
+        val net = FakeNet(); net.line("A", "B")
+        net.nodes["A"]!!.router.sendChat("@Bea @Cal wake up", mentions = (1..30).map { "id$it" }); net.pump()
+        val got = net.nodes["B"]!!.router.messages.single()
+        assertEquals(Message.MAX_MENTIONS, got.mentions.size)
+        assertEquals("id1", got.mentions.first())
+    }
+
+    @Test fun `a stashed reaction survives a restart through the carry`() {
+        val net = FakeNet(); net.line("A", "B")
+        val key = net.nodes["A"]!!.router.group.key
+        val react = Envelope(JSONObject().put("id", "rrrrrrrrrrrr").put("k", "reac").put("o", "Y").put("on", "Yan")
+            .put("ts", net.now).put("h", 0).put("p", JSONObject().put("m", "mmmmmmmmmmmm").put("e", "👍"))).also { it.sign(key) }
+        net.nodes["B"]!!.router.onBytes("B>A", JSONObject().put("t", "env").put("e", react.json).toString().toByteArray())
+        // B restarts before the message itself ever arrives
+        val fresh = FakeNet(); val b2 = fresh.node("B")
+        b2.router.restore(JSONObject(net.nodes["B"]!!.router.snapshot().toString()))
+        fresh.node("A"); fresh.connect("A", "B")
+        val chat = Envelope(JSONObject().put("id", "mmmmmmmmmmmm").put("k", "chat").put("o", "Z").put("on", "Zoe")
+            .put("ts", fresh.now).put("h", 0).put("p", JSONObject().put("text", "late"))).also { it.sign(key) }
+        b2.router.onBytes("B>A", JSONObject().put("t", "env").put("e", chat.json).toString().toByteArray())
+        assertEquals("👍", b2.router.message("mmmmmmmmmmmm")!!.reactions["Y"])
+    }
+
+    @Test fun `one message cannot be ballooned by invented reactors`() {
+        val m = Message("x", Envelope.CHAT, "A", "A", null, "hi", 1L)
+        for (i in 0 until Message.MAX_REACTORS + 100) m.applyReaction("fake$i", "👍", i.toLong())
+        assertEquals(Message.MAX_REACTORS, m.reactions.size)
+        // existing reactors can still change or remove theirs at the cap
+        assertTrue(m.applyReaction("fake0", "❤️", 999_999L))
+        assertTrue(m.applyReaction("fake1", "", 999_999L))
+        assertEquals(Message.MAX_REACTORS - 1, m.reactions.size)
+    }
+
+    @Test fun `reaction backlog is not re-sent to a v2 peer on link-up`() {
+        val frames = ArrayList<JSONObject>()
+        val silent = object : RouterListener {
+            override fun onChanged() {}
+            override fun onMessage(m: Message) {}
+            override fun onErrandRequest(e: Errand) {}
+        }
+        var now = 1_700_000_000_000L
+        val r = Router(Identity("aa", "Vet"), Group(FakeNet.CODE, "Trek"), object : Transport {
+            override fun send(linkId: String, bytes: ByteArray): Long {
+                frames.add(JSONObject(String(bytes, Charsets.UTF_8))); return frames.size.toLong()
+            }
+            override fun disconnect(linkId: String) {}
+        }, silent) { now }
+        val m = r.sendChat("hello")
+        r.sendReaction(m, "👍")
+        frames.clear()
+        r.onLinkUp("L", "zz", "OldV2Phone")
+        val myNonce = r.links["L"]!!.myNonce
+        r.onBytes("L", JSONObject().put("t", "hello").put("id", "zz").put("name", "OldV2Phone").put("nonce", "n1").put("v", 2).toString().toByteArray())
+        r.onBytes("L", JSONObject().put("t", "proof").put("proof", Crypto.hmacHex(r.group.key, "$myNonce|zz")).toString().toByteArray())
+        r.onBytes("L", JSONObject().put("t", "inv").put("n", 1).put("i", 0).put("ids", org.json.JSONArray()).toString().toByteArray())
+        val all = frames.joinToString("\n") { it.toString() }
+        assertTrue(all.contains("hello"))                 // the chat itself fills
+        assertFalse(all.contains("\"reac\""))             // the reaction backlog does not
+    }
+
+    // ---------------------------------------------------------------- live location
+
+    @Test fun `live location rides presence and clears when sharing stops`() {
+        val net = FakeNet(); net.line("A", "B", "C")
+        net.nodes["A"]!!.router.myLoc = Loc.of(12.9716, 77.5946, 10)
+        net.tickAll()
+        val seenByC = net.nodes["C"]!!.router.people["A"]!!
+        assertEquals(12.9716, seenByC.loc!!.lat, 1e-6)
+        assertNotNull(net.nodes["C"]!!.router.liveLocOf(seenByC))
+        net.nodes["A"]!!.router.myLoc = null                  // stopped sharing
+        net.now += 31_000; net.tickAll()                       // next beacon carries no loc
+        assertNull(seenByC.loc)
+        // and a beacon that stops coming goes stale instead of lying forever
+        net.nodes["A"]!!.router.myLoc = Loc.of(1.0, 2.0)
+        net.now += 31_000; net.tickAll()
+        assertNotNull(net.nodes["C"]!!.router.liveLocOf(seenByC))
+        net.now += 10 * 60_000
+        assertNull(net.nodes["C"]!!.router.liveLocOf(seenByC))
+    }
+
+    @Test fun `voice note length rides the attachment`() {
+        val att = Attachment.make(Crypto.randomId(12), "voice-1.m4a", "audio/mp4", 90_000, 7, 0, 0, "", 23)
+        val back = Attachment(JSONObject(att.json.toString()))
+        assertTrue(back.isAudio); assertEquals(23, back.dur)
+        val old = Attachment.make(Crypto.randomId(12), "photo.jpg", "image/jpeg", 100, 1, 10, 10, "tb")
+        assertEquals(0, old.dur); assertFalse(old.isAudio)
+    }
+
+    @Test fun `location survives snapshot and restore`() {
+        val net = FakeNet(); net.line("A", "B")
+        net.nodes["A"]!!.router.sendLocation(Loc.of(-33.856789, 151.215256, 12, "Opera House")!!); net.pump()
+        val fresh = FakeNet(); val b2 = fresh.node("B")
+        b2.router.restore(JSONObject(net.nodes["B"]!!.router.snapshot().toString()))
+        val got = b2.router.messages.single().loc!!
+        assertEquals(-33.856789, got.lat, 1e-6); assertEquals(151.215256, got.lng, 1e-6)
+        assertEquals(12, got.acc); assertEquals("Opera House", got.label)
+    }
+
     @Test fun `a 1x peer is never flooded with the file backlog on link-up`() {
         // A v2 phone with a photo backlog links to an old client (its hello carries no "v").
         val frames = ArrayList<JSONObject>()
@@ -365,7 +590,7 @@ class RouterTest {
         frames.clear()
 
         r.onLinkUp("L", "zz", "OldPhone")
-        assertEquals(2, frames.first { it.optString("t") == "hello" }.optInt("v"))  // we announce v2
+        assertEquals(Router.VERSION, frames.first { it.optString("t") == "hello" }.optInt("v"))
         val myNonce = r.links["L"]!!.myNonce
         r.onBytes("L", JSONObject().put("t", "hello").put("id", "zz").put("name", "OldPhone").put("nonce", "n1").toString().toByteArray())
         val proof = Crypto.hmacHex(r.group.key, "$myNonce|zz")
@@ -378,6 +603,42 @@ class RouterTest {
         assertFalse(all.contains("\"fchk\""))
         assertFalse(all.contains("\"f.${att.fid}"))
         assertFalse(all.contains("old sunset"))
+    }
+}
+
+class LocTest {
+    @Test fun `parses what people actually paste`() {
+        assertEquals(12.9716 to 77.5946, Loc.parse("12.9716, 77.5946")!!.let { it.lat to it.lng })
+        assertEquals(12.9716 to 77.5946, Loc.parse("12.9716 77.5946")!!.let { it.lat to it.lng })
+        assertEquals(-12.5 to -77.25, Loc.parse("12.5 S, 77.25 W")!!.let { it.lat to it.lng })
+        assertEquals(48.8584 to 2.2945, Loc.parse("geo:48.8584,2.2945?z=17")!!.let { it.lat to it.lng })
+        assertEquals(48.8584 to 2.2945, Loc.parse("https://maps.google.com/?q=48.8584,2.2945")!!.let { it.lat to it.lng })
+        assertEquals(48.8584 to 2.2945, Loc.parse("https://www.google.com/maps/search/?api=1&query=48.8584%2C2.2945")!!.let { it.lat to it.lng })
+        // place-page URL: the pair after @ is the pin, the trailing 17z is zoom, not a longitude
+        assertEquals(27.9881 to 86.925, Loc.parse("https://www.google.com/maps/place/Everest/@27.9881,86.9250,17z/data=xyz")!!.let { it.lat to it.lng })
+        assertNull(Loc.parse("see you at the bridge"))
+        assertNull(Loc.parse("999, 12"))
+        assertNull(Loc.parse(""))
+    }
+
+    @Test fun `microdegrees round-trip without float drift`() {
+        val loc = Loc.of(12.123456789, -77.987654321, 5, "x")!!
+        val back = Loc.fromJson(JSONObject(loc.toJson().toString()))!!
+        assertEquals(loc.latE6, back.latE6); assertEquals(loc.lngE6, back.lngE6)
+        assertEquals(12.123457, back.lat, 1e-6)
+    }
+
+    @Test fun `distance bearing and compass make sense`() {
+        // ~111 km per degree of latitude, due north
+        val d = Loc.distanceMeters(12.0, 77.0, 13.0, 77.0)
+        assertTrue("was $d", d > 110_000 && d < 112_000)
+        assertEquals("north", Loc.compass(Loc.bearingDeg(12.0, 77.0, 13.0, 77.0)))
+        assertEquals("east", Loc.compass(Loc.bearingDeg(0.0, 77.0, 0.0, 78.0)))
+        assertEquals("south-west", Loc.compass(225.0))
+        assertEquals("north", Loc.compass(359.0))
+        assertEquals("42 m", Loc.prettyDistance(42.4))
+        assertEquals("1.2 km", Loc.prettyDistance(1234.0))
+        assertEquals("57 km", Loc.prettyDistance(56_789.0))
     }
 }
 

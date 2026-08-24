@@ -23,8 +23,10 @@ import app.hopline.mesh.Attachment
 import app.hopline.mesh.Envelope
 import app.hopline.mesh.Errand
 import app.hopline.mesh.Group
+import app.hopline.mesh.Loc
 import app.hopline.mesh.Message
 import app.hopline.mesh.NearbyTransport
+import app.hopline.mesh.Quote
 import app.hopline.mesh.Router
 import app.hopline.mesh.RouterListener
 
@@ -118,6 +120,7 @@ object Core {
     /** Point the radio at another saved group. Nothing is deleted; the old group sleeps on disk. */
     fun switchGroup(code: String) {
         if (router?.group?.code == code) return
+        stopLiveLocation()   // a position shared with one group must not leak into another
         saveNow()
         transport?.stop()
         router = null; transport = null
@@ -130,6 +133,7 @@ object Core {
     /** Leave the active group for good: its messages, files and read marks are deleted. */
     fun leaveActiveGroup() {
         val leaving = store.activeGroup() ?: return
+        stopLiveLocation()
         transport?.stop()
         router = null; transport = null
         Blobs.deleteGroup(app, leaving.fingerprint)
@@ -139,13 +143,59 @@ object Core {
         changed()
     }
 
+    // ------------------------------------------------------------------ live location
+
+    /** Until when I share my position (0 = not sharing). It rides presence beacons. */
+    var liveLocationUntil = 0L; private set
+    private var liveWatchStop: (() -> Unit)? = null
+
+    fun liveLocationActive(): Boolean = System.currentTimeMillis() < liveLocationUntil
+
+    fun liveLocationLeftMs(): Long = (liveLocationUntil - System.currentTimeMillis()).coerceAtLeast(0)
+
+    /**
+     * Share my position with the group for a while. One GPS listener runs at a lazy interval;
+     * each presence beacon carries the freshest fix, so the update rate scales down with the
+     * crowd exactly like presence itself does.
+     */
+    fun startLiveLocation(minutes: Int) {
+        val r = router ?: return
+        liveLocationUntil = System.currentTimeMillis() + minutes * 60_000L
+        if (liveWatchStop == null) liveWatchStop = Locations.watch(app, minTimeMs = 10_000L) { pushMyLocation() }
+        pushMyLocation()
+        r.sendPresence()   // don't make the group wait a beacon interval to learn
+        changed()
+    }
+
+    fun stopLiveLocation() {
+        liveWatchStop?.invoke(); liveWatchStop = null
+        val wasSharing = liveLocationUntil != 0L
+        liveLocationUntil = 0
+        router?.let { r ->
+            r.myLoc = null
+            if (wasSharing) r.sendPresence()   // an empty beacon clears my pin on every phone
+        }
+        if (wasSharing) changed()
+    }
+
+    /** Move the freshest fix into the router, where presence picks it up. */
+    private fun pushMyLocation() {
+        val r = router ?: return
+        if (!liveLocationActive()) { if (liveWatchStop != null) stopLiveLocation(); return }
+        val l = Locations.lastKnown(app)
+        // A phone that stopped getting fixes (indoors, GPS off) must not keep beaconing its
+        // last position as "live" — beaconing nothing is honest, a stale ghost is a lie.
+        r.myLoc = if (l != null && System.currentTimeMillis() - l.time <= 10 * 60_000)
+            Loc.of(l.latitude, l.longitude, l.accuracy.toInt()) else null
+    }
+
     // ------------------------------------------------------------------ sending files
 
     /**
      * Shrink and send a photo. Byte-work runs off the main thread; `done` is called on the main
      * thread with null on success or a problem description.
      */
-    fun sendImage(uri: Uri, caption: String, to: String?, done: (String?) -> Unit) {
+    fun sendImage(uri: Uri, caption: String, to: String?, quote: Quote? = null, done: (String?) -> Unit) {
         val r0 = router ?: return done("No group")
         val fp = r0.group.fingerprint
         Thread {
@@ -159,15 +209,15 @@ object Core {
                 val att = Attachment.make(Crypto.randomId(12), prep.name, prep.mime,
                     prep.bytes.size.toLong(), pieces.size, prep.width, prep.height, prep.thumbB64)
                 Blobs.saveOwn(app, fp, att, prep.bytes)
-                r0.sendFile(att, pieces, caption, to)
+                r0.sendFile(att, pieces, caption, to, quote)
                 changed()
                 done(null)
             }
         }.start()
     }
 
-    /** Send a picked document as-is. Same threading contract as sendImage. */
-    fun sendFileBytes(picked: Blobs.PickedFile, caption: String, to: String?, done: (String?) -> Unit) {
+    /** Send a picked document (or a recorded voice note) as-is. Same threading contract as sendImage. */
+    fun sendFileBytes(picked: Blobs.PickedFile, caption: String, to: String?, durSec: Int = 0, quote: Quote? = null, done: (String?) -> Unit) {
         val r0 = router ?: return done("No group")
         val fp = r0.group.fingerprint
         Thread {
@@ -175,9 +225,9 @@ object Core {
             handler.post {
                 if (router !== r0) { done("Group changed — file not sent."); return@post }
                 val att = Attachment.make(Crypto.randomId(12), picked.name, picked.mime,
-                    picked.bytes.size.toLong(), pieces.size, 0, 0, "")
+                    picked.bytes.size.toLong(), pieces.size, 0, 0, "", durSec)
                 Blobs.saveOwn(app, fp, att, picked.bytes)
-                r0.sendFile(att, pieces, caption, to)
+                r0.sendFile(att, pieces, caption, to, quote)
                 changed()
                 done(null)
             }
@@ -218,6 +268,7 @@ object Core {
         val r = router ?: return
         r.battery = batteryPercent()
         r.hasInternet = internetNow()
+        if (liveLocationUntil != 0L) pushMyLocation()   // stops itself once the time is up
         r.tick()
         lastTick = System.currentTimeMillis()
         // Watchdog: phones visible, nothing linked for 4 minutes -> bounce the Bluetooth stack.

@@ -67,6 +67,63 @@
     <string name="attach_file_sub">Up to 2 MB — big files hop slowly</string>
     <string name="photo_label">📷 Photo</string>
     <string name="file_label">📎 File</string>
+    <string name="location_label">📍 Location</string>
+    <string name="voice_label">🎤 Voice note</string>
+
+    <!-- Voice notes -->
+    <string name="record_voice">Record a voice note</string>
+    <string name="recording_hint">Recording…</string>
+    <string name="voice_too_short">That was too short to send.</string>
+    <string name="voice_failed">Couldn\'t start recording on this phone.</string>
+    <string name="mic_denied">Hopline needs the microphone permission to record a voice note.</string>
+    <string name="voice_max_note">Voice notes can be up to a minute — this one was sent for you.</string>
+    <string name="record_discarded">Recording discarded.</string>
+
+    <!-- Replies, reactions, mentions -->
+    <string name="reply">Reply</string>
+    <string name="reply_you">You</string>
+    <string name="reactions">Reactions</string>
+    <string name="reaction_hint">Tap your emoji on the message again to take it back.</string>
+    <string name="original_gone">That message isn\'t on this phone.</string>
+    <string name="mentioned_you">Mentioned you</string>
+
+    <!-- Live location -->
+    <string name="live_share">Share live location</string>
+    <string name="live_share_sub">Friends see where you are as you move, for a while</string>
+    <string name="live_stop">Stop sharing live location</string>
+    <string name="live_left">%1$s left</string>
+    <string name="live_for_15">For 15 minutes</string>
+    <string name="live_for_60">For 1 hour</string>
+    <string name="live_for_480">For 8 hours</string>
+    <string name="live_banner_me">📡 Sharing your live location · %1$s left — tap to stop</string>
+    <string name="live_banner_one">📡 %1$s is sharing live location — tap to see</string>
+    <string name="live_banner_many">📡 %1$d people are sharing live location — tap to see</string>
+    <string name="live_stopped">Live location off.</string>
+    <string name="live_stop_confirm">Stop sharing your live location?</string>
+    <string name="stop">Stop</string>
+
+    <!-- Location sharing -->
+    <string name="attach_location">Location</string>
+    <string name="attach_location_sub">Where you are, or a meeting point — works with no signal</string>
+    <string name="loc_current">Send current location</string>
+    <string name="loc_current_sub">GPS finds you even with no signal or internet</string>
+    <string name="loc_other">Send another place</string>
+    <string name="loc_other_sub">Type or paste coordinates, or a Google Maps link</string>
+    <string name="loc_privacy">Only people in your group can see it.</string>
+    <string name="loc_finding">Finding your position… Under open sky GPS can take a minute.</string>
+    <string name="loc_found">Position found — accurate to about %1$s.</string>
+    <string name="loc_denied">Hopline needs the location permission to share where you are.</string>
+    <string name="loc_service_off">Your phone\'s location is switched off. Turn it on to share where you are.</string>
+    <string name="loc_place_hint">Coordinates or maps link</string>
+    <string name="loc_place_name_hint">Name it (optional), like “Base camp”</string>
+    <string name="loc_place_help">Tip: in Google Maps, press and hold a spot, then copy the numbers shown at the top and paste them here.</string>
+    <string name="loc_bad_place">Couldn\'t read that. Try something like “12.9716, 77.5946”, or paste a maps link that has coordinates in it.</string>
+    <string name="loc_away">%1$s away · %2$s of you</string>
+    <string name="loc_here">Right where you are</string>
+    <string name="loc_accuracy">within %1$s</string>
+    <string name="loc_pin_mine">My location</string>
+    <string name="loc_pin_theirs">%1$s\'s location</string>
+    <string name="no_maps_app">No maps app on this phone — coordinates copied instead.</string>
     <string name="caption_hint">Add a caption (optional)</string>
     <string name="receiving_file">Receiving… %1$d of %2$d pieces</string>
     <string name="sending_file">Preparing…</string>

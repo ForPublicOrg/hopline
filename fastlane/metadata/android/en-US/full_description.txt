@@ -13,6 +13,15 @@ HOW IT WORKS
 PHOTOS AND FILES
 Tap the paperclip. Photos are shrunk hard (about 0.3 MB) so they hop in seconds; files up to 2 MB travel in pieces and are reassembled on every phone, even ones that were out of range when you sent them.
 
+VOICE NOTES
+Tap the mic, talk, send. Clips are tiny and hop the mesh like photos do - the play bar fills in as the pieces arrive.
+
+LOCATION - EVEN LIVE
+Send where you are (GPS works with no signal) or a meeting point from coordinates or a Google Maps link. Everyone sees how far the pin is and which way ("1.2 km away, north-east of you"); tapping opens the maps app. Or share live location for 15 minutes, an hour or 8 hours - it rides the beacons phones already send, and the People screen shows everyone who is sharing, updating as you walk.
+
+REPLIES, REACTIONS, MENTIONS
+Swipe a message to reply with a quote. Long-press for quick emoji reactions. Type @ to mention someone - being mentioned always buzzes, even when the message arrives late as backlog.
+
 MORE THAN ONE GROUP
 Keep a group for the trek, one for the family, one for the festival crew. Switching is one tap, and each group keeps its own history, unread counts and files.
 

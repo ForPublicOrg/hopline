@@ -47,4 +47,19 @@
                 android:text="@string/attach_file_sub" android:textSize="13sp" android:textColor="@color/text_muted" />
         </LinearLayout>
     </LinearLayout>
+
+    <LinearLayout android:id="@+id/pick_location" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical" android:minHeight="64dp"
+        android:paddingStart="24dp" android:paddingEnd="24dp" android:background="?attr/selectableItemBackground">
+        <FrameLayout android:layout_width="44dp" android:layout_height="44dp" android:background="@drawable/bg_icon_circle">
+            <ImageView android:layout_width="24dp" android:layout_height="24dp" android:layout_gravity="center"
+                android:src="@drawable/ic_location" android:importantForAccessibility="no" />
+        </FrameLayout>
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginStart="16dp">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/attach_location" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/attach_location_sub" android:textSize="13sp" android:textColor="@color/text_muted" />
+        </LinearLayout>
+    </LinearLayout>
 </LinearLayout>

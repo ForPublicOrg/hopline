@@ -46,6 +46,27 @@ seconds; files up to 2 MB are carried in pieces and reassembled on every phone, 
 were out of range when you sent them. A photo's ✓ only appears when the *whole* photo is on the
 other phone.
 
+**Location** — paperclip → *Location*. Send where you are (GPS works with no signal and no
+internet) or name a meeting point by typing coordinates or pasting a Google Maps link. Everyone
+sees the pin with **how far it is and which way** ("1.2 km away · north-east of you") right in
+the chat; tapping it opens Google Maps (or any maps app). A location is a hundred bytes, so it
+works even in crowds where photos switch off — and old Hopline versions just see a maps link
+that opens the same spot.
+
+**Live location** — paperclip → *Location* → *Share live location* (15 min, 1 h or 8 h).
+Your position rides the group's regular presence beacons — no extra radio traffic — and the
+People screen shows everyone who's sharing: "1.2 km away · north-east of you", updating as you
+both walk. A banner in the chat (and the always-on notification) reminds you while you share;
+one tap stops it, and it stops itself when the time is up.
+
+**Voice notes** — tap the mic, talk (up to a minute), send. Clips are tiny (~180 KB/min) and
+hop the mesh like photos do; the play bar honestly fills in as the pieces arrive.
+
+**Replies, reactions, @mentions** — swipe any message right to reply with a quote (tap the
+quote to jump back to the original). Long-press for quick 👍 ❤️ 😂 😮 😢 🙏 reactions — tap the
+pill under a bubble to see who reacted. Type `@` to mention someone by name; being mentioned
+always buzzes, even for messages that arrive as old backlog.
+
 **More than one group** — Home shows every group you've saved. The radio serves one group at a
 time; tap a paused group to switch. Nothing is deleted when you switch — each group keeps its
 own history, unread counts and files.

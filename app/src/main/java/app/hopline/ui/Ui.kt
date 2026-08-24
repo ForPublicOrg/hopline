@@ -6,9 +6,12 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.LinearLayout
 import androidx.appcompat.app.AlertDialog
+import app.hopline.mesh.Loc
 import app.hopline.mesh.Message
 import app.hopline.mesh.Person
 import app.hopline.mesh.Router
+import app.hopline.service.Core
+import app.hopline.service.Locations
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -53,7 +56,16 @@ object Ui {
             if (p.direct) "In range · right next to you" else "In range · ${p.hops} phones away"
         } else "Out of range · last heard ${ago(p.lastSeen)}"
         val bat = if (p.battery in 0..20 && inRange) " · battery ${p.battery}%" else ""
-        return base + bat
+        // While they share live location, say where that actually is from HERE.
+        val live = r.liveLocOf(p)?.let { loc ->
+            val fix = Locations.lastKnown(Core.app)
+            val where = if (fix != null) {
+                Loc.prettyDistance(Loc.distanceMeters(fix.latitude, fix.longitude, loc.lat, loc.lng)) +
+                    " away · " + Loc.compass(Loc.bearingDeg(fix.latitude, fix.longitude, loc.lat, loc.lng)) + " of you"
+            } else loc.pretty()
+            "\n📡 Live location · $where"
+        } ?: ""
+        return base + bat + live
     }
 
     /** The full truthful story of one of my messages, for the delivery-details sheet. */

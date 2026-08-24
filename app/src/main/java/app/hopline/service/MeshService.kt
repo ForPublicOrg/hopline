@@ -51,10 +51,12 @@ class MeshService : Service() {
     private fun refreshNotification() {
         val r = Core.router ?: return
         val links = r.authedLinks().size
-        val text = when {
+        var text = when {
             links == 0 -> "Looking for your group's phones…"
             else -> "Linked to $links ${if (links == 1) "phone" else "phones"} · ${r.peopleInRange()} in range"
         }
+        // Sharing your position must never be invisible — it lives in the always-on notification.
+        if (Core.liveLocationActive()) text += " · 📡 sharing live location"
         try { NotificationManagerCompat.from(this).notify(Notifications.ID_SERVICE, Notifications.service(this, text)) } catch (e: Exception) { }
     }
 

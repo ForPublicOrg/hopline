@@ -25,6 +25,8 @@ object Notifications {
     private const val ID_ERRAND = 2
     /** Messages waiting in each chat's single notification (main thread only). */
     private val chatCounts = HashMap<String, Int>()
+    /** So a backlog full of @mentions buzzes once, not once per message. */
+    private var lastMentionBuzzAt = 0L
 
     private fun idFor(chat: String): Int = 1000 + (chat.hashCode() and 0xFFFF)
 
@@ -56,7 +58,9 @@ object Notifications {
     fun preview(ctx: Context, m: Message): String {
         val att = m.att
         val body = when {
+            m.loc != null -> ctx.getString(R.string.location_label) + if (m.loc.label.isNotEmpty()) " — ${m.loc.label}" else ""
             att == null -> m.text
+            att.isAudio -> ctx.getString(R.string.voice_label) + if (att.dur > 0) " (${att.dur / 60}:${"%02d".format(att.dur % 60)})" else ""
             att.isImage -> ctx.getString(R.string.photo_label) + if (m.text.isNotEmpty()) " ${m.text}" else ""
             else -> "${ctx.getString(R.string.file_label)} ${att.name}"
         }
@@ -80,9 +84,16 @@ object Notifications {
             private -> "${m.fromName} (private)"
             else -> group ?: "Hopline"
         }
-        val body = if (private || m.kind == Message.SYSTEM) preview(ctx, m) else "${m.fromName}: ${preview(ctx, m)}"
-        // A message that spent a while hopping to us is history, not breaking news: no buzz.
-        val backlog = System.currentTimeMillis() - m.ts > 2 * 60_000
+        val mentioned = m.mentions.contains(Core.store.nodeId)
+        val body = (if (mentioned) ctx.getString(R.string.mentioned_you) + " · " else "") +
+            (if (private || m.kind == Message.SYSTEM) preview(ctx, m) else "${m.fromName}: ${preview(ctx, m)}")
+        // A message that spent a while hopping to us is history, not breaking news: no buzz —
+        // unless it names me: being called out loud is worth a buzz however old the message is.
+        // But a reunion delivering ten old mentions must be one buzz, not a drum roll.
+        val now = System.currentTimeMillis()
+        val mentionBuzz = mentioned && now - lastMentionBuzzAt > 10_000
+        if (mentionBuzz) lastMentionBuzzAt = now
+        val backlog = now - m.ts > 2 * 60_000 && !mentionBuzz
         val n = NotificationCompat.Builder(ctx, CH_MESSAGES)
             .setSmallIcon(R.drawable.ic_notif)
             .setColor(0xFFD9481F.toInt())
@@ -91,7 +102,7 @@ object Notifications {
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setNumber(count)
             .setAutoCancel(true)
-            .setOnlyAlertOnce(true)
+            .setOnlyAlertOnce(!mentionBuzz)
             .setSilent(backlog)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(open(ctx, intent))

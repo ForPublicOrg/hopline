@@ -4,6 +4,13 @@
     android:orientation="vertical" android:paddingTop="16dp" android:paddingBottom="24dp"
     android:paddingStart="24dp" android:paddingEnd="24dp">
 
+    <!-- Quick reactions, WhatsApp-style: one tap and you're done -->
+    <HorizontalScrollView android:id="@+id/react_scroll" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:scrollbars="none" android:visibility="gone" android:layout_marginBottom="10dp">
+        <LinearLayout android:id="@+id/react_row" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:orientation="horizontal" android:gravity="center_vertical" />
+    </HorizontalScrollView>
+
     <TextView android:id="@+id/details_title" android:layout_width="match_parent" android:layout_height="wrap_content"
         android:text="@string/message_details" android:textAppearance="@style/Text.Title" android:textSize="20sp" />
 
@@ -11,7 +18,12 @@
         android:layout_marginTop="10dp" android:textAppearance="@style/Text.Body" android:lineSpacingExtra="2dp" />
 
     <com.google.android.material.button.MaterialButton
+        android:id="@+id/details_reply" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="18dp" android:text="@string/reply" style="@style/Widget.Hopline.Button.Quiet"
+        android:visibility="gone" />
+
+    <com.google.android.material.button.MaterialButton
         android:id="@+id/details_copy" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:layout_marginTop="18dp" android:text="@string/copy" style="@style/Widget.Hopline.Button.Quiet"
+        android:layout_marginTop="8dp" android:text="@string/copy" style="@style/Widget.Hopline.Button.Quiet"
         android:visibility="gone" />
 </LinearLayout>

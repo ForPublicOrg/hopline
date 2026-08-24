@@ -38,6 +38,9 @@
 
     <color name="wallpaper">#0D1119</color>
 
+    <color name="quote_bg_in">#1AFFFFFF</color>
+    <color name="quote_bg_out">#33FFFFFF</color>
+
     <color name="tick">#FFE7DC</color>
     <color name="tick_delivered">#A9E4FF</color>
     <color name="online">#2ECC71</color>
