@@ -56,6 +56,9 @@ class ChatActivity : AppCompatActivity() {
     private val chatKey: String get() = peer ?: Core.GROUP
     private var adapter: MessageAdapter? = null
     private var lastCount = -1
+    /** Set when the user themself sends something: the next refresh pins the list to the
+     *  bottom even if they were up in history — their own message must always be shown. */
+    private var pinToBottom = false
     private var cameraFile: File? = null
     private var replyTo: Message? = null
     /** Which location action waits on the permission dialog — a plain tag, so it survives the
@@ -245,8 +248,8 @@ class ChatActivity : AppCompatActivity() {
         peer?.let { r.sendDm(it, text, quote) } ?: r.sendChat(text, quote, extractMentions(r, text))
         b.input.setText("")
         clearReply()
+        pinToBottom = true
         refresh()
-        scrollToBottom()
     }
 
     // ------------------------------------------------------------------ replies
@@ -407,7 +410,7 @@ class ChatActivity : AppCompatActivity() {
             val quote = replyTo?.let { Quote.of(it) }
             clearReply()
             Core.sendImage(uri, caption.take(500), peer, quote) { err ->
-                if (err != null) toast(err) else scrollToBottom()
+                if (err != null) toast(err) else { pinToBottom = true; refresh() }
             }
         }
     }
@@ -423,7 +426,7 @@ class ChatActivity : AppCompatActivity() {
                 val send = {
                     val quote = replyTo?.let { Quote.of(it) }
                     clearReply()
-                    Core.sendFileBytes(picked, "", peer, quote = quote) { err -> if (err != null) toast(err) else scrollToBottom() }
+                    Core.sendFileBytes(picked, "", peer, quote = quote) { err -> if (err != null) toast(err) else { pinToBottom = true; refresh() } }
                 }
                 if (picked.bytes.size > 300_000) {
                     AlertDialog.Builder(this)
@@ -484,7 +487,7 @@ class ChatActivity : AppCompatActivity() {
         val quote = replyTo?.let { Quote.of(it) }
         clearReply()
         Core.sendFileBytes(Blobs.PickedFile(bytes, file.name, "audio/mp4"), "", peer, seconds, quote) { err ->
-            if (err != null) toast(err) else scrollToBottom()
+            if (err != null) toast(err) else { pinToBottom = true; refresh() }
         }
     }
 
@@ -598,7 +601,7 @@ class ChatActivity : AppCompatActivity() {
             .setPositiveButton(R.string.send) { _, _ ->
                 val l = best ?: return@setPositiveButton
                 if (Core.router !== r) return@setPositiveButton   // switched groups mid-fix
-                Loc.of(l.latitude, l.longitude, l.accuracy.toInt())?.let { r.sendLocation(it, peer); scrollToBottom() }
+                Loc.of(l.latitude, l.longitude, l.accuracy.toInt())?.let { r.sendLocation(it, peer); pinToBottom = true; refresh() }
             }
             .setNegativeButton(R.string.cancel, null)
             .create()
@@ -625,7 +628,8 @@ class ChatActivity : AppCompatActivity() {
             val loc = Loc.parse(v[0])?.let { Loc.of(it.lat, it.lng, 0, v[1]) }
             if (loc == null) { toast(getString(R.string.loc_bad_place)); return@ask }
             Core.router?.sendLocation(loc, peer)
-            scrollToBottom()
+            pinToBottom = true
+            refresh()
         }
     }
 
@@ -709,14 +713,15 @@ class ChatActivity : AppCompatActivity() {
         val shown = if (peer == null) r.messages.filter { it.isGroup }
         else r.messages.filter { !it.isGroup && ((it.from == peer && it.to == r.me.id) || (it.from == r.me.id && it.to == peer)) }
         // Only follow the conversation if the user is already at the bottom — never yank them
-        // out of history they scrolled up to read.
+        // out of history they scrolled up to read. The scroll itself must wait for the diff
+        // to commit (submitList applies rows a frame or two later): scrolling now would
+        // target the old last row and leave the new message below the fold.
         val lm = b.list.layoutManager as LinearLayoutManager
         val atBottom = lastCount < 0 || lm.findLastVisibleItemPosition() >= (b.list.adapter?.itemCount ?: 0) - 2
-        adapter!!.submit(shown)
-        if (shown.size != lastCount) {
-            lastCount = shown.size
-            if (atBottom) scrollToBottom()
-        }
+        val follow = pinToBottom || (shown.size != lastCount && atBottom)
+        pinToBottom = false
+        lastCount = shown.size
+        adapter!!.submit(shown) { if (follow) scrollToBottom() }
 
         if (peer == null) {
             val alone = r.authedLinks().isEmpty() && r.peopleInRange() == 0

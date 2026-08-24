@@ -58,7 +58,9 @@ class MessageAdapter(
             Row(m.id, "${m.text}|$showName|$grouped|$ticks|$blue|$attState")
     }
 
-    fun submit(messages: List<Message>) {
+    /** [onCommit] runs after the diffed rows are actually applied — submitList diffs on a
+     *  background thread, so a scroll issued right after submit() would land on the old list. */
+    fun submit(messages: List<Message>, onCommit: (() -> Unit)? = null) {
         val rows = ArrayList<Row>(messages.size + 8)
         var lastDay = ""
         var prev: Message? = null
@@ -82,7 +84,7 @@ class MessageAdapter(
             rows.add(Row.Msg(m, showNames && !mine && !system && !sameRun, sameRun, ticks, blue, extra))
             prev = m
         }
-        submitList(rows)
+        submitList(rows) { onCommit?.invoke() }
     }
 
     /** Play state folded into the diff stamp, so only the playing bubble rebinds each tick. */
