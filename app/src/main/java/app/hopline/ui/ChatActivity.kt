@@ -568,7 +568,11 @@ class ChatActivity : AppCompatActivity() {
 
     private fun prettyLeft(ms: Long): String {
         val min = ((ms + 59_999) / 60_000).toInt()
-        return if (min >= 60) "${min / 60} h ${min % 60} min" else "$min min"
+        return when {
+            min >= 60 && min % 60 == 0 -> "${min / 60} h"
+            min >= 60 -> "${min / 60} h ${min % 60} min"
+            else -> "$min min"
+        }
     }
 
     private fun onLiveBannerTapped() {
@@ -794,7 +798,15 @@ class ChatActivity : AppCompatActivity() {
             sb.detailsReply.visibility = View.VISIBLE
             sb.detailsReply.setOnClickListener { sheet.dismiss(); startReply(m) }
         }
-        sb.detailsBody.text = if (mine) Ui.statusDetail(this, r, m) else "${m.fromName.ifEmpty { "Someone" }} · ${Ui.ago(m.ts)}"
+        // "Delivery details" only belongs on my own message; on someone else's, the sheet is
+        // about them, so the header carries their name and the body the time.
+        if (mine) {
+            sb.detailsTitle.text = getString(R.string.message_details)
+            sb.detailsBody.text = Ui.statusDetail(this, r, m)
+        } else {
+            sb.detailsTitle.text = m.fromName.ifEmpty { getString(R.string.someone) }
+            sb.detailsBody.text = Ui.ago(m.ts)
+        }
         if (m.text.isNotEmpty()) {
             sb.detailsCopy.visibility = View.VISIBLE
             sb.detailsCopy.setOnClickListener {

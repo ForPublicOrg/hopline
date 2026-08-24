@@ -53,7 +53,8 @@ object Ui {
     fun personStatus(r: Router, p: Person): String {
         val inRange = r.isInRange(p)
         val base = if (inRange) {
-            if (p.direct) "In range · right next to you" else "In range · ${p.hops} phones away"
+            val away = if (p.hops == 1) "1 phone away" else "${p.hops} phones away"
+            if (p.direct) "In range · right next to you" else "In range · $away"
         } else "Out of range · last heard ${ago(p.lastSeen)}"
         val bat = if (p.battery in 0..20 && inRange) " · battery ${p.battery}%" else ""
         // While they share live location, say where that actually is from HERE.

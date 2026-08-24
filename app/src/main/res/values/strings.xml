@@ -81,6 +81,7 @@
 
     <!-- Replies, reactions, mentions -->
     <string name="reply">Reply</string>
+    <string name="someone">Someone</string>
     <string name="reply_you">You</string>
     <string name="reactions">Reactions</string>
     <string name="reaction_hint">Tap your emoji on the message again to take it back.</string>
