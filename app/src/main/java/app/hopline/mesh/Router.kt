@@ -53,6 +53,8 @@ class Router(
         var invExpected = -1
         var invIds = HashSet<String>()
         var invParts = 0
+        /** Last time we re-offered our inventory on this link (periodic anti-entropy). */
+        var lastSyncAt = 0L
         /** Chunk ids still owed to this link from the last inventory swap, streamed a few at a time. */
         val fillQueue = ArrayDeque<String>()
         var fillInFlight = 0
@@ -146,6 +148,7 @@ class Router(
                     touchPerson(link.nodeId, link.name, clock())
                     refreshDirect()
                     sendInventory(link)
+                    link.lastSyncAt = clock()
                     sendPresence()
                     listener.onLog("link authed ${link.name}")
                     listener.onChanged()
@@ -212,7 +215,11 @@ class Router(
             // Pre-2.1 clients don't carry reactions, so their inventory never lists them: sending
             // the reaction backlog would repeat on every link-up. They still relay live ones.
             if (link.version < 3 && env.kind == Envelope.REACT) continue
-            val copy = env.copy(); copy.hops = env.hops + 1
+            // Backlog is deduped by id, so a hand-off is not a routing hop: send it at its stored
+            // hop count. Spending the flood's hop budget here would let a message that has been
+            // carried far (a courier walking back and forth, gap-fills chained through late joiners)
+            // silently die at MAX_HOPS mid-group — the very thing the 48 h carry exists to prevent.
+            val copy = env.copy()
             val bytes = copy.json.toString().toByteArray(Charsets.UTF_8).size
             if (size + bytes > 24000) flush()                   // Nearby caps a bytes payload at 32 KB
             batch.put(copy.json); size += bytes; ids.add(env.id)
@@ -235,7 +242,7 @@ class Router(
         while (link.fillInFlight < FILL_WINDOW && link.fillQueue.isNotEmpty()) {
             val id = link.fillQueue.removeFirst()
             val env = chunks.get(id) ?: continue
-            val copy = env.copy(); copy.hops = env.hops + 1
+            val copy = env.copy()   // backlog hand-off, not a routing hop — don't spend the hop budget
             val pid = sendFrame(link, JSONObject().put("t", "env").put("e", copy.json))
             if (pid < 0) { link.fillQueue.clear(); return }     // link is gone
             link.fillInFlight++
@@ -586,6 +593,14 @@ class Router(
         if (now - lastPresenceAt >= presenceInterval()) { lastPresenceAt = now; sendPresence() }
         // links that never finished the handshake are dead weight
         for (l in links.values.toList()) if (!l.authed && now - l.since > 25_000) drop(l, "handshake timeout")
+        // Periodic anti-entropy: re-offer our inventory on each live link so a message a flaky (or
+        // jammed) radio dropped from the flood — or one that arrived after the one-shot link-up swap
+        // — still gets reconciled, without waiting for the link to break and re-form. The peer fills
+        // whatever we lack; every phone runs this, so gaps heal both ways. It costs nothing extra
+        // when nothing is missing (the peer just sees it already has our ids). Slows with the crowd,
+        // like presence, so a packed venue carries messages instead of endless roll-calls.
+        val syncEvery = maxOf(SYNC_MS, presenceInterval())
+        for (l in links.values) if (l.authed && now - l.lastSyncAt >= syncEvery) { sendInventory(l); l.lastSyncAt = now }
         // keep trying to get my unsent messages off this phone
         if (links.values.any { it.authed }) {
             for (m in messages) if (m.from == me.id && m.status == Message.QUEUED && now - m.ts < CARRY_MS) carry[m.id]?.let { forward(it, null) }
@@ -697,6 +712,8 @@ class Router(
         const val FILE_GROUP_LIMIT = 30      // photos/files switch off in a crowd
         const val CARRY_MS = 48 * 3600_000L
         const val RECEIPT_MS = 24 * 3600_000L
+        /** Floor for periodic anti-entropy; the real interval grows with the crowd via presenceInterval(). */
+        const val SYNC_MS = 60_000L
         const val MAX_TEXT = 2000        // chars; keeps any single envelope far under the 32 KB radio payload cap
         const val MAX_CAPTION = 500
         const val MAX_RESULT = 5000

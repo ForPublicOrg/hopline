@@ -46,8 +46,10 @@ class Envelope(val json: JSONObject) {
 
         /** Kinds that are stored and handed to phones that missed them (chunks are carried separately, on disk). */
         val CARRIED = setOf(CHAT, DM, RECEIPT, ERRAND, ERRAND_RESULT, FILE, REACT)
-        // Generous ceiling: a dense crowd has a tiny diameter (each phone holds several links),
-        // and even a single-file line of thirty phones stays under this.
+        // Ceiling on the LIVE flood only: a dense crowd has a tiny diameter (each phone holds
+        // several links) and even a single-file line of thirty phones stays under this. Store-and-
+        // forward backlog is deduped by id, not by hops, so gap-fill deliberately does NOT spend
+        // this budget — a message carried across many hand-offs over 48 h must not die at the cap.
         const val MAX_HOPS = 32
 
         fun chunkId(fid: String, index: Int): String = "f.$fid.$index"

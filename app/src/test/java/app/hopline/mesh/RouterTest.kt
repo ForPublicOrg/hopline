@@ -13,11 +13,15 @@ import org.junit.Test
 class FakeNet {
     var now = 1_700_000_000_000L
     var maxFrameBytes = 0
+    /** Simulate a flaky/jammed radio: the next N "env" (live flood) frames are lost, link stays up. */
+    var dropEnvFrames = 0
+    /** If set, only drop env frames SENT BY this node (lets a test lose one specific relay hop). */
+    var dropEnvFrom: String? = null
     val nodes = LinkedHashMap<String, Node>()
     private val pending = ArrayDeque<Delivery>()
     private var payloadSeq = 0L
 
-    class Delivery(val from: String, val pid: Long, val to: String, val toLink: String, val bytes: ByteArray)
+    class Delivery(val from: String, val pid: Long, val to: String, val toLink: String, val bytes: ByteArray, val failed: Boolean = false)
 
     inner class Recorder : RouterListener {
         val shown = ArrayList<Message>(); val errands = ArrayList<Errand>(); val log = ArrayList<String>()
@@ -37,6 +41,9 @@ class FakeNet {
                 val (peer, peerLink) = peers[linkId] ?: return -1
                 val pid = ++payloadSeq
                 if (bytes.size > maxFrameBytes) maxFrameBytes = bytes.size
+                val isEnv = dropEnvFrames > 0 && (dropEnvFrom == null || dropEnvFrom == id) &&
+                    (try { JSONObject(String(bytes, Charsets.UTF_8)).optString("t") } catch (e: Exception) { "" }) == "env"
+                if (isEnv) { dropEnvFrames--; pending.addLast(Delivery(id, pid, peer, peerLink, bytes, failed = true)); return pid }
                 pending.addLast(Delivery(id, pid, peer, peerLink, bytes))
                 return pid
             }
@@ -68,6 +75,7 @@ class FakeNet {
         var guard = 0
         while (pending.isNotEmpty() && guard++ < 100_000) {
             val d = pending.removeFirst()
+            if (d.failed) { nodes[d.from]?.router?.onPayloadFailed(d.pid); continue }
             val to = nodes[d.to] ?: continue
             if (!to.peers.containsKey(d.toLink)) { nodes[d.from]?.router?.onPayloadFailed(d.pid); continue }
             to.router.onBytes(d.toLink, d.bytes)
@@ -249,6 +257,33 @@ class RouterTest {
         net.pump()
         net.node("C"); net.connect("B", "C")
         assertEquals(900, net.texts("C").size)
+    }
+
+    @Test fun `a message survives far more than MAX_HOPS store-and-forward handoffs`() {
+        // A bucket brigade: each phone carries the one message a single link further, then the link
+        // breaks before the next forms. This is a courier chain far longer than the live-flood
+        // ceiling — the 48 h carry must still deliver it, not let it die at MAX_HOPS mid-chain.
+        val net = FakeNet()
+        val n = Envelope.MAX_HOPS + 8
+        for (i in 0..n) net.node("N$i")
+        net.nodes["N0"]!!.router.sendChat("hop me far"); net.pump()
+        for (i in 0 until n) { net.connect("N$i", "N${i + 1}"); net.disconnect("N$i", "N${i + 1}") }
+        assertEquals(listOf("hop me far"), net.texts("N$n"))
+    }
+
+    @Test fun `a relayed message a flaky radio drops is healed by periodic sync without a relink`() {
+        // The subtle gap: A's DM reaches B, so A sees it off its phone and never retries. B only
+        // RELAYS it (not the origin, and — as a DM it isn't the recipient of — it sends no receipt),
+        // so B's single relay frame to C is the only thing carrying it onward. When the flaky radio
+        // loses that one frame, nothing but a link-up re-sync would ever fix C — yet the links stay
+        // up the whole time. Periodic anti-entropy is what closes it.
+        val net = FakeNet(); net.line("A", "B", "C")
+        net.dropEnvFrom = "B"; net.dropEnvFrames = 1               // lose B's one relay hop to C
+        net.nodes["A"]!!.router.sendDm("C", "did you get this?"); net.pump()
+        assertTrue("C's relay frame was dropped, links still up", net.texts("C").isEmpty())
+        assertTrue("B is carrying it, it just couldn't relay", net.nodes["B"]!!.router.carrySize() > 0)
+        net.now += Router.SYNC_MS + 1_000; net.tickAll()           // anti-entropy reconciles the gap
+        assertEquals(listOf("did you get this?"), net.texts("C"))
     }
 
     // ---------------------------------------------------------------- photos & files

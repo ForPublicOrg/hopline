@@ -102,10 +102,12 @@ the group grows, and every phone follows the same rules on its own:
 - Photos and files ride the same flood as **numbered ~19 KB chunks** (under the radio's 32 KB
   payload cap). Chunks are carried on disk and gap-filled like everything else, so an image can
   hop through phones whose owners never open it.
-- Every phone **carries every message for 48 hours**. When two phones link up they swap
-  inventories and fill each other's gaps. That is what makes a chain that keeps breaking and
-  re-forming still deliver everything — a person walking between two groups literally carries
-  the backlog in their pocket.
+- Every phone **carries every message for 48 hours**. When two phones link up — and then again
+  every minute or so while they stay linked — they swap inventories and fill each other's gaps.
+  That periodic re-check is what heals a message a flaky (or jammed) radio dropped mid-flood
+  without waiting for the link to break and re-form. It is also what makes a chain that keeps
+  breaking and re-forming still deliver everything — a person walking between two groups literally
+  carries the backlog in their pocket, and a message can hop through any number of hand-offs.
 - In small groups, delivery receipts flow back the same way, so "Reached 7 of 9" is real, not a guess.
 - A foreground service keeps relaying with the screen off.
 
