@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Photo viewer: dark in both themes, like every gallery — the picture is the only colour.
+         The night twins in values-night/colors_media.xml are deliberately the same. -->
+    <color name="viewer_bg">#000000</color>
+    <color name="viewer_scrim">#99000000</color>   <!-- behind the bars, so white icons read on a bright photo -->
+    <color name="viewer_on">#FFFFFF</color>
+    <color name="viewer_on_muted">#B3FFFFFF</color>
+</resources>

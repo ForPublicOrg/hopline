@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Night twins of values/colors_media.xml: the viewer is already dark, so they match. -->
+    <color name="viewer_bg">#000000</color>
+    <color name="viewer_scrim">#99000000</color>
+    <color name="viewer_on">#FFFFFF</color>
+    <color name="viewer_on_muted">#B3FFFFFF</color>
+</resources>

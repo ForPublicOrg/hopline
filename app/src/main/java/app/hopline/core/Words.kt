@@ -38,4 +38,102 @@ object Words {
     fun pretty(code: String): String = normalise(code).replace('-', ' ')
 
     fun looksValid(code: String): Boolean = normalise(code).split('-').let { it.size == 3 && it.all { w -> w.length >= 2 } }
+
+    // ------------------------------------------------------------------ checking what someone typed
+
+    private val SET: Set<String> = LIST.toHashSet()
+
+    /**
+     * Spellings people reach for that aren't on the list. Applied only to what someone TYPES or
+     * hears read out — a code's words are its identity, so the list itself never changes.
+     */
+    private val ALIAS = mapOf(
+        "doughnut" to "donut", "doughnuts" to "donut", "plumb" to "plum", "guerrilla" to "gorilla", "guerilla" to "gorilla",
+        "ladybird" to "ladybug", "yoyos" to "yoyo",
+    )
+
+    private fun tokens(code: String): List<String> = code.lowercase().split(Regex("[^a-z]+")).filter { it.isNotEmpty() }
+
+    /** Words in [code] that are not Hopline code words ("doughnut", "plumb"). Empty when every word is known. */
+    fun unknownWords(code: String): List<String> = tokens(code).filter { it !in SET }
+
+    /** Three words, every one of them from the list: the only kind of code Hopline ever makes. */
+    fun isKnownCode(code: String): Boolean = looksValid(code) && unknownWords(code).isEmpty()
+
+    /**
+     * The code they probably meant, or null when there is nothing better to offer. Fixes the
+     * mistakes people really make with a code read out across a campsite: spelling variants
+     * ("doughnut"), words run together ("tigerriver") or split ("yo yo"), and small typos
+     * ("tigre", "rivr"). A typo is only fixed when exactly one list word is that close, so a
+     * suggestion is never a coin toss.
+     */
+    fun suggest(code: String): String? {
+        val start = tokens(code).map { ALIAS[it] ?: it }
+        if (start.isEmpty()) return null
+        // "yo yo" → "yoyo", "lady bug" → "ladybug": join two pieces when together they are a word.
+        val merged = ArrayList<String>()
+        var i = 0
+        while (i < start.size) {
+            val a = start[i]; val b = start.getOrNull(i + 1)
+            val joined = b?.let { (a + it).let { j -> ALIAS[j] ?: j } }
+            if (joined != null && joined in SET && (a !in SET || b !in SET)) { merged += joined; i += 2 } else { merged += a; i++ }
+        }
+        // "tigerriver" → "tiger river": split a run-together word when there is exactly one way to.
+        val words = merged.flatMap { w -> if (w in SET) listOf(w) else split(w) ?: listOf(w) }
+        if (words.size != 3) return null
+        val fixed = words.map { w -> if (w in SET) w else nearest(w) ?: return null }
+        val out = fixed.joinToString(" ")
+        return if (out == tokens(code).joinToString(" ")) null else out
+    }
+
+    /** The only way to cut [w] into two or three list words, or null (none, or more than one). */
+    private fun split(w: String): List<String>? {
+        val found = ArrayList<List<String>>()
+        for (a in 2..w.length - 2) {
+            val head = w.substring(0, a)
+            if (head !in SET) continue
+            val tail = w.substring(a)
+            if (tail in SET) found += listOf(head, tail)
+            for (b in 2..tail.length - 2) {
+                val mid = tail.substring(0, b); val end = tail.substring(b)
+                if (mid in SET && end in SET) found += listOf(head, mid, end)
+            }
+            if (found.size > 1) return null
+        }
+        return found.singleOrNull()
+    }
+
+    /** The one list word within a typo or two of [w] (one for short words), or null if none or a tie. */
+    private fun nearest(w: String): String? {
+        val max = if (w.length <= 4) 1 else 2
+        var best: String? = null
+        var bestD = max + 1
+        var tie = false
+        for (cand in LIST) {
+            if (kotlin.math.abs(cand.length - w.length) > max) continue
+            val d = distance(w, cand, max)
+            if (d < bestD) { best = cand; bestD = d; tie = false }
+            else if (d == bestD && cand != best) tie = true
+        }
+        return if (best != null && !tie) best else null
+    }
+
+    /** Edit distance where swapping two neighbouring letters ("tigre") counts as one slip. */
+    private fun distance(a: String, b: String, cap: Int): Int {
+        val d = Array(a.length + 1) { IntArray(b.length + 1) }
+        for (i in 0..a.length) d[i][0] = i
+        for (j in 0..b.length) d[0][j] = j
+        for (i in 1..a.length) {
+            var rowMin = Int.MAX_VALUE
+            for (j in 1..b.length) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                var v = minOf(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+                if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]) v = minOf(v, d[i - 2][j - 2] + 1)
+                d[i][j] = v
+                if (v < rowMin) rowMin = v
+            }
+            if (rowMin > cap) return cap + 1   // already too far: stop early
+        }
+        return d[a.length][b.length]
+    }
 }

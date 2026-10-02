@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One text field in a dialog (a name to type), with an explainer line, a counter and an inline error. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="vertical" android:paddingStart="24dp" android:paddingEnd="24dp" android:paddingTop="8dp">
+
+    <TextView android:id="@+id/prompt_message" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:textAppearance="@style/Text.Muted" android:textSize="14sp" android:visibility="gone" />
+
+    <com.google.android.material.textfield.TextInputLayout android:id="@+id/prompt_layout"
+        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp"
+        style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+        app:counterEnabled="true" app:errorEnabled="true">
+        <com.google.android.material.textfield.TextInputEditText android:id="@+id/prompt_input"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="18sp" android:singleLine="true" android:imeOptions="actionDone"
+            android:importantForAutofill="no" />
+    </com.google.android.material.textfield.TextInputLayout>
+</LinearLayout>

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "Text home": who, what, optional location, an honest counter and who can read it. -->
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent" android:layout_height="wrap_content">
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:paddingStart="24dp" android:paddingEnd="24dp" android:paddingBottom="24dp">
+
+        <com.google.android.material.bottomsheet.BottomSheetDragHandleView
+            android:layout_width="match_parent" android:layout_height="wrap_content" />
+
+        <TextView android:id="@+id/sheet_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="@string/net_th_title" android:textAppearance="@style/Text.Title" android:textSize="20sp" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp"
+            android:text="@string/net_th_who" android:textSize="14sp" android:textColor="@color/text_muted" />
+
+        <com.google.android.material.chip.ChipGroup android:id="@+id/chips"
+            android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+            app:singleSelection="true" app:chipSpacingHorizontal="8dp" />
+
+        <com.google.android.material.textfield.TextInputLayout android:id="@+id/to_layout"
+            android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+            android:hint="@string/net_th_to_hint" app:errorEnabled="false">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/to"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:inputType="textEmailAddress" android:maxLines="1" android:maxLength="120"
+                android:importantForAutofill="no" android:textAlignment="viewStart" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout android:id="@+id/name_layout"
+            android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+            android:hint="@string/net_th_name_hint">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/name"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:inputType="textPersonName|textCapWords" android:maxLines="1" android:maxLength="40"
+                android:importantForAutofill="no" android:textAlignment="viewStart" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout android:id="@+id/msg_layout"
+            android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+            android:hint="@string/net_th_msg_hint">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/msg"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:inputType="textMultiLine|textCapSentences" android:minLines="2" android:maxLines="6"
+                android:gravity="top|start" android:maxLength="1000" android:importantForAutofill="no"
+                android:textAlignment="viewStart" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <TextView android:id="@+id/counter" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="4dp" android:gravity="end" android:textSize="12.5sp" android:textColor="@color/text_muted"
+            android:accessibilityLiveRegion="polite" />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+            android:orientation="horizontal" android:gravity="center_vertical" android:minHeight="56dp">
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                android:orientation="vertical">
+                <TextView android:id="@+id/loc_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:text="@string/net_th_add_loc" android:textSize="15sp" android:textColor="@color/text" />
+                <TextView android:id="@+id/loc_sub" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:textSize="12.5sp" android:textColor="@color/text_muted" android:accessibilityLiveRegion="polite" />
+            </LinearLayout>
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/add_loc"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:minHeight="48dp"
+                android:layout_marginStart="12dp" android:saveEnabled="false" />
+        </LinearLayout>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp"
+            android:text="@string/net_th_written_note" android:textSize="12.5sp" android:textColor="@color/text_muted" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp"
+            android:background="@drawable/bg_net_warn" android:padding="12dp"
+            android:text="@string/net_th_disclosure" android:textSize="13.5sp" android:textColor="@color/warn_text" />
+
+        <com.google.android.material.button.MaterialButton android:id="@+id/send_group"
+            android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp"
+            android:text="@string/net_th_send_group" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/send_mine"
+            android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+            android:text="@string/net_th_send_mine" style="@style/Widget.Hopline.Button.Quiet" android:visibility="gone" />
+    </LinearLayout>
+</androidx.core.widget.NestedScrollView>

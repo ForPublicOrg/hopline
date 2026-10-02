@@ -28,7 +28,7 @@
             android:text="@string/whats_your_name" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text" />
         <EditText android:id="@+id/name" android:layout_width="match_parent" android:layout_height="56dp"
             android:layout_marginTop="8dp" android:background="@drawable/bg_input_pill"
-            android:hint="@string/name_hint" android:inputType="textPersonName|textCapWords" android:maxLength="20"
+            android:hint="@string/name_hint" android:inputType="textPersonName|textCapWords" android:maxLength="25"
             android:textSize="18sp" android:textColor="@color/text" android:textColorHint="@color/text_faint"
             android:paddingStart="22dp" android:paddingEnd="22dp" android:singleLine="true" android:imeOptions="actionDone"
             android:importantForAutofill="no" />

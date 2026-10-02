@@ -63,18 +63,43 @@ one tap stops it, and it stops itself when the time is up.
 hop the mesh like photos do; the play bar honestly fills in as the pieces arrive.
 
 **Replies, reactions, @mentions** — swipe any message right to reply with a quote (tap the
-quote to jump back to the original). Long-press for quick 👍 ❤️ 😂 😮 😢 🙏 reactions — tap the
-pill under a bubble to see who reacted. Type `@` to mention someone by name; being mentioned
-always buzzes, even for messages that arrive as old backlog.
+quote to jump back to the original). Long-press any message — text, photo, file, voice note or
+pin — and a reaction bar springs up over it: 👍 ❤️ 😂 😮 😢 🙏, or **+** for every emoji. Double-tap
+a bubble to ❤️ it. The pill under a bubble shows the top reactions and a count; tap it to see who
+reacted (tap your own to take it back). You get a notification when someone reacts to your
+message. Type `@` to mention someone by name; being mentioned always buzzes, even for messages
+that arrive as old backlog.
+
+**Names** — change your name any time (Settings, or the "You" row in People): everyone sees the
+new name, on your old messages too. Tap the group chat's header for **Group info**: rename the
+group for everyone (a "Asha renamed the group" line appears in the chat, and phones that were out
+of range pick it up when they come back), mute it, see who's in it, or clear the chat.
+
+**Tidy chats** — long-press for *Reply privately*, *Copy*, *Save to phone*, *Share*, *Info* and
+*Delete for me*. Mute a chat for 8 hours, a week or always (being @mentioned still gets through). A chat opens
+at the first message you haven't read, with an "unread messages" marker — so backlog that hopped in
+after a reunion is never skipped. Reply or mark as read straight from the notification.
 
 **More than one group** — Home shows every group you've saved. The radio serves one group at a
 time; tap a paused group to switch. Nothing is deleted when you switch — each group keeps its
 own history, unread counts and files.
 
-**Shared internet** — if **anyone** in the group has signal, everyone can use a sliver of it:
-read a web page as plain text, or send an SMS/email home through the friend's phone. Answers hop
-back and appear in the group chat for all. Your own phone shares the same way only while the
-"Share my internet" switch is on — it only ever spends a few KB.
+**Shared internet** — if **anyone** in the group gets signal, everyone can use a sliver of it:
+
+- **Weather here** — one tap. Your GPS works with no signal; the phone with signal fetches a
+  3-day forecast for exactly where you stand (storms, snow and rain windows called out).
+- **Text home** — "I'm OK" to Mom, with your location and the time you wrote it. Any phone with
+  even one bar of plain mobile service can send it — no data needed — and its owner taps Send.
+- **Look it up / read a page** — type a question or paste a link. Pages come back as clean,
+  readable text with their links numbered, so you can ask for the next page with one tap.
+
+Ask any time, even when nobody has signal: the request travels with the group like a message, and
+the first phone that gets signal — maybe tomorrow on the ridge, maybe your own — picks it up. If
+that phone goes quiet, another takes over (a text home waits for you to say so, so Mom never gets
+it twice). The answer comes back **only to you** (share it to the group with one
+tap if it's useful to everyone). Your own phone helps only while "Share my internet" is on, within
+a daily allowance you choose (5 MB by default — texts home cost no data and carry on after it runs
+out), never while roaming unless you allow it, and you can see exactly what it fetched and for whom.
 
 ## Built for a crowd, not just a trek
 
@@ -109,13 +134,23 @@ the group grows, and every phone follows the same rules on its own:
   breaking and re-forming still deliver everything — a person walking between two groups literally
   carries the backlog in their pocket, and a message can hop through any number of hand-offs.
 - In small groups, delivery receipts flow back the same way, so "Reached 7 of 9" is real, not a guess.
+- Names are last-writer-wins on the writer's own clock, so a rename can never be undone by old
+  messages arriving late through gap-fill. A group rename also counts the renames before it, so a
+  rename made after another always wins — even against a phone whose clock is hours off.
+- Shared-internet requests ride the same carried envelopes: an open request every phone carries,
+  a live "I'm on it" claim with a lease (so only one phone spends data, and a quiet one is replaced),
+  and a private, compressed answer that fits in one radio frame. 2.0/2.1 phones carry all of it
+  unchanged and are still served the old way.
+- Each link's handshake proof is bound to that exact Nearby connection, so nobody can relay one
+  member's proof to pose as them.
 - A foreground service keeps relaying with the screen off.
 
 The mesh logic is plain Kotlin with no Android dependencies, so the whole thing is tested on a
 laptop with simulated phones: `./gradlew test` runs a chain of five, breaks it, heals it, walks
 a courier between two separated groups, rejects a phone with the wrong code, drops a forged
-message, hops a photo down the line in pieces, routes an errand to the one phone with internet,
-and more.
+message, hops a photo down the line in pieces, carries a request to a phone that only gets signal
+later and hands it on when that phone goes quiet, refuses a relayed handshake, keeps a rename from
+being undone by old backlog, and more.
 
 ## Honest limits
 
@@ -124,8 +159,12 @@ and more.
   500 m apart with nobody between them are two separate groups until someone walks across.
 - **Android only.** iPhones can't join — Apple provides no equivalent of Nearby Connections to
   third-party apps, and iOS kills background radio work.
-- **No end-to-end encryption.** Anyone with the 3-word code is in the group. Treat it as a
-  group walkie-talkie, not a secure channel.
+- **No end-to-end encryption.** Anyone with the 3-word code is in the group. Private chats are
+  hidden from other people's screens, but every phone in the group carries them (unencrypted) to
+  pass them along. A determined person nearby with special tools could also guess a 3-word code from
+  the radio signal. Treat Hopline as a group walkie-talkie, not a secure channel.
+- **Shared internet is honest, not magic.** Pages are text only; sites that only work in a full
+  browser say so. The person whose phone has signal can see what you asked for.
 - **Bluetooth stacks are flaky.** Links sometimes take 10–60 s to form, and some phones refuse
   to link until Bluetooth is toggled off and on. Hopline retries and restarts the radio on its
   own, but it is not instant.
@@ -153,13 +192,15 @@ and more.
 
 ```
 app/src/main/java/app/hopline/
-  core/      Crypto (group key, signing), Words (the 3-word codes)
+  core/      Crypto (group key, signing), Words (the 3-word codes), Names (cleaning names from the air),
+             WebText / Weather / Search / SmsText / SafeUrl / HelperLimits (the shared-internet engines, pure Kotlin)
   mesh/      Model, Router (flooding, carry, receipts, files, errands), ChunkStore, NearbyTransport
   data/      Store (name, saved groups, read marks, per-group state)
   service/   Core (glue), MeshService (foreground), Blobs (photo shrinking, chunk disk store),
-             Errands (read a page / send out), Notifications
-  ui/        Home (all chats), Chat (group + private), People, Internet, Settings, onboarding
-app/src/test/ RouterTest — the simulated group
+             Errands + Fetch (run requests safely for the group), Cell (mobile service), Notifications
+  ui/        Home (all chats), Chat (group + private), MessageMenu + ReactionSheets, People, Group info,
+             Internet + Reader, Settings, onboarding
+app/src/test/ RouterTest, ProtocolTest, ErrandTest — the simulated group; CoreTextTest — the engines on saved pages
 ```
 
 ## License

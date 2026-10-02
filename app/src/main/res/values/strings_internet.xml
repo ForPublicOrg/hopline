@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shared internet hub (2.2). Every name starts with net_ so it can never collide with
+         another screen's strings file. Plain words only: no nodes, hops or envelopes on screen. -->
+
+    <!-- Who can help right now -->
+    <string name="net_status_title_starting">Starting…</string>
+    <string name="net_status_detail_starting">Hopline is getting your group ready. This takes a moment.</string>
+    <string name="net_status_title_you">Your phone has internet</string>
+    <string name="net_status_detail_you">Your own requests run right here, on your data.</string>
+    <string name="net_status_title_helpers">Help is nearby</string>
+    <string name="net_status_title_none">Nobody has signal right now</string>
+    <string name="net_status_detail_none">Ask anyway: your request travels with the group and runs the moment someone gets signal.</string>
+    <string name="net_status_you_text">Your phone can send texts itself.</string>
+    <string name="net_status_private">Answers come back to you alone, not to the group chat.</string>
+    <string name="net_helper_both">%1$s\'s phone can look things up and send texts</string>
+    <string name="net_helper_look">%1$s\'s phone can look things up</string>
+    <string name="net_helper_texts">%1$s\'s phone can send texts</string>
+    <string name="net_helper_mail">%1$s\'s phone can send emails</string>
+    <string name="net_helper_legacy">%1$s\'s phone has internet (older Hopline)</string>
+    <string name="net_helper_more">+%1$d more</string>
+
+    <!-- Opened from a notification of a group that isn't on the radio -->
+    <string name="net_other_group">This is from “%1$s”, which isn\'t on the radio right now.</string>
+    <string name="net_other_group_unnamed">This is from another of your groups, which isn\'t on the radio right now.</string>
+    <string name="net_other_group_gone">That\'s from a group that isn\'t on this phone any more.</string>
+    <string name="net_switch_to_it">Switch to it</string>
+    <string name="net_not_now">Not now</string>
+
+    <!-- Ask -->
+    <string name="net_ask_title">Ask the internet</string>
+    <string name="net_ask_hint">Search or paste a link</string>
+    <string name="net_wx_title">Weather here</string>
+    <string name="net_wx_sub">Today and the next days, for where you stand</string>
+    <string name="net_wx_finding">Finding where you are… Tap to stop.</string>
+    <string name="net_home_title">Text home</string>
+    <string name="net_home_sub">“I\'m OK” by SMS, through a phone with signal</string>
+    <string name="net_starting">Hopline is starting — try again in a moment.</string>
+    <string name="net_bad_link">That link can\'t be read through a friend\'s phone. Only public web pages work.</string>
+    <string name="net_query_long">That\'s a long search — keep it under %1$d characters.</string>
+    <string name="net_too_long">That request is too long to travel with the group. Make it shorter.</string>
+    <string name="net_asked_here">Asked — your phone is getting it now.</string>
+    <string name="net_asked_helper">Asked — %1$s\'s phone can do it.</string>
+    <string name="net_asked_waiting">Asked. It travels with the group until a phone with signal picks it up.</string>
+
+    <!-- Weather -->
+    <string name="net_wx_no_fix_title">Couldn\'t find where you are</string>
+    <string name="net_wx_no_fix_body">Ask for the weather where the helper\'s phone is instead? That\'s fine if they\'re close by.</string>
+    <string name="net_wx_loc_off">Your phone\'s location is off. Turn it on, or ask for the weather where the helper\'s phone is?</string>
+    <string name="net_wx_denied">Without your location, the helper\'s phone uses where it is — fine if they\'re close by.</string>
+    <string name="net_wx_ask_anyway">Ask anyway</string>
+    <string name="net_wx_stopped">Stopped looking for your position.</string>
+
+    <!-- Requests for this phone (helper side) -->
+    <string name="net_outbox_title">Requests for your phone</string>
+    <string name="net_outbox_hint">Your phone has signal. Messages opens with this filled in — you just tap send.</string>
+    <string name="net_outbox_hint_mail">Your phone has internet. Your email app opens with this filled in — you just tap send.</string>
+    <string name="net_outbox_did_it_send">Did it send? %1$s is waiting to hear.</string>
+    <string name="net_outbox_open_sms">Open Messages</string>
+    <string name="net_outbox_open_mail">Open email</string>
+    <string name="net_outbox_open_again">Open again</string>
+    <string name="net_outbox_yes">Yes, sent</string>
+    <string name="net_outbox_no">No</string>
+    <string name="net_outbox_not_yet">Not yet</string>
+    <string name="net_prompt_title_sms">Did your text to %1$s send?</string>
+    <string name="net_prompt_title_mail">Did your email to %1$s send?</string>
+    <string name="net_prompt_body">%1$s is waiting to hear. If it didn\'t go, another phone can try.</string>
+    <string name="net_no_send_app">No app on this phone can send it. Copy the number and the message instead?</string>
+    <string name="net_no_mail_app">No email app on this phone can send it. Copy the address and the message instead?</string>
+    <string name="net_handed_back">Handed back — another phone can send it.</string>
+    <string name="net_thanks_sent">Thanks! %1$s will see that it was sent.</string>
+    <string name="net_outbox_gone">That request was already taken care of.</string>
+    <string name="net_outbox_to">To %1$s</string>
+    <string name="net_outbox_bad_to">This isn\'t a number or email address a phone can message, so it can\'t be sent from here.</string>
+    <string name="net_copied_both">Number and message copied</string>
+    <string name="net_copied_mail">Address and message copied</string>
+    <!-- The subject line of an email copied to send by hand. -->
+    <string name="net_copy_subject">Subject: %1$s</string>
+
+    <!-- My requests -->
+    <string name="net_mine_title">Your requests</string>
+    <string name="net_mine_empty">Nothing asked yet. Answers come back to you alone — not to the group chat.</string>
+    <string name="net_st_waiting">Waiting for a phone with signal · travels with the group · expires %1$s</string>
+    <string name="net_st_waiting_short">Waiting for a phone with signal · travels with the group</string>
+    <string name="net_st_asking">Asking %1$s\'s phone…</string>
+    <string name="net_st_running_here">Getting it on your phone…</string>
+    <string name="net_st_on_it">%1$s\'s phone is on it</string>
+    <string name="net_st_sending">%1$s is sending your text</string>
+    <string name="net_st_sending_mail">%1$s is sending your email</string>
+    <string name="net_st_quiet">%1$s\'s phone went quiet — they may already have sent it</string>
+    <string name="net_st_done">✓ Answered via %1$s · %2$s</string>
+    <string name="net_st_done_here">✓ Answered on your phone · %1$s</string>
+    <string name="net_st_done_public">✓ Answered via %1$s · %2$s · also in the group chat</string>
+    <string name="net_st_sent">✓ Sent by %1$s · %2$s</string>
+    <string name="net_st_cost">%1$s of their data</string>
+    <string name="net_st_failed">✕ %1$s</string>
+    <string name="net_st_expired">Expired — nobody got signal in time</string>
+    <string name="net_st_cancelled">Cancelled</string>
+    <string name="net_st_public_wait">Will ask %1$s\'s phone shortly — the answer will appear in the group chat</string>
+    <string name="net_st_public_asked">Asked %1$s\'s phone (older Hopline) — the answer will appear in the group chat</string>
+    <string name="net_legacy_offer">Only %1$s\'s phone has internet, and it runs an older Hopline — its answer would appear in the group chat for everyone. Ask anyway?</string>
+    <string name="net_legacy_offer_btn">Ask %1$s</string>
+    <string name="net_legacy_cant">%1$s\'s phone has signal but an older Hopline. This needs Hopline 2.2 on the phone with signal — your request stays open until one does.</string>
+    <string name="net_ask_again">Ask again</string>
+    <string name="net_ask_someone_else">Ask someone else</string>
+    <string name="net_run_here">Get it on my phone</string>
+    <string name="net_ask_else_title">Ask someone else?</string>
+    <string name="net_ask_else_body">If %1$s already sent it, %2$s might get it twice.</string>
+    <string name="net_cancel_request">Cancel request</string>
+    <string name="net_cancel_send_body">Cancel your text to %1$s? If %2$s already sent it, it can\'t be taken back.</string>
+    <string name="net_keep">Keep it</string>
+    <string name="net_cancelled_toast">Request cancelled</string>
+    <string name="net_read">Read</string>
+    <string name="net_copy_answer">Copy answer</string>
+    <string name="net_new">New</string>
+    <string name="net_more_for">More options for %1$s</string>
+    <string name="net_tomorrow_at">tomorrow %1$s</string>
+    <string name="net_yesterday_at">yesterday %1$s</string>
+    <string name="net_someone">Someone</string>
+
+    <!-- Why something couldn't be done -->
+    <string name="net_why_bad_url">That isn\'t a web address a phone can open.</string>
+    <string name="net_why_unsafe">That address is on a private network, so a friend\'s phone won\'t open it.</string>
+    <string name="net_why_bad_type">That link isn\'t a text page (a PDF, a picture or a video) — Hopline only reads text.</string>
+    <string name="net_why_too_big">That page is too big to carry over the group.</string>
+    <string name="net_why_needs_browser">This site only works in a full web browser. Try a search instead.</string>
+    <string name="net_why_no_results">Nothing found — try fewer or different words.</string>
+    <string name="net_why_no_location">Neither phone knew where it was — try again once your GPS has a fix.</string>
+    <string name="net_why_unsupported">The phone that tried can\'t do this kind of request.</string>
+    <string name="net_why_not_found">That page doesn\'t exist.</string>
+    <string name="net_why_refused">The site refused.</string>
+    <string name="net_why_redirect">The site sends visitors somewhere Hopline can\'t open.</string>
+    <string name="net_why_empty">There was nothing to search for.</string>
+    <string name="net_why_generic">It couldn\'t be done.</string>
+
+    <!-- Your phone helps -->
+    <string name="net_help_title">Your phone helps</string>
+    <string name="net_help_switch">Help my group when I have signal</string>
+    <string name="net_help_sub">Friends\' requests run on your phone: pages and look-ups use a little of your data; texts open your Messages app for you to send.</string>
+    <string name="net_help_off">Off — your phone won\'t use its data or texts for anyone else.</string>
+    <string name="net_help_waiting">On — your phone helps as soon as it has signal.</string>
+    <string name="net_help_texts_only">Helping — your phone can send texts for the group (no data right now).</string>
+    <string name="net_help_using">Helping · %1$s of %2$s used today</string>
+    <string name="net_help_using_nolimit">Helping · %1$s used today</string>
+    <string name="net_allowance">Daily allowance for others</string>
+    <string name="net_mb">%1$d MB</string>
+    <string name="net_no_limit">No limit</string>
+    <string name="net_roaming">Also while roaming</string>
+    <string name="net_roaming_sub">Roaming data can cost a lot, so this stays off unless you turn it on.</string>
+    <string name="net_log_title">What your phone did</string>
+    <string name="net_log_empty">Nothing yet. When your phone helps someone, it shows here.</string>
+    <string name="net_log_for">for %1$s</string>
+    <string name="net_log_more">Show all (%1$d)</string>
+    <string name="net_log_less">Show less</string>
+    <string name="net_log_ok">Done</string>
+    <string name="net_log_failed">Couldn\'t</string>
+    <plurals name="net_log_today">
+        <item quantity="one">Today: %1$d request · %2$s of data</item>
+        <item quantity="other">Today: %1$d requests · %2$s of data</item>
+    </plurals>
+
+    <!-- Text home sheet -->
+    <string name="net_th_title">Text home</string>
+    <string name="net_th_who">Who should hear from you?</string>
+    <string name="net_th_pick">Pick a contact</string>
+    <string name="net_th_to_hint">Mobile number or email</string>
+    <string name="net_th_name_hint">Name, like Mom (optional)</string>
+    <string name="net_th_msg_hint">Message</string>
+    <string name="net_th_default">I\'m OK. %1$s, with my group, no signal here.</string>
+    <string name="net_th_add_loc">Add my location</string>
+    <string name="net_th_loc_ready">A map link to where you are (position %1$s)</string>
+    <string name="net_th_loc_off_hint">Adds a map link to where you are</string>
+    <string name="net_th_loc_finding">Finding your position…</string>
+    <string name="net_th_loc_none">No recent position — it goes without one</string>
+    <string name="net_th_near">Near %1$s</string>
+    <string name="net_th_written">Written %1$s</string>
+    <string name="net_th_written_note">Hopline adds the time you wrote it, so a late text doesn\'t mislead.</string>
+    <string name="net_th_counter_sms">%1$d SMS · %2$d/%3$d</string>
+    <string name="net_th_counter_too_long">Too long: %1$d SMS. Keep it to %2$d.</string>
+    <string name="net_th_counter_mail">%1$d/%2$d</string>
+    <string name="net_th_disclosure">Whoever sends it, and the phones in your group, can read this.</string>
+    <string name="net_th_send_mine">Send from my phone</string>
+    <string name="net_th_send_group">Ask the group to send it</string>
+    <string name="net_th_err_to">Add a mobile number or an email</string>
+    <string name="net_th_err_number">Use a full mobile number, like +91 98123 45678</string>
+    <string name="net_th_err_email">That email address doesn\'t look right</string>
+    <string name="net_th_err_msg">Write a message</string>
+    <string name="net_th_err_long">Too long for %1$d texts — shorten it a little</string>
+    <string name="net_th_err_long_mail">Too long — keep it under %1$d characters</string>
+    <string name="net_th_remove_contact">Remove %1$s from this list?</string>
+    <string name="net_th_remove">Remove</string>
+    <string name="net_th_no_contacts_app">No contacts app found — type the number instead.</string>
+    <string name="net_th_contact_no_number">Couldn\'t read a number from that contact.</string>
+    <string name="net_th_subject">Message from %1$s</string>
+    <string name="net_th_no_sms_app">No messaging app on this phone can send it.</string>
+    <string name="net_th_contact_desc">Send to %1$s. Long-press to remove.</string>
+
+    <!-- Reader -->
+    <string name="net_kind_page">Web page</string>
+    <string name="net_kind_search">Search</string>
+    <string name="net_kind_weather">Weather</string>
+    <string name="net_kind_text">Text home</string>
+    <string name="net_kind_email">Email</string>
+    <string name="net_kind_other">Answer</string>
+    <string name="net_reader_via">via %1$s\'s phone</string>
+    <string name="net_reader_here">on your phone</string>
+    <string name="net_reader_cost">used %1$s of their data</string>
+    <string name="net_reader_cost_mine">used %1$s of your data</string>
+    <string name="net_reader_part">Part %1$d of %2$d</string>
+    <string name="net_reader_more">Read more · part %1$d of %2$d</string>
+    <string name="net_reader_share">Share to group</string>
+    <string name="net_reader_share_title">Share with everyone in “%1$s”?</string>
+    <string name="net_reader_share_group">Share with everyone in your group?</string>
+    <string name="net_reader_shared">Shared to the group chat</string>
+    <string name="net_reader_open_chat">Open chat</string>
+    <string name="net_reader_links">Links on this page</string>
+    <string name="net_reader_results">Results</string>
+    <string name="net_reader_link_title">Read this page?</string>
+    <string name="net_reader_link_via">Read it as text through %1$s\'s phone? It uses some of their data.</string>
+    <string name="net_reader_link_mine">Read it as text? It uses a little of your data.</string>
+    <string name="net_reader_link_wait">Nobody has signal right now. Ask anyway? It travels with the group until someone does.</string>
+    <string name="net_reader_link_read">Read it</string>
+    <string name="net_reader_open_browser">Open in browser</string>
+    <string name="net_reader_asked">Asked — it will show up in Shared internet.</string>
+    <string name="net_reader_view">View</string>
+    <string name="net_reader_gone">That answer isn\'t on this phone any more.</string>
+    <string name="net_reader_public">An older Hopline answered this, so it also appeared in the group chat.</string>
+    <string name="net_reader_waiting">Still waiting for the answer.</string>
+    <string name="net_reader_source">Source: %1$s</string>
+    <string name="net_reader_results_from">Results from %1$s</string>
+    <string name="net_reader_share_via">(via %1$s\'s phone)</string>
+    <string name="net_reader_copy_desc">Copy the text</string>
+    <string name="net_reader_share_desc">Share to the group chat</string>
+    <string name="net_reader_no_browser">No browser on this phone can open it.</string>
+    <string name="net_link_desc">Link %1$d: %2$s</string>
+    <string name="net_link_num" translatable="false">[%1$d]</string>
+    <string name="net_emoji_weather" translatable="false">⛅</string>
+    <string name="net_emoji_text" translatable="false">💬</string>
+    <string name="net_run_here_no_signal">Your phone lost its signal again — it\'s still waiting for a friend.</string>
+    <string name="net_run_here_taken">A friend\'s phone is already getting it.</string>
+    <string name="net_remove_request">Remove from list</string>
+</resources>

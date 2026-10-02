@@ -20,7 +20,10 @@ LOCATION - EVEN LIVE
 Send where you are (GPS works with no signal) or a meeting point from coordinates or a Google Maps link. Everyone sees how far the pin is and which way ("1.2 km away, north-east of you"); tapping opens the maps app. Or share live location for 15 minutes, an hour or 8 hours - it rides the beacons phones already send, and the People screen shows everyone who is sharing, updating as you walk.
 
 REPLIES, REACTIONS, MENTIONS
-Swipe a message to reply with a quote. Long-press for quick emoji reactions. Type @ to mention someone - being mentioned always buzzes, even when the message arrives late as backlog.
+Swipe a message to reply with a quote. Long-press any message for a reaction bar right over it - or + for every emoji - and double-tap to send a heart. Tap the reactions under a message to see who reacted. Type @ to mention someone - being mentioned always buzzes, even when the message arrives late as backlog.
+
+NAMES, MUTE, TIDY CHATS
+Change your name any time and everyone sees it, on your old messages too. Rename the group for everyone from Group info. Mute a chat, delete a message for yourself, clear a chat, reply privately, and reply straight from the notification. Chats open at the first unread message.
 
 MORE THAN ONE GROUP
 Keep a group for the trek, one for the family, one for the festival crew. Switching is one tap, and each group keeps its own history, unread counts and files.
@@ -32,12 +35,12 @@ BUILT FOR A FEW FRIENDS OR A CROWD
 In a small group every phone confirms every message. In a crowd of hundreds or thousands the phones automatically stop chattering about receipts, slow their "I am here" beacons, and switch photos off, so the radios carry your words instead of overhead.
 
 SHARED INTERNET
-If anyone in the group gets signal, everyone can use a sliver of it: read a web page as plain text, or send an SMS/email home through the friend's phone. The answer hops back to the whole group. Your phone only shares while the "Share my internet" switch is on, and it only ever spends a few KB.
+If anyone in the group gets signal, everyone can use a sliver of it: the weather for exactly where you are, a text home ("I'm OK", with your location) sent by any phone with even one bar of mobile service, a quick look-up, or a web page as clean readable text. Ask even when nobody has signal - the request travels with the group and runs the moment someone gets it; if that phone goes quiet, another takes over. Answers come back only to you. Your phone helps only while "Share my internet" is on, within a daily allowance you choose, and never while roaming unless you allow it.
 
 LIMITS, STATED PLAINLY
 - Each hop is Bluetooth range: about 20-40 m in the open.
 - Android only. iPhones cannot join.
-- No end-to-end encryption - anyone with the 3-word code is in the group.
+- No end-to-end encryption - anyone with the 3-word code is in the group, and every phone in it carries private chats to pass them along.
 - Bluetooth is flaky; links can take up to a minute to form.
 - Media is deliberately small: photos ~0.3 MB, files up to 2 MB.
 

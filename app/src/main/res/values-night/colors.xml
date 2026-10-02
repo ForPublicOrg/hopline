@@ -5,7 +5,6 @@
     <color name="ember">#FF8A5C</color>
     <color name="ember_deep">#FF6B35</color>
     <color name="ember_soft">#33231B</color>
-    <color name="ink">#ECEFF4</color>
 
     <color name="bg">#10141E</color>
     <color name="surface">#1A2030</color>
@@ -57,6 +56,10 @@
 
     <color name="unread">#FF6B35</color>
     <color name="unread_text">#1A1109</color>
+
+    <color name="scrim">#99000000</color>
+    <color name="reaction_mine_bg">#4A2A1E</color>
+    <color name="reaction_mine_stroke">#7A3F28</color>
 
     <color name="launcher_bg">#1A2130</color>
 </resources>

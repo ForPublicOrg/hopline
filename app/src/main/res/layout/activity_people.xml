@@ -8,20 +8,17 @@
         android:id="@+id/toolbar" android:layout_width="match_parent" android:layout_height="?attr/actionBarSize"
         android:background="@color/surface" app:title="@string/people" app:titleTextColor="@color/text"
         app:subtitleTextColor="@color/text_muted"
-        app:navigationIcon="@drawable/ic_back" app:navigationIconTint="@color/text" android:elevation="2dp" />
+        app:navigationIcon="@drawable/ic_back" app:navigationIconTint="@color/text"
+        app:navigationContentDescription="@string/back" android:elevation="2dp" />
 
-    <EditText android:id="@+id/search" android:layout_width="match_parent" android:layout_height="46dp"
+    <EditText android:id="@+id/search" android:layout_width="match_parent" android:layout_height="48dp"
         android:layout_marginStart="16dp" android:layout_marginEnd="16dp" android:layout_marginTop="10dp" android:layout_marginBottom="4dp"
         android:background="@drawable/bg_field" android:hint="@string/search_people" android:textSize="15sp"
         android:textColor="@color/text" android:textColorHint="@color/text_faint"
-        android:paddingStart="16dp" android:paddingEnd="16dp" android:inputType="text" android:maxLines="1"
+        android:paddingStart="16dp" android:paddingEnd="16dp" android:inputType="textPersonName" android:maxLines="1" android:minHeight="48dp"
         android:importantForAutofill="no" android:visibility="gone" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/list" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
         android:paddingTop="6dp" android:clipToPadding="false" />
-
-    <TextView android:id="@+id/empty" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:padding="32dp" android:gravity="center" android:text="@string/person_empty"
-        android:textAppearance="@style/Text.Muted" android:visibility="gone" />
 </LinearLayout>

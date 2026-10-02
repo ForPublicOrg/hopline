@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Daily-allowance choices: the chosen one sits on a warm ember wash. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_checked="true" android:color="@color/ember_soft" />
+    <item android:color="@color/surface" />
+</selector>

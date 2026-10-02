@@ -4,4 +4,6 @@
     <files-path name="blobs" path="blobs/" />
     <!-- Camera shots on their way to being sent. -->
     <cache-path name="camera" path="camera/" />
+    <!-- Copies under their real names, handed to another app to share or open (swept after a day). -->
+    <cache-path name="share" path="share/" />
 </paths>

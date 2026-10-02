@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="unread_muted_bg">#4A5266</color>
+    <color name="unread_muted_text">#ECEFF4</color>
+
+    <color name="badge_info_bg">#7CA9FF</color>
+    <color name="badge_info_text">#10141E</color>
+</resources>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Screens (Home, People, Group info). Night twins in values-night/colors_screens.xml. -->
+
+    <!-- A muted chat's unread badge: still there, but grey, like every chat app -->
+    <color name="unread_muted_bg">#7D8591</color>
+    <color name="unread_muted_text">#FFFFFF</color>
+
+    <!-- "New answers" on the Shared internet row: blue = the outside world -->
+    <color name="badge_info_bg">#2563EB</color>
+    <color name="badge_info_text">#FFFFFF</color>
+</resources>

@@ -18,12 +18,26 @@
             android:text="@string/perm_title" android:textAppearance="@style/Text.Display" android:textSize="26sp" android:gravity="center" />
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp"
             android:text="@string/perm_body" android:textAppearance="@style/Text.Muted" android:textSize="15sp" android:gravity="center" />
+        <!-- Android 8–12L: Bluetooth scanning needs Location too; say so before the system asks -->
+        <TextView android:id="@+id/loc_note" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="10dp" android:text="@string/perm_location_note" android:textAppearance="@style/Text.Muted"
+            android:textSize="14sp" android:gravity="center" android:visibility="gone" />
+
+        <!-- Google Play services out of date, turned off or updating: fixable, so say how -->
+        <LinearLayout android:id="@+id/play_panel" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:layout_marginTop="20dp" android:background="@drawable/bg_warn_card"
+            android:padding="16dp" android:visibility="gone">
+            <TextView android:id="@+id/play_text" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textColor="@color/warn_text" android:textSize="15sp" android:accessibilityLiveRegion="polite" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/play_btn" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="12dp" />
+        </LinearLayout>
 
         <com.google.android.material.button.MaterialButton android:id="@+id/allow" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:layout_marginTop="24dp" android:text="@string/perm_allow" />
 
         <TextView android:id="@+id/denied" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="16dp" android:text="@string/perm_denied" android:textColor="@color/danger"
+            android:layout_marginTop="16dp" android:textColor="@color/danger" android:accessibilityLiveRegion="polite"
             android:gravity="center" android:visibility="gone" />
         <com.google.android.material.button.MaterialButton android:id="@+id/settings" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/open_settings"
@@ -38,7 +52,7 @@
                 <TextView android:id="@+id/bt_text" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
                     android:textAppearance="@style/Text.Body" />
                 <com.google.android.material.button.MaterialButton android:id="@+id/bt_btn" android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" android:minHeight="40dp" android:text="@string/turn_on"
+                    android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/turn_on"
                     style="@style/Widget.Hopline.Button.Quiet" />
             </LinearLayout>
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal"
@@ -46,7 +60,7 @@
                 <TextView android:id="@+id/wifi_text" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
                     android:textAppearance="@style/Text.Body" />
                 <com.google.android.material.button.MaterialButton android:id="@+id/wifi_btn" android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" android:minHeight="40dp" android:text="@string/turn_on"
+                    android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/turn_on"
                     style="@style/Widget.Hopline.Button.Quiet" />
             </LinearLayout>
             <LinearLayout android:id="@+id/loc_row" android:layout_width="match_parent" android:layout_height="wrap_content"
@@ -54,7 +68,7 @@
                 <TextView android:id="@+id/loc_text" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
                     android:textAppearance="@style/Text.Body" />
                 <com.google.android.material.button.MaterialButton android:id="@+id/loc_btn" android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" android:minHeight="40dp" android:text="@string/turn_on"
+                    android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/turn_on"
                     style="@style/Widget.Hopline.Button.Quiet" />
             </LinearLayout>
         </LinearLayout>

@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The chat screen (2.2): reactions, the message menu, unread divider, mute/clear, drafts, delivery honesty. -->
+<resources>
+    <!-- Days and times -->
+    <string name="chat_today">Today</string>
+    <string name="chat_yesterday">Yesterday</string>
+    <string name="chat_ago_never">never</string>
+    <string name="chat_ago_now">just now</string>
+    <plurals name="chat_ago_min">
+        <item quantity="one">%d min ago</item>
+        <item quantity="other">%d min ago</item>
+    </plurals>
+    <plurals name="chat_ago_hours">
+        <item quantity="one">%d h ago</item>
+        <item quantity="other">%d h ago</item>
+    </plurals>
+    <plurals name="chat_ago_days">
+        <item quantity="one">%d day ago</item>
+        <item quantity="other">%d days ago</item>
+    </plurals>
+    <string name="chat_left_h">%1$d h</string>
+    <string name="chat_left_h_min">%1$d h %2$d min</string>
+    <string name="chat_left_min">%1$d min</string>
+    <string name="chat_details_sent">Sent %1$s at %2$s</string>
+
+    <!-- Header, menu -->
+    <string name="chat_your_group">Your group</string>
+    <string name="chat_starting">Starting…</string>
+    <string name="chat_group_info">Group info</string>
+    <string name="chat_muted_desc">notifications muted</string>
+    <string name="chat_mute_title">Mute notifications</string>
+    <string name="chat_mute_8h">For 8 hours</string>
+    <string name="chat_mute_week">For 1 week</string>
+    <string name="chat_mute_always">Always</string>
+    <string name="chat_unmute">Unmute notifications</string>
+    <string name="chat_muted">Notifications muted.</string>
+    <string name="chat_muted_group">Notifications muted. You\'ll still hear it when someone @mentions you.</string>
+    <string name="chat_unmuted">Notifications are back on.</string>
+    <string name="chat_clear">Clear chat</string>
+    <string name="chat_clear_title">Clear this chat?</string>
+    <string name="chat_clear_body">Every message and file in this chat is removed from this phone. Everyone else keeps theirs.</string>
+    <plurals name="chat_clear_unsent">
+        <item quantity="one">%d message of yours hasn\'t left this phone yet — it won\'t be sent.</item>
+        <item quantity="other">%d messages of yours haven\'t left this phone yet — they won\'t be sent.</item>
+    </plurals>
+
+    <!-- Another group's notification -->
+    <string name="chat_switch_body">That message is from “%1$s”. Your phone talks to one group at a time — switching moves it to that group. Nothing is deleted.</string>
+    <string name="chat_not_now">Not now</string>
+    <string name="chat_from_left_group">That message was from a group you\'ve left.</string>
+    <string name="chat_changed_not_sent">The chat changed — not sent.</string>
+
+    <!-- Lines in the chat -->
+    <plurals name="chat_unread_divider">
+        <item quantity="one">%d unread message</item>
+        <item quantity="other">%d unread messages</item>
+    </plurals>
+    <plurals name="chat_new_above">
+        <item quantity="one">%d new message above</item>
+        <item quantity="other">%d new messages above</item>
+    </plurals>
+    <plurals name="chat_jump_new_desc">
+        <item quantity="one">Jump to the latest — %d new message</item>
+        <item quantity="other">Jump to the latest — %d new messages</item>
+    </plurals>
+    <string name="chat_notice_renamed">%1$s renamed the group to “%2$s”</string>
+    <string name="chat_notice_renamed_you">You renamed the group to “%1$s”</string>
+    <string name="chat_system_via">🌐 Shared internet — via %1$s\'s phone</string>
+    <string name="chat_system_via_you">🌐 Shared internet — via your phone</string>
+
+    <!-- Banners -->
+    <string name="chat_sends_one_text">%1$s needs your signal to send a text · Open</string>
+    <string name="chat_sends_one_email">%1$s needs your signal to send an email · Open</string>
+    <plurals name="chat_sends_one_many">
+        <item quantity="one">%1$s needs your signal to send %2$d message · Open</item>
+        <item quantity="other">%1$s needs your signal to send %2$d messages · Open</item>
+    </plurals>
+    <plurals name="chat_sends_many">
+        <item quantity="one">%d friend needs your signal to send a message · Open</item>
+        <item quantity="other">%d friends need your signal to send messages · Open</item>
+    </plurals>
+    <string name="chat_live_banner_me_group">📡 Sharing your live location with the whole group · %1$s left — tap to stop</string>
+
+    <!-- Ticks and delivery -->
+    <string name="chat_tick_queued_desc">Waiting for a phone in range</string>
+    <string name="chat_tick_sent_desc">Sent</string>
+    <string name="chat_tick_some_desc">Reached some phones</string>
+    <string name="chat_tick_all_desc">Reached everyone</string>
+    <string name="chat_tick_delivered_desc">Delivered</string>
+    <string name="chat_tick_not_sent">Not sent</string>
+    <string name="chat_tick_not_sent_desc">Not sent — tap the message for details</string>
+    <string name="chat_tick_not_delivered">Not delivered</string>
+    <string name="chat_tick_not_delivered_desc">Not delivered — tap the message for details</string>
+    <string name="chat_status_not_sent">Not sent — no phone came in range within 48 hours, so it stopped trying. Tap Send again to try once more.</string>
+    <string name="chat_status_dm_not_delivered">Not delivered — %1$s\'s phone didn\'t confirm within 48 hours, and the phones carrying it have let it go. Tap Send again to try once more.</string>
+    <string name="chat_status_delivered">Delivered — %1$s\'s phone has it. ✓✓</string>
+    <string name="chat_status_on_way">On its way — handed to nearby phones, waiting for %1$s\'s phone to confirm.</string>
+    <string name="chat_status_sent">Sent.</string>
+    <string name="chat_status_big_group">Sent to the group. In a group this big, phones don\'t send individual confirmations — that would flood the radios.</string>
+    <plurals name="chat_status_reached">
+        <item quantity="one">Reached %1$d of %2$d phone.</item>
+        <item quantity="other">Reached %1$d of %2$d phones.</item>
+    </plurals>
+    <string name="chat_status_got">Got it: %1$s</string>
+    <string name="chat_status_waiting">Still waiting: %1$s</string>
+    <string name="chat_status_missed">Didn\'t reach: %1$s</string>
+    <string name="chat_send_again">Send again</string>
+    <string name="chat_resend_gone">That file isn\'t on this phone any more, so it can\'t be sent again.</string>
+
+    <!-- People's status line -->
+    <string name="chat_status_next_to_you">In range · right next to you</string>
+    <plurals name="chat_status_phones_away">
+        <item quantity="one">In range · %d phone away</item>
+        <item quantity="other">In range · %d phones away</item>
+    </plurals>
+    <string name="chat_status_out_of_range">Out of range · last heard %1$s</string>
+    <string name="chat_status_battery">%1$s · battery %2$d%%</string>
+    <string name="chat_status_live">📡 Live location · %1$s</string>
+
+    <!-- The message menu -->
+    <string name="chat_reply_privately">Reply privately</string>
+    <string name="chat_save_to_phone">Save to phone</string>
+    <string name="chat_delete_for_me">Delete for me</string>
+    <string name="chat_delete_title">Delete this message?</string>
+    <string name="chat_delete_body">It\'s removed from this phone only. Everyone else keeps their copy.</string>
+    <string name="chat_delete_unsent">It hasn\'t left your phone yet, so deleting it means it won\'t be sent.</string>
+    <string name="chat_delete">Delete</string>
+    <string name="chat_clip_label">Message</string>
+    <string name="chat_emoji_too_long">That emoji is too long to send — pick another one.</string>
+
+    <!-- Reactions, accessibility -->
+    <string name="chat_reactions_desc">Reactions: %1$s.</string>
+    <string name="chat_reactions_desc_mine">You reacted %1$s.</string>
+    <string name="chat_reactions_desc_hint">Double tap to see who reacted.</string>
+    <plurals name="chat_reactors_tab_desc">
+        <item quantity="one">%2$d person reacted %1$s</item>
+        <item quantity="other">%2$d people reacted %1$s</item>
+    </plurals>
+    <string name="chat_a11y_options">React, reply and more</string>
+    <string name="chat_a11y_show_original">Show the original message</string>
+    <string name="chat_a11y_open_link">Open %1$s</string>
+    <string name="chat_photo_desc">Photo</string>
+    <string name="chat_photo_waiting_desc">Photo — %1$s</string>
+    <string name="chat_voice_play_desc">Play voice note, %1$s</string>
+    <string name="chat_voice_pause_desc">Pause voice note</string>
+    <string name="chat_voice_waiting_desc">Voice note — %1$s</string>
+    <string name="chat_voice_note">Voice note</string>
+    <string name="chat_voice_position">%1$s / %2$s</string>
+    <string name="chat_with_detail">%1$s · %2$s</string>
+    <string name="chat_menu_title">Message options</string>
+    <string name="chat_mention_desc">Mention %1$s</string>
+    <string name="chat_cancel_reply">Cancel reply</string>
+    <string name="chat_replying_to">Replying to %1$s: %2$s</string>
+
+    <!-- Composer, attach, files -->
+    <plurals name="chat_text_too_long">
+        <item quantity="one">A message can be up to %1$d character — the rest was left out.</item>
+        <item quantity="other">A message can be up to %1$d characters — the rest was left out.</item>
+    </plurals>
+    <string name="chat_attach_internet_sub">Weather, texts home, look-ups</string>
+    <string name="chat_camera_failed">Couldn\'t open the camera.</string>
+    <string name="chat_no_picker">No app on this phone can pick that.</string>
+    <string name="chat_file_empty">That file is empty.</string>
+    <string name="chat_file_unreadable">Couldn\'t read that file. If it lives in the cloud, download it to the phone first.</string>
+    <string name="chat_file_expired">Didn\'t arrive — no phone nearby carries it any more</string>
+    <string name="chat_no_app_for_link">No app on this phone can open that link.</string>
+
+    <!-- Location from a private chat -->
+    <string name="chat_live_share_group">Share live location with the group</string>
+    <string name="chat_live_share_group_sub">Everyone in “%1$s” sees where you are, not just %2$s</string>
+    <string name="chat_live_warn">Live location goes to everyone in “%1$s”, not only %2$s. Share it anyway?</string>
+    <string name="chat_live_share_anyway">Share</string>
+    <string name="chat_live_icon" translatable="false">📡</string>
+    <string name="chat_loc_privacy_dm">Only %1$s sees a place you send here.</string>
+    <string name="chat_share">Share</string>
+    <string name="chat_storage_full">Phone storage is almost full — free up some space to receive this.</string>
+</resources>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A soft caution box: "the answer would be public", "can't ask right now". -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/warn_bg" />
+    <corners android:radius="14dp" />
+</shape>

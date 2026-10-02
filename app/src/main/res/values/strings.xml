@@ -14,7 +14,6 @@
     <string name="perm_title">Let Hopline find phones near you</string>
     <string name="perm_body">Hopline links to your friends\' phones directly over Bluetooth and WiFi. Android calls this the “Nearby devices” permission.\n\nNothing leaves your group — there is no server.</string>
     <string name="perm_allow">Allow</string>
-    <string name="perm_denied">Hopline can\'t find other phones without this. Please open Settings and allow Nearby devices.</string>
     <string name="open_settings">Open Settings</string>
     <string name="turn_on">Turn on</string>
     <string name="continue_btn">Continue</string>
@@ -42,9 +41,7 @@
 
     <!-- Home -->
     <string name="chats">Chats</string>
-    <string name="group_chat">Group chat</string>
     <string name="everyone">Everyone in “%1$s”</string>
-    <string name="direct_messages">Private chats</string>
     <string name="other_groups">Other groups</string>
     <string name="paused_tap_to_switch">Paused — tap to connect</string>
     <string name="one_group_note">Hopline links to one group at a time. Tap a paused group to switch — its messages are kept.</string>
@@ -52,7 +49,6 @@
     <string name="switch_group_body">Your phone will leave the radio of the current group and start finding this one. Nothing is deleted.</string>
     <string name="switch_btn">Switch</string>
     <string name="add_group">New or existing group</string>
-    <string name="no_messages_yet">No messages yet</string>
     <string name="home_empty_title">Your group is ready</string>
     <string name="home_empty_body">Share the group code so friends can join. Phones find each other on their own — no hotspot, no pairing.</string>
 
@@ -66,6 +62,8 @@
     <string name="attach_file">File</string>
     <string name="attach_file_sub">Up to 2 MB — big files hop slowly</string>
     <string name="photo_label">📷 Photo</string>
+    <string name="photo_with_caption">📷 %1$s</string>
+    <string name="draft_label">Draft:</string>
     <string name="file_label">📎 File</string>
     <string name="location_label">📍 Location</string>
     <string name="voice_label">🎤 Voice note</string>
@@ -84,7 +82,15 @@
     <string name="someone">Someone</string>
     <string name="reply_you">You</string>
     <string name="reactions">Reactions</string>
-    <string name="reaction_hint">Tap your emoji on the message again to take it back.</string>
+    <string name="reactions_all">All %1$d</string>
+    <string name="tap_to_remove">Tap to remove</string>
+    <string name="choose_reaction">React with any emoji</string>
+    <string name="more_reactions">More reactions</string>
+    <string name="react_with_desc">React with %1$s</string>
+    <string name="react_remove_desc">Remove your %1$s reaction</string>
+    <string name="close_menu">Close menu</string>
+    <string name="message_info">Info</string>
+    <string name="reacted_to">%1$s reacted %2$s to “%3$s”</string>
     <string name="original_gone">That message isn\'t on this phone.</string>
     <string name="mentioned_you">Mentioned you</string>
 
@@ -136,7 +142,6 @@
     <string name="copied">Copied</string>
     <string name="message_details">Delivery details</string>
     <string name="alone_hint">Nobody in range right now. Messages you send will be delivered when a phone comes close.</string>
-    <string name="nobody_nearby">Looking for your group\'s phones…</string>
     <string name="invite_hint">Nobody here yet. Ask a friend to open Hopline and join with your code — phones find each other on their own.</string>
     <string name="show_invite">Show group code</string>
     <string name="out_of_range_dm">%1$s is out of range. Your message will be held and delivered when any phone reaches them.</string>
@@ -151,26 +156,8 @@
 
     <!-- Internet (was "The Outside World") -->
     <string name="internet_title">Shared internet</string>
-    <string name="internet_hero">One bar of signal helps the whole group</string>
-    <string name="internet_intro">When anyone in the group gets internet, everyone can use a little of it. Requests hop to their phone; the answer hops back to the group chat.</string>
-    <string name="internet_now_none">Nobody has internet right now. You can still ask — it will happen the moment someone does.</string>
-    <string name="internet_now_you">Your phone has internet. Requests from the group run here.</string>
-    <string name="internet_now_other">%1$s\'s phone has internet right now. Requests go there.</string>
-    <string name="sendout_btn">Send an SMS or email home</string>
-    <string name="sendout_sub">Through the phone that has signal</string>
-    <string name="readlink_btn">Read a web page</string>
-    <string name="readlink_sub">Fetched as plain text to save data</string>
-    <string name="phone_or_email_hint">Phone number or email</string>
-    <string name="message_out_hint">What should it say?</string>
-    <string name="link_hint">Paste the link</string>
     <string name="ask">Ask</string>
-    <string name="no_helper">Nobody has internet right now — your request is saved and will run as soon as someone does.</string>
-    <string name="sendout_disclosure">It travels through a friend\'s phone, and the whole group can see it — like handing a postcard down the line.</string>
-    <string name="your_requests">Your requests</string>
-    <string name="requests_empty">Nothing yet. Answers also appear in the group chat so everyone can read them.</string>
-    <string name="asked_again">Asked again</string>
     <string name="share_internet">Share my internet when I have signal</string>
-    <string name="share_internet_sub">Friends can send short messages out and read web pages through your phone. It only ever uses a few KB.</string>
 
     <!-- Settings -->
     <string name="settings">Settings</string>
@@ -184,7 +171,6 @@
     <string name="cancel">Cancel</string>
     <string name="about">About</string>
     <string name="how_it_works">How Hopline works</string>
-    <string name="how_it_works_body">Phones in your group link to each other directly over Bluetooth and WiFi — no tower, no router, no internet.\n\nEvery message is signed with your group\'s code and passed from phone to phone, so it can travel down a line of hikers or across a crowd, far beyond one phone\'s range.\n\nEvery phone keeps the group\'s messages for 48 hours and fills in anyone who was away. Walk off, come back — the chat catches up on its own.\n\nThe ticks never lie: ◷ waiting for a phone in range, ✓ on its way, ✓✓ phones confirmed. Tap your own message to see exactly who has it.\n\nAnyone with the 3-word code can read the group, so treat it like a walkie-talkie, not a vault.</string>
     <string name="version">Version %1$s</string>
     <string name="made_for">Free and open source — made for ForPublicOrg</string>
 
@@ -193,10 +179,6 @@
     <string name="status_queued">Waiting — no phone in range has taken this yet. It keeps trying on its own.</string>
 
     <!-- Errand card (on the helper's phone) -->
-    <string name="errand_send_title">%1$s asks you to send this</string>
-    <string name="errand_send_body">Your phone has signal, so Hopline will open your messaging app with this filled in. Just tap send, then come back and tap “I sent it”.</string>
-    <string name="i_sent_it">I sent it</string>
-    <string name="open_and_send">Open &amp; send</string>
 
     <!-- Warnings -->
     <string name="bt_off">Bluetooth is off — tap to turn it on</string>
@@ -207,10 +189,39 @@
     <string name="back">Back</string>
     <string name="more_options">More options</string>
     <string name="scroll_to_latest">Jump to latest messages</string>
-    <string name="couldnt_send">Couldn\'t send it</string>
+
+    <!-- Home: shared internet row (2.2) -->
+    <plurals name="summary_waiting_for_you">
+        <item quantity="one">%1$d request needs your signal — tap to send</item>
+        <item quantity="other">%1$d requests need your signal — tap to send</item>
+    </plurals>
+    <string name="summary_you_help">Your phone has signal and helps the group</string>
+    <string name="summary_someone_helps">%1$s\'s phone can help — weather, look-ups, texts home</string>
+    <plurals name="summary_requests_travel">
+        <item quantity="one">%1$d request travelling with the group, waiting for signal</item>
+        <item quantity="other">%1$d requests travelling with the group, waiting for signal</item>
+    </plurals>
+    <string name="summary_nobody">Nobody has signal now — ask anyway, it goes when someone does</string>
+
+    <!-- Notifications (2.2) -->
+    <string name="notice_renamed_short">renamed the group to “%1$s”</string>
+    <string name="reacted_line">Reacted %1$s to “%2$s”</string>
+    <string name="n_new">%1$d new</string>
+    <string name="mark_read">Mark as read</string>
+    <string name="answer_ready">Answer ready: %1$s</string>
+    <string name="answer_expired">Nobody had signal in time: %1$s</string>
+    <string name="answer_quiet">%1$s\'s phone went quiet — your text may not have gone yet</string>
+    <string name="answer_failed">Couldn\'t be done: %1$s</string>
+    <string name="via_phone">via %1$s\'s phone</string>
+    <string name="errand_mail_title">%1$s asks you to email %2$s</string>
+    <string name="errand_send_title_to">%1$s asks you to text %2$s</string>
+    <string name="errand_send_hint">Your phone has signal. Tap Send — your messaging app opens with this filled in.</string>
+    <string name="cant_send">Can\'t</string>
+    <string name="notif_other_group">That\'s from a group that isn\'t on the radio right now — open Hopline to switch to it.</string>
 
     <!-- Notifications -->
     <string name="notif_service">Hopline is on</string>
     <string name="channel_service">Running in background</string>
     <string name="channel_messages">Messages</string>
+    <string name="net_help_texts_only_allowance">Texts only — today\'s data allowance is used up, but your phone can still send texts for the group.</string>
 </resources>

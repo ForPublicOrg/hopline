@@ -25,11 +25,17 @@ class FakeNet {
 
     inner class Recorder : RouterListener {
         val shown = ArrayList<Message>(); val errands = ArrayList<Errand>(); val log = ArrayList<String>()
-        val files = ArrayList<Message>()
+        val files = ArrayList<Message>(); val answers = ArrayList<Errand>(); val aborts = ArrayList<Errand>()
+        val reactions = ArrayList<Triple<String, String, String>>()   // message id, by, emoji
+        val groupNames = ArrayList<String>()
         override fun onChanged() {}
         override fun onMessage(m: Message) { shown.add(m) }
         override fun onErrandRequest(e: Errand) { errands.add(e) }
+        override fun onErrandAbort(e: Errand) { aborts.add(e) }
+        override fun onErrandAnswer(e: Errand) { answers.add(e) }
         override fun onFileReady(m: Message) { files.add(m) }
+        override fun onGroupNamed(name: String, at: Long) { groupNames.add(name) }
+        override fun onReaction(m: Message, by: String, emoji: String) { reactions.add(Triple(m.id, by, emoji)) }
         override fun onLog(text: String) { log.add(text) }
     }
 
@@ -49,17 +55,26 @@ class FakeNet {
             }
             override fun disconnect(linkId: String) { cut(id, linkId) }
         }
-        val router = Router(Identity(id, name), Group(code, "Trek"), transport, rec) { now }
+        /** How far this phone's clock runs ahead of the others'. */
+        var skew = 0L
+        val router = Router(Identity(id, name), Group(code, "Trek"), transport, rec) { now + skew }
     }
 
     fun node(id: String, name: String = id, code: String = CODE): Node = Node(id, name, code).also { nodes[id] = it }
 
-    fun connect(a: String, b: String) {
+    /** Like a Nearby connection: both ends get the same authentication token, unique to this link. */
+    fun connect(a: String, b: String, token: String = Crypto.randomId(32)) {
         val la = "$a>$b"; val lb = "$b>$a"
         nodes[a]!!.peers[la] = b to lb; nodes[b]!!.peers[lb] = a to la
-        nodes[a]!!.router.onLinkUp(la, b, nodes[b]!!.name)
-        nodes[b]!!.router.onLinkUp(lb, a, nodes[a]!!.name)
+        nodes[a]!!.router.onLinkUp(la, b, nodes[b]!!.name, token)
+        nodes[b]!!.router.onLinkUp(lb, a, nodes[a]!!.name, token)
         pump()
+    }
+
+    /** Let [ms] pass, firing every phone's request timers along the way. */
+    fun advance(ms: Long, step: Long = 500) {
+        var left = ms
+        while (left > 0) { val d = minOf(step, left); now += d; left -= d; for (n in nodes.values) n.router.pollErrands(); pump() }
     }
 
     fun disconnect(a: String, b: String) { cut(a, "$a>$b"); cut(b, "$b>$a") }
@@ -211,32 +226,43 @@ class RouterTest {
     @Test fun `presence slows down as the group grows`() {
         val net = FakeNet(); net.node("A")
         assertEquals(30_000L, net.nodes["A"]!!.router.presenceInterval())
-        repeat(200) { net.nodes["A"]!!.router.people["p$it"] = Person("p$it") }
+        repeat(200) { net.nodes["A"]!!.router.people["p$it"] = Person("p$it").also { p -> p.lastSeen = net.now } }
         assertEquals(180_000L, net.nodes["A"]!!.router.presenceInterval())
-        repeat(400) { net.nodes["A"]!!.router.people["q$it"] = Person("q$it") }
+        repeat(400) { net.nodes["A"]!!.router.people["q$it"] = Person("q$it").also { p -> p.lastSeen = net.now } }
         assertEquals(300_000L, net.nodes["A"]!!.router.presenceInterval())
+        // people last heard from days ago are not "the group" any more
+        net.now += Router.CARRY_MS + 1
+        assertEquals(30_000L, net.nodes["A"]!!.router.presenceInterval())
     }
 
-    @Test fun `errand goes to the phone with internet and the answer comes back to all`() {
+    @Test fun `a request made with nobody online is carried until a phone with signal answers it privately`() {
         val net = FakeNet(); net.line("A", "B", "C", "D", "E")
         val a = net.nodes["A"]!!.router; val e = net.nodes["E"]!!
-        val errand = a.requestErrand(Errand.READ, JSONObject().put("url", "http://weather.example")); net.pump()
-        assertEquals(Errand.WAITING, errand.status)           // nobody has internet yet
-        e.router.hasInternet = true
-        net.tickAll()                                          // presence announces it; A dispatches
-        assertEquals(Errand.ASKED, errand.status); assertEquals("E", errand.helper)
-        assertEquals(1, e.rec.errands.size); assertEquals("http://weather.example", e.rec.errands[0].args.getString("url"))
-        e.router.completeErrand(errand.id, true, "Web page: weather.example", "Sunny, 18°C"); net.pump()
+        val errand = a.requestErrand(Errand.READ, JSONObject().put("url", "https://weather.example")); net.pump()
+        assertEquals(Errand.WAITING, errand.status)           // nobody has signal yet — but it is on its way
+        e.router.setCaps(Errand.CAP_READ); net.pump()           // E reaches the ridge
+        net.advance(3_000)
+        assertEquals(1, e.rec.errands.size); assertEquals("https://weather.example", e.rec.errands[0].args.getString("url"))
+        assertEquals(Errand.CLAIMED, errand.status); assertEquals("E", errand.helper)
+        assertTrue(e.router.completeErrand(errand.id, true, "Web page", JSONObject().put("t", "Sunny, 18°C"))); net.pump()
         assertEquals(Errand.DONE, errand.status)
-        for (id in listOf("A", "C", "E")) assertTrue(net.texts(id).any { it.contains("Sunny, 18°C") })
-        assertEquals(1, e.rec.errands.size)                   // not asked twice
+        assertEquals("Sunny, 18°C", errand.answer()!!.getString("t"))
+        assertEquals(listOf(errand.id), net.nodes["A"]!!.rec.answers.map { it.id })
+        // private: nobody's chat shows it, nobody else is notified
+        for (id in listOf("A", "B", "C", "D", "E")) assertTrue(net.texts(id).none { it.contains("Sunny") })
+        for (id in listOf("B", "C", "D")) assertTrue(net.nodes[id]!!.rec.shown.isEmpty())
+        net.advance(60_000)
+        assertEquals(1, e.rec.errands.size)                   // not run twice
     }
 
-    @Test fun `errand is done locally when I am the one with internet`() {
+    @Test fun `my own request runs on my own signal`() {
         val net = FakeNet(); net.line("A", "B")
-        val a = net.nodes["A"]!!; a.router.hasInternet = true
-        val er = a.router.requestErrand(Errand.READ, JSONObject().put("url", "http://x")); net.pump()
+        val a = net.nodes["A"]!!
+        val er = a.router.requestErrand(Errand.READ, JSONObject().put("url", "https://x.example"), selfCaps = Errand.CAP_READ); net.pump()
         assertEquals("A", er.helper); assertEquals(1, a.rec.errands.size)
+        assertTrue(net.nodes["B"]!!.router.errands.isEmpty())   // nothing went on the air
+        a.router.completeErrand(er.id, true, "x", JSONObject().put("t", "page"))
+        assertEquals(Errand.DONE, er.status); assertEquals(1, a.rec.answers.size)
     }
 
     @Test fun `snapshot and restore keep messages and do not re-accept old envelopes`() {
@@ -375,7 +401,7 @@ class RouterTest {
     @Test fun `files switch off in a crowd`() {
         val net = FakeNet(); net.node("A")
         assertTrue(net.nodes["A"]!!.router.canSendFiles())
-        repeat(Router.FILE_GROUP_LIMIT) { net.nodes["A"]!!.router.people["p$it"] = Person("p$it") }
+        repeat(Router.FILE_GROUP_LIMIT) { net.nodes["A"]!!.router.people["p$it"] = Person("p$it").also { p -> p.lastSeen = net.now } }
         assertFalse(net.nodes["A"]!!.router.canSendFiles())
     }
 
@@ -499,7 +525,7 @@ class RouterTest {
         val net = FakeNet(); net.line("A", "B")
         val m = net.nodes["A"]!!.router.sendChat("hi"); net.pump()
         net.nodes["B"]!!.router.sendReaction(net.nodes["B"]!!.router.message(m.id)!!, "x".repeat(500)); net.pump()
-        assertEquals(8, m.reactions["B"]!!.length)
+        assertEquals(Message.MAX_EMOJI, m.reactions["B"]!!.length)
         val fresh = FakeNet(); val a2 = fresh.node("A")
         a2.router.restore(JSONObject(net.nodes["A"]!!.router.snapshot().toString()))
         assertEquals(m.reactions["B"], a2.router.message(m.id)!!.reactions["B"])
@@ -558,7 +584,7 @@ class RouterTest {
         frames.clear()
         r.onLinkUp("L", "zz", "OldV2Phone")
         val myNonce = r.links["L"]!!.myNonce
-        r.onBytes("L", JSONObject().put("t", "hello").put("id", "zz").put("name", "OldV2Phone").put("nonce", "n1").put("v", 2).toString().toByteArray())
+        r.onBytes("L", JSONObject().put("t", "hello").put("id", "zz").put("name", "OldV2Phone").put("nonce", "n1n1n1n1n1n1n1n1").put("v", 2).toString().toByteArray())
         r.onBytes("L", JSONObject().put("t", "proof").put("proof", Crypto.hmacHex(r.group.key, "$myNonce|zz")).toString().toByteArray())
         r.onBytes("L", JSONObject().put("t", "inv").put("n", 1).put("i", 0).put("ids", org.json.JSONArray()).toString().toByteArray())
         val all = frames.joinToString("\n") { it.toString() }
@@ -627,7 +653,7 @@ class RouterTest {
         r.onLinkUp("L", "zz", "OldPhone")
         assertEquals(Router.VERSION, frames.first { it.optString("t") == "hello" }.optInt("v"))
         val myNonce = r.links["L"]!!.myNonce
-        r.onBytes("L", JSONObject().put("t", "hello").put("id", "zz").put("name", "OldPhone").put("nonce", "n1").toString().toByteArray())
+        r.onBytes("L", JSONObject().put("t", "hello").put("id", "zz").put("name", "OldPhone").put("nonce", "n1n1n1n1n1n1n1n1").toString().toByteArray())
         val proof = Crypto.hmacHex(r.group.key, "$myNonce|zz")
         r.onBytes("L", JSONObject().put("t", "proof").put("proof", proof).toString().toByteArray())
         r.onBytes("L", JSONObject().put("t", "inv").put("n", 1).put("i", 0).put("ids", org.json.JSONArray()).toString().toByteArray())

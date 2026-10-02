@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- A centred line in the chat: a date, the unread divider, or a notice ("Asha renamed the group"). -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent" android:layout_height="wrap_content"
     android:paddingTop="6dp" android:paddingBottom="6dp">
     <TextView android:id="@+id/chip" android:layout_width="wrap_content" android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal" android:background="@drawable/bg_chip"
+        android:layout_gravity="center_horizontal" android:background="@drawable/bg_chip" android:gravity="center"
+        android:layout_marginStart="32dp" android:layout_marginEnd="32dp"
         android:paddingStart="12dp" android:paddingEnd="12dp" android:paddingTop="5dp" android:paddingBottom="5dp"
         android:textSize="12.5sp" android:textColor="@color/chip_text" android:elevation="0.5dp" />
 </FrameLayout>

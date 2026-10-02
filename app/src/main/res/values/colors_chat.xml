@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- "Not sent" / "Not delivered" inside my (terracotta) bubble: a warm yellow that reads on it (~4.5:1). -->
+    <color name="chat_tick_failed">#FFF59D</color>
+</resources>

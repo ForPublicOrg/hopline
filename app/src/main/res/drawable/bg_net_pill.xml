@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Small "New" / "Part 2 of 4" pill in internet blue. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/internet_badge_bg" />
+    <corners android:radius="999dp" />
+</shape>

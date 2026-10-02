@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One search result: its title, site and snippet, and a button to read it next. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:layout_marginTop="8dp" android:orientation="horizontal" android:gravity="center_vertical"
+    android:background="@drawable/bg_card" android:paddingStart="14dp" android:paddingEnd="10dp"
+    android:paddingTop="12dp" android:paddingBottom="12dp">
+    <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+        android:orientation="vertical">
+        <TextView android:id="@+id/title" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="15.5sp" android:textStyle="bold" android:textColor="@color/text"
+            android:maxLines="2" android:ellipsize="end" />
+        <TextView android:id="@+id/host" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="2dp" android:textSize="12.5sp" android:textColor="@color/internet_badge"
+            android:maxLines="1" android:ellipsize="end" />
+        <TextView android:id="@+id/snippet" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="4dp" android:textSize="13.5sp" android:textColor="@color/text_muted"
+            android:maxLines="3" android:ellipsize="end" />
+    </LinearLayout>
+    <com.google.android.material.button.MaterialButton android:id="@+id/read"
+        android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="10dp"
+        android:minHeight="48dp" android:text="@string/net_read" style="@style/Widget.Hopline.Button.Quiet"
+        android:textSize="14.5sp" />
+</LinearLayout>

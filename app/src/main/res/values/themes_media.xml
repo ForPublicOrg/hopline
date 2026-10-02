@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- The photo viewer draws edge to edge on black; its bars fade over the picture. -->
+    <style name="Theme.Hopline.Viewer" parent="Theme.Hopline">
+        <item name="android:windowBackground">@color/viewer_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@color/viewer_scrim</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">false</item>
+        <!-- Hiding the bars must not jump the photo down below a camera notch. -->
+        <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="p">shortEdges</item>
+    </style>
+</resources>

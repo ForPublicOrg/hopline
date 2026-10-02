@@ -7,42 +7,59 @@
     <com.google.android.material.appbar.MaterialToolbar
         android:id="@+id/toolbar" android:layout_width="match_parent" android:layout_height="?attr/actionBarSize"
         android:background="@color/surface" app:title="@string/settings" app:titleTextColor="@color/text"
-        app:navigationIcon="@drawable/ic_back" app:navigationIconTint="@color/text" android:elevation="2dp" />
+        app:navigationIcon="@drawable/ic_back" app:navigationIconTint="@color/text"
+        app:navigationContentDescription="@string/back" android:elevation="2dp" />
 
     <ScrollView android:layout_width="match_parent" android:layout_height="match_parent">
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
             android:padding="16dp">
 
-            <!-- Me -->
+            <!-- Me: tap to change my name (everyone sees it, on old messages too) -->
             <LinearLayout android:id="@+id/me_row" android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:orientation="horizontal" android:gravity="center_vertical"
-                android:background="@drawable/bg_card" android:padding="16dp">
+                android:background="@drawable/bg_card" android:foreground="?attr/selectableItemBackground"
+                android:clickable="true" android:focusable="true" android:padding="16dp">
                 <TextView android:id="@+id/me_avatar" android:layout_width="56dp" android:layout_height="56dp"
                     android:gravity="center" android:textSize="24sp" android:textStyle="bold" android:textColor="#FFFFFF"
-                    android:background="@drawable/bg_avatar" />
+                    android:background="@drawable/bg_avatar" android:maxLines="1" android:importantForAccessibility="no" />
                 <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
                     android:orientation="vertical" android:layout_marginStart="16dp">
                     <TextView android:id="@+id/me_name" android:layout_width="match_parent" android:layout_height="wrap_content"
-                        android:textSize="18sp" android:textStyle="bold" android:textColor="@color/text" />
+                        android:textSize="18sp" android:textStyle="bold" android:textColor="@color/text"
+                        android:maxLines="1" android:ellipsize="end" />
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp"
                         android:text="@string/edit_name" android:textSize="13sp" android:textColor="@color/ember" />
                 </LinearLayout>
-                <ImageView android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_chevron"
+                <ImageView android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_edit_name"
                     android:importantForAccessibility="no" />
             </LinearLayout>
 
-            <!-- This group -->
+            <!-- This group: tap for Group info; quick Show code / Rename / Leave -->
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp"
                 android:layout_marginStart="4dp" android:text="@string/this_group" android:textAppearance="@style/Text.Section" android:textSize="12sp" />
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
-                android:layout_marginTop="8dp" android:background="@drawable/bg_card" android:padding="16dp">
-                <TextView android:id="@+id/group_name" android:layout_width="match_parent" android:layout_height="wrap_content"
-                    android:textSize="18sp" android:textStyle="bold" android:textColor="@color/text" />
-                <TextView android:id="@+id/group_code" android:layout_width="match_parent" android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp" android:textSize="15sp" android:textColor="@color/text_muted"
-                    android:fontFamily="monospace" />
+                android:layout_marginTop="8dp" android:background="@drawable/bg_card" android:paddingBottom="12dp">
+                <LinearLayout android:id="@+id/group_row" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:gravity="center_vertical" android:minHeight="64dp"
+                    android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true"
+                    android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="12dp" android:paddingBottom="8dp">
+                    <TextView android:id="@+id/group_avatar" android:layout_width="44dp" android:layout_height="44dp"
+                        android:gravity="center" android:textSize="19sp" android:textStyle="bold" android:textColor="#FFFFFF"
+                        android:background="@drawable/bg_avatar" android:maxLines="1" android:importantForAccessibility="no" />
+                    <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                        android:orientation="vertical" android:layout_marginStart="14dp">
+                        <TextView android:id="@+id/group_name" android:layout_width="match_parent" android:layout_height="wrap_content"
+                            android:textSize="18sp" android:textStyle="bold" android:textColor="@color/text"
+                            android:maxLines="2" android:ellipsize="end" />
+                        <TextView android:id="@+id/group_code" android:layout_width="match_parent" android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp" android:textSize="15sp" android:textColor="@color/text_muted"
+                            android:fontFamily="monospace" />
+                    </LinearLayout>
+                    <ImageView android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_chevron"
+                        android:importantForAccessibility="no" />
+                </LinearLayout>
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal"
-                    android:layout_marginTop="12dp">
+                    android:layout_marginTop="4dp" android:paddingStart="16dp" android:paddingEnd="16dp">
                     <com.google.android.material.button.MaterialButton android:id="@+id/show_code" android:layout_width="0dp"
                         android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/show_invite"
                         android:minHeight="48dp" style="@style/Widget.Hopline.Button.Quiet" app:icon="@drawable/ic_qr"
@@ -52,18 +69,22 @@
                         android:minHeight="48dp" style="@style/Widget.Hopline.Button.Quiet" />
                 </LinearLayout>
                 <com.google.android.material.button.MaterialButton android:id="@+id/leave" android:layout_width="match_parent"
-                    android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="@string/leave_group"
+                    android:layout_height="wrap_content" android:layout_marginTop="4dp" android:layout_marginStart="16dp"
+                    android:layout_marginEnd="16dp" android:text="@string/leave_group"
                     style="@style/Widget.Hopline.Button.Danger" />
             </LinearLayout>
 
-            <!-- Internet sharing -->
+            <!-- Internet sharing: one switch for every group (it's this phone's data plan) -->
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
                 android:layout_marginTop="12dp" android:background="@drawable/bg_card" android:padding="16dp">
                 <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/share" android:layout_width="match_parent"
-                    android:layout_height="wrap_content" android:text="@string/share_internet" android:textSize="16sp"
+                    android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/share_internet" android:textSize="16sp"
                     android:textStyle="bold" android:textColor="@color/text" />
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp"
-                    android:text="@string/share_internet_sub" android:textSize="13sp" android:textColor="@color/text_muted" />
+                <TextView android:id="@+id/share_sub" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp" android:textSize="13sp" android:textColor="@color/text_muted" />
+                <TextView android:id="@+id/share_paused" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp" android:textSize="13sp" android:textStyle="bold" android:textColor="@color/warn_text"
+                    android:visibility="gone" />
             </LinearLayout>
 
             <!-- About -->
@@ -73,7 +94,8 @@
                 android:layout_marginTop="8dp" android:background="@drawable/bg_card">
                 <LinearLayout android:id="@+id/how" android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal" android:gravity="center_vertical" android:minHeight="56dp"
-                    android:paddingStart="16dp" android:paddingEnd="16dp" android:background="?attr/selectableItemBackground">
+                    android:paddingStart="16dp" android:paddingEnd="16dp" android:background="?attr/selectableItemBackground"
+                    android:clickable="true" android:focusable="true">
                     <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
                         android:text="@string/how_it_works" android:textSize="16sp" android:textColor="@color/text" />
                     <ImageView android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_chevron"

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Plain http is allowed for exactly one reason: the shared-internet fetcher (service/Fetch.kt)
+  falls back to it for the few sites that have no https. Fetch is the app's ONLY http client and
+  it checks every hop — public addresses only, no redirects into a private network, size and
+  time caps — so this must stay true: never add another http client to Hopline.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

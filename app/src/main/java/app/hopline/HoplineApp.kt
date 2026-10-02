@@ -22,4 +22,10 @@ class HoplineApp : Application() {
         })
         // The service restarts itself (START_STICKY); screens call Core.ensureRunning() when shown.
     }
+
+    /** Leaving the screen (or memory getting tight) is when a phone may be killed: save now. */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= TRIM_MEMORY_UI_HIDDEN) Core.flushSave()
+    }
 }

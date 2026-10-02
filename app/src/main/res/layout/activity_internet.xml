@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Shared internet: who can help, the big actions, my requests, requests for my phone, and my
+     phone's own part. One scrolling page so it reads top to bottom on a small phone. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent" android:layout_height="match_parent"
@@ -7,72 +9,209 @@
     <com.google.android.material.appbar.MaterialToolbar
         android:id="@+id/toolbar" android:layout_width="match_parent" android:layout_height="?attr/actionBarSize"
         android:background="@color/surface" app:title="@string/internet_title" app:titleTextColor="@color/text"
-        app:navigationIcon="@drawable/ic_back" app:navigationIconTint="@color/text" android:elevation="2dp" />
+        app:navigationIcon="@drawable/ic_back" app:navigationIconTint="@color/text"
+        app:navigationContentDescription="@string/back" android:elevation="2dp" />
 
-    <ScrollView android:layout_width="match_parent" android:layout_height="match_parent">
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
-            android:padding="16dp">
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/scroll" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+        android:fillViewport="true">
 
-            <!-- What this is -->
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
-                android:background="@drawable/bg_card" android:padding="18dp">
-                <FrameLayout android:layout_width="52dp" android:layout_height="52dp" android:background="@drawable/bg_badge">
-                    <ImageView android:layout_width="28dp" android:layout_height="28dp" android:layout_gravity="center"
+        <LinearLayout android:id="@+id/content" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:paddingStart="16dp" android:paddingEnd="16dp"
+            android:paddingTop="12dp" android:paddingBottom="28dp" android:animateLayoutChanges="true">
+
+            <!-- Opened from a notification of a group that is not on the radio -->
+            <LinearLayout android:id="@+id/fp_banner" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:background="@drawable/bg_net_warn" android:padding="14dp"
+                android:layout_marginBottom="12dp" android:visibility="gone">
+                <TextView android:id="@+id/fp_text" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:textSize="14.5sp" android:textColor="@color/warn_text" android:accessibilityLiveRegion="polite" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:gravity="end" android:layout_marginTop="6dp">
+                    <com.google.android.material.button.MaterialButton android:id="@+id/fp_dismiss"
+                        android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:text="@string/net_not_now" style="@style/Widget.Hopline.Button.Danger"
+                        android:textColor="@color/warn_text" android:minHeight="48dp" />
+                    <com.google.android.material.button.MaterialButton android:id="@+id/fp_switch"
+                        android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="8dp"
+                        android:text="@string/net_switch_to_it" android:minHeight="48dp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Who can help right now -->
+            <LinearLayout android:id="@+id/status_card" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="horizontal" android:background="@drawable/bg_card" android:padding="16dp">
+                <FrameLayout android:layout_width="48dp" android:layout_height="48dp" android:background="@drawable/bg_badge">
+                    <ImageView android:layout_width="26dp" android:layout_height="26dp" android:layout_gravity="center"
                         android:src="@drawable/ic_globe" android:importantForAccessibility="no" />
                 </FrameLayout>
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp"
-                    android:text="@string/internet_hero" android:textAppearance="@style/Text.Title" android:textSize="20sp" />
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp"
-                    android:text="@string/internet_intro" android:textAppearance="@style/Text.Muted" android:textSize="14.5sp" />
-                <TextView android:id="@+id/helper" android:layout_width="match_parent" android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp" android:padding="12dp" android:background="@drawable/bg_field"
-                    android:textAppearance="@style/Text.Body" android:textSize="14.5sp" />
-            </LinearLayout>
-
-            <!-- Actions -->
-            <LinearLayout android:id="@+id/sendout" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="12dp"
-                android:background="@drawable/bg_card" android:padding="16dp">
-                <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical">
+                <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                    android:orientation="vertical" android:layout_marginStart="14dp">
+                    <TextView android:id="@+id/status_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:textSize="17sp" android:textStyle="bold" android:textColor="@color/text"
+                        android:accessibilityLiveRegion="polite" />
+                    <TextView android:id="@+id/status_detail" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp" android:textSize="14.5sp" android:textColor="@color/text_muted"
+                        android:lineSpacingExtra="2dp" />
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-                        android:text="@string/sendout_btn" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text" />
-                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp"
-                        android:text="@string/sendout_sub" android:textSize="13sp" android:textColor="@color/text_muted" />
+                        android:layout_marginTop="8dp" android:text="@string/net_status_private"
+                        android:textSize="12.5sp" android:textColor="@color/text_muted" />
                 </LinearLayout>
-                <ImageView android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_chevron"
-                    android:importantForAccessibility="no" />
             </LinearLayout>
 
-            <LinearLayout android:id="@+id/readlink" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="8dp"
-                android:background="@drawable/bg_card" android:padding="16dp">
-                <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical">
+            <!-- Requests waiting for THIS phone's person (texts / emails) -->
+            <TextView android:id="@+id/outbox_label" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="22dp" android:layout_marginStart="4dp" android:text="@string/net_outbox_title"
+                android:textAppearance="@style/Text.Section" android:textSize="12sp" android:textColor="@color/ember_deep"
+                android:visibility="gone" />
+            <LinearLayout android:id="@+id/outbox" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:animateLayoutChanges="true" />
+
+            <!-- Ask -->
+            <TextView android:id="@+id/ask_label" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="22dp" android:layout_marginStart="4dp" android:text="@string/net_ask_title"
+                android:textAppearance="@style/Text.Section" android:textSize="12sp" />
+            <LinearLayout android:id="@+id/ask_card" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:orientation="vertical" android:background="@drawable/bg_card"
+                android:padding="12dp" android:animateLayoutChanges="true">
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:gravity="center_vertical">
+                    <EditText android:id="@+id/ask_input" android:layout_width="0dp" android:layout_weight="1"
+                        android:layout_height="wrap_content" android:minHeight="52dp"
+                        android:background="@drawable/bg_field" android:hint="@string/net_ask_hint"
+                        android:textSize="16sp" android:textColor="@color/text" android:textColorHint="@color/text_faint"
+                        android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="10dp" android:paddingBottom="10dp"
+                        android:inputType="text" android:imeOptions="actionSearch" android:maxLines="1"
+                        android:importantForAutofill="no" android:textAlignment="viewStart" />
+                    <ImageButton android:id="@+id/ask_go" android:layout_width="52dp" android:layout_height="52dp"
+                        android:layout_marginStart="8dp" android:background="@drawable/bg_send_fab"
+                        android:src="@drawable/ic_send" android:contentDescription="@string/ask" />
+                </LinearLayout>
+
+                <TextView android:id="@+id/ask_error" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp" android:layout_marginStart="6dp" android:textSize="13.5sp"
+                    android:textColor="@color/danger" android:accessibilityLiveRegion="polite" android:visibility="gone" />
+
+                <TextView android:id="@+id/ask_problem" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp" android:background="@drawable/bg_net_warn" android:padding="12dp"
+                    android:textSize="13.5sp" android:textColor="@color/warn_text" android:accessibilityLiveRegion="polite"
+                    android:visibility="gone" />
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp" android:orientation="horizontal" android:baselineAligned="false">
+
+                    <LinearLayout android:id="@+id/wx_tile" android:layout_width="0dp" android:layout_weight="1"
+                        android:layout_height="match_parent" android:minHeight="112dp" android:orientation="vertical"
+                        android:background="@drawable/bg_net_tile" android:foreground="?attr/selectableItemBackground"
+                        android:padding="14dp" android:clickable="true" android:focusable="true">
+                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                            android:text="@string/net_emoji_weather" android:textSize="26sp" android:importantForAccessibility="no" />
+                        <TextView android:id="@+id/wx_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp" android:text="@string/net_wx_title"
+                            android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text" />
+                        <TextView android:id="@+id/wx_sub" android:layout_width="match_parent" android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp" android:text="@string/net_wx_sub"
+                            android:textSize="13sp" android:textColor="@color/text_muted" android:accessibilityLiveRegion="polite" />
+                        <com.google.android.material.progressindicator.LinearProgressIndicator
+                            android:id="@+id/wx_progress" android:layout_width="match_parent" android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp" android:indeterminate="true" android:visibility="gone"
+                            app:indicatorColor="@color/internet_badge" app:trackColor="@color/internet_badge_bg"
+                            app:trackCornerRadius="2dp" />
+                    </LinearLayout>
+
+                    <LinearLayout android:id="@+id/home_tile" android:layout_width="0dp" android:layout_weight="1"
+                        android:layout_height="match_parent" android:minHeight="112dp" android:orientation="vertical"
+                        android:layout_marginStart="10dp"
+                        android:background="@drawable/bg_net_tile" android:foreground="?attr/selectableItemBackground"
+                        android:padding="14dp" android:clickable="true" android:focusable="true">
+                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                            android:text="@string/net_emoji_text" android:textSize="26sp" android:importantForAccessibility="no" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp" android:text="@string/net_home_title"
+                            android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text" />
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp" android:text="@string/net_home_sub"
+                            android:textSize="13sp" android:textColor="@color/text_muted" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- My requests -->
+            <TextView android:id="@+id/mine_label" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="22dp" android:layout_marginStart="4dp" android:text="@string/net_mine_title"
+                android:textAppearance="@style/Text.Section" android:textSize="12sp" />
+            <LinearLayout android:id="@+id/mine" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:animateLayoutChanges="true" />
+            <TextView android:id="@+id/mine_empty" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:layout_marginStart="4dp" android:layout_marginEnd="4dp"
+                android:text="@string/net_mine_empty" android:textAppearance="@style/Text.Muted" />
+
+            <!-- This phone's part -->
+            <TextView android:id="@+id/help_label" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="22dp" android:layout_marginStart="4dp" android:text="@string/net_help_title"
+                android:textAppearance="@style/Text.Section" android:textSize="12sp" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:orientation="vertical" android:background="@drawable/bg_card"
+                android:padding="16dp" android:animateLayoutChanges="true">
+
+                <!-- Settings controls mirror the store on every redraw: never restore a stale state over it. -->
+                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/share" android:saveEnabled="false"
+                    android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp"
+                    android:text="@string/net_help_switch" android:textSize="16sp" android:textStyle="bold"
+                    android:textColor="@color/text" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp"
+                    android:text="@string/net_help_sub" android:textSize="13sp" android:textColor="@color/text_muted" />
+                <TextView android:id="@+id/help_status" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp" android:background="@drawable/bg_field" android:padding="12dp"
+                    android:textSize="14sp" android:textColor="@color/text" android:accessibilityLiveRegion="polite" />
+
+                <LinearLayout android:id="@+id/help_settings" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="vertical">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp"
+                        android:text="@string/net_allowance" android:textSize="15sp" android:textColor="@color/text" />
+                    <com.google.android.material.button.MaterialButtonToggleGroup android:id="@+id/budget"
+                        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+                        app:singleSelection="true" app:selectionRequired="true">
+                        <com.google.android.material.button.MaterialButton android:id="@+id/budget_1" android:saveEnabled="false"
+                            android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                            style="@style/Widget.Hopline.Net.Segment" />
+                        <com.google.android.material.button.MaterialButton android:id="@+id/budget_5" android:saveEnabled="false"
+                            android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                            style="@style/Widget.Hopline.Net.Segment" />
+                        <com.google.android.material.button.MaterialButton android:id="@+id/budget_20" android:saveEnabled="false"
+                            android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                            style="@style/Widget.Hopline.Net.Segment" />
+                        <com.google.android.material.button.MaterialButton android:id="@+id/budget_0" android:saveEnabled="false"
+                            android:layout_width="0dp" android:layout_weight="1.3" android:layout_height="wrap_content"
+                            android:text="@string/net_no_limit" style="@style/Widget.Hopline.Net.Segment" />
+                    </com.google.android.material.button.MaterialButtonToggleGroup>
+
+                    <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/roaming" android:saveEnabled="false"
+                        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp"
+                        android:minHeight="48dp" android:text="@string/net_roaming" android:textSize="15sp"
+                        android:textColor="@color/text" />
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-                        android:text="@string/readlink_btn" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text" />
-                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp"
-                        android:text="@string/readlink_sub" android:textSize="13sp" android:textColor="@color/text_muted" />
+                        android:text="@string/net_roaming_sub" android:textSize="13sp" android:textColor="@color/text_muted" />
                 </LinearLayout>
-                <ImageView android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_chevron"
-                    android:importantForAccessibility="no" />
-            </LinearLayout>
 
-            <!-- My side of the bargain -->
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
-                android:layout_marginTop="8dp" android:background="@drawable/bg_card" android:padding="16dp">
-                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/share" android:layout_width="match_parent"
-                    android:layout_height="wrap_content" android:text="@string/share_internet" android:textSize="16sp"
+                <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="16dp"
+                    android:background="@color/divider" />
+                <TextView android:id="@+id/log_label" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp" android:text="@string/net_log_title" android:textSize="15sp"
                     android:textStyle="bold" android:textColor="@color/text" />
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp"
-                    android:text="@string/share_internet_sub" android:textSize="13sp" android:textColor="@color/text_muted" />
+                <TextView android:id="@+id/log_today" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp" android:textSize="13sp" android:textColor="@color/text_muted"
+                    android:visibility="gone" />
+                <LinearLayout android:id="@+id/log" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="vertical" android:layout_marginTop="4dp" />
+                <TextView android:id="@+id/log_empty" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp" android:text="@string/net_log_empty" android:textSize="13.5sp"
+                    android:textColor="@color/text_muted" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/log_more"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    style="@style/Widget.Hopline.Net.TextAction" android:visibility="gone" />
             </LinearLayout>
-
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp"
-                android:layout_marginStart="4dp" android:text="@string/your_requests" android:textAppearance="@style/Text.Section" android:textSize="12sp" />
-            <LinearLayout android:id="@+id/errands" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:orientation="vertical" android:layout_marginTop="8dp" />
-            <TextView android:id="@+id/none" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:layout_marginTop="4dp" android:layout_marginStart="4dp"
-                android:text="@string/requests_empty" android:textAppearance="@style/Text.Muted" />
         </LinearLayout>
-    </ScrollView>
+    </androidx.core.widget.NestedScrollView>
 </LinearLayout>

@@ -4,22 +4,23 @@
     android:layout_width="match_parent" android:layout_height="match_parent"
     android:orientation="vertical" android:background="@color/wallpaper">
 
-    <!-- Header: back, avatar, name + live status, overflow -->
+    <!-- Header: back, avatar, name + live status, overflow. Tap the name for group info / people. -->
     <LinearLayout android:layout_width="match_parent" android:layout_height="?attr/actionBarSize"
         android:orientation="horizontal" android:gravity="center_vertical" android:background="@color/surface"
         android:paddingEnd="4dp" android:elevation="2dp">
         <ImageButton android:id="@+id/back" android:layout_width="48dp" android:layout_height="48dp"
-            android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_back"
+            android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_chat_back"
             android:contentDescription="@string/back" />
         <TextView android:id="@+id/avatar" android:layout_width="38dp" android:layout_height="38dp"
             android:gravity="center" android:textSize="16sp" android:textStyle="bold" android:textColor="#FFFFFF"
-            android:background="@drawable/bg_avatar" />
+            android:background="@drawable/bg_avatar" android:importantForAccessibility="no" />
         <LinearLayout android:id="@+id/title_area" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent"
             android:orientation="vertical" android:gravity="center_vertical" android:layout_marginStart="10dp"
-            android:background="?attr/selectableItemBackground">
-            <TextView android:id="@+id/title" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:paddingEnd="4dp" android:background="?attr/selectableItemBackground">
+            <!-- The muted bell is drawn at the end of the name when this chat is muted. -->
+            <TextView android:id="@+id/title" android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:textSize="17sp" android:textStyle="bold" android:textColor="@color/text"
-                android:maxLines="1" android:ellipsize="end" />
+                android:maxLines="1" android:ellipsize="end" android:drawablePadding="6dp" />
             <TextView android:id="@+id/subtitle" android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:textSize="12.5sp" android:textColor="@color/text_muted" android:maxLines="1" android:ellipsize="end" />
         </LinearLayout>
@@ -30,57 +31,88 @@
 
     <TextView android:id="@+id/warn" android:layout_width="match_parent" android:layout_height="wrap_content"
         android:background="@color/warn_bg" android:textColor="@color/warn_text" android:padding="10dp" android:gravity="center"
-        android:textSize="14sp" android:visibility="gone" />
+        android:minHeight="48dp" android:textSize="14sp" android:visibility="gone" />
 
     <!-- Who's sharing live location (them: tap to see People; you: tap to stop) -->
     <TextView android:id="@+id/live_banner" android:layout_width="match_parent" android:layout_height="wrap_content"
         android:background="@color/ember_soft" android:textColor="@color/ember_deep" android:padding="10dp" android:gravity="center"
-        android:textSize="13.5sp" android:visibility="gone" />
+        android:minHeight="48dp" android:textSize="13.5sp" android:visibility="gone" />
 
-    <LinearLayout android:id="@+id/errand_cards" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:orientation="vertical" />
+    <!-- Friends waiting on this phone's signal to send a text home: one slim line, never a wall of cards -->
+    <TextView android:id="@+id/errand_banner" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:background="@color/internet_badge_bg" android:textColor="@color/internet_badge"
+        android:paddingStart="16dp" android:paddingEnd="12dp" android:paddingTop="10dp" android:paddingBottom="10dp"
+        android:minHeight="48dp" android:gravity="center_vertical" android:textSize="13.5sp" android:textStyle="bold"
+        android:maxLines="2" android:ellipsize="end" android:drawablePadding="8dp"
+        app:drawableStartCompat="@drawable/ic_globe" app:drawableEndCompat="@drawable/ic_chat_open"
+        android:visibility="gone" />
 
-    <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+    <FrameLayout android:id="@+id/list_frame" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/list" android:layout_width="match_parent" android:layout_height="match_parent"
             android:clipToPadding="false" android:paddingTop="8dp" android:paddingBottom="8dp" android:scrollbars="none" />
 
+        <!-- Empty-chat explainer only: it never sits over messages -->
         <TextView android:id="@+id/hint" android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:layout_gravity="bottom|center_horizontal" android:layout_marginStart="24dp" android:layout_marginEnd="24dp"
             android:layout_marginBottom="8dp" android:background="@drawable/bg_chip" android:padding="12dp" android:gravity="center"
             android:textSize="13sp" android:textColor="@color/chip_text" android:visibility="gone" />
+
+        <!-- "3 new messages above": carried messages land by their send time, often above what you see -->
+        <TextView android:id="@+id/new_above" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal" android:layout_marginTop="10dp"
+            android:background="@drawable/bg_chat_new_pill" android:textColor="@color/on_ember"
+            android:minHeight="36dp" android:gravity="center" android:paddingStart="14dp" android:paddingEnd="16dp"
+            app:drawableStartCompat="@drawable/ic_chat_up" android:drawablePadding="6dp"
+            android:textSize="13sp" android:textStyle="bold" android:elevation="3dp" android:visibility="gone" />
 
         <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:id="@+id/jump" android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:layout_gravity="bottom|end" android:layout_margin="12dp"
             app:fabSize="mini" android:src="@drawable/ic_down" android:contentDescription="@string/scroll_to_latest"
             app:backgroundTint="@color/surface" app:tint="@color/text" android:visibility="gone" />
+
+        <!-- How many arrived below while you read history -->
+        <TextView android:id="@+id/jump_badge" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end" android:layout_marginEnd="10dp" android:layout_marginBottom="44dp"
+            android:background="@drawable/bg_unread" android:textColor="@color/unread_text"
+            android:minWidth="22dp" android:minHeight="22dp" android:gravity="center"
+            android:paddingStart="6dp" android:paddingEnd="6dp" android:textSize="11sp" android:textStyle="bold"
+            android:elevation="8dp" android:importantForAccessibility="no" android:visibility="gone" />
     </FrameLayout>
+
+    <!-- A private chat with someone out of range: a quiet line above the composer, never over messages -->
+    <TextView android:id="@+id/away_banner" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:background="@color/surface_variant" android:textColor="@color/text_muted"
+        android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="8dp" android:paddingBottom="8dp"
+        android:gravity="center" android:textSize="12.5sp" android:maxLines="3" android:ellipsize="end"
+        android:visibility="gone" />
 
     <!-- People matching an @ being typed; tap a chip to complete the mention -->
     <HorizontalScrollView android:id="@+id/mention_bar" android:layout_width="match_parent" android:layout_height="wrap_content"
         android:scrollbars="none" android:visibility="gone" android:paddingStart="8dp" android:paddingEnd="8dp">
         <LinearLayout android:id="@+id/mention_chips" android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:orientation="horizontal" android:paddingTop="4dp" android:paddingBottom="2dp" />
+            android:orientation="horizontal" />
     </HorizontalScrollView>
 
     <!-- "Replying to …" above the composer -->
     <LinearLayout android:id="@+id/reply_bar" android:layout_width="match_parent" android:layout_height="wrap_content"
         android:orientation="horizontal" android:gravity="center_vertical" android:visibility="gone"
         android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_marginTop="4dp"
-        android:background="@drawable/bg_chip" android:paddingStart="10dp" android:paddingTop="6dp" android:paddingBottom="6dp">
+        android:background="@drawable/bg_chip" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingBottom="4dp"
+        android:focusable="true">
         <View android:layout_width="4dp" android:layout_height="match_parent" android:background="@color/ember" />
         <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
-            android:orientation="vertical" android:layout_marginStart="10dp">
+            android:orientation="vertical" android:layout_marginStart="10dp" android:importantForAccessibility="noHideDescendants">
             <TextView android:id="@+id/reply_name" android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:textSize="13sp" android:textStyle="bold" android:textColor="@color/ember"
                 android:maxLines="1" android:ellipsize="end" />
             <TextView android:id="@+id/reply_snippet" android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:textSize="13sp" android:textColor="@color/text_muted" android:maxLines="1" android:ellipsize="end" />
         </LinearLayout>
-        <ImageButton android:id="@+id/reply_close" android:layout_width="40dp" android:layout_height="40dp"
+        <ImageButton android:id="@+id/reply_close" android:layout_width="48dp" android:layout_height="48dp"
             android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_close"
-            android:contentDescription="@string/cancel" />
+            android:contentDescription="@string/chat_cancel_reply" />
     </LinearLayout>
 
     <!-- Composer: [pill: attach + text + mic] + send -->
@@ -90,17 +122,17 @@
         <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
             android:orientation="horizontal" android:background="@drawable/bg_input_pill" android:gravity="center_vertical"
             android:minHeight="52dp">
-            <ImageButton android:id="@+id/attach" android:layout_width="44dp" android:layout_height="52dp"
-                android:layout_marginStart="4dp" android:background="?attr/selectableItemBackgroundBorderless"
+            <ImageButton android:id="@+id/attach" android:layout_width="48dp" android:layout_height="52dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
                 android:src="@drawable/ic_attach" android:contentDescription="@string/attach" />
-            <EditText android:id="@+id/input" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            <app.hopline.ui.ChatInput android:id="@+id/input" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
                 android:hint="@string/message_hint" android:inputType="textCapSentences|textMultiLine" android:maxLines="5"
-                android:maxLength="2000" android:textSize="17sp" android:background="@null"
+                android:textSize="17sp" android:background="@null"
                 android:textColor="@color/text" android:textColorHint="@color/text_faint"
-                android:paddingStart="6dp" android:paddingEnd="6dp" android:paddingTop="14dp" android:paddingBottom="14dp"
+                android:paddingStart="2dp" android:paddingEnd="6dp" android:paddingTop="14dp" android:paddingBottom="14dp"
                 android:importantForAutofill="no" />
-            <ImageButton android:id="@+id/mic" android:layout_width="44dp" android:layout_height="52dp"
-                android:layout_marginEnd="4dp" android:background="?attr/selectableItemBackgroundBorderless"
+            <ImageButton android:id="@+id/mic" android:layout_width="48dp" android:layout_height="52dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
                 android:src="@drawable/ic_mic" android:contentDescription="@string/record_voice" />
         </LinearLayout>
 
@@ -109,16 +141,17 @@
             android:contentDescription="@string/send" android:elevation="1dp" android:padding="14dp" android:scaleType="fitCenter" />
     </LinearLayout>
 
-    <!-- Recording a voice note: red dot + running timer, cancel or send -->
+    <!-- Recording a voice note: red dot + running timer, cancel or send. While it shows, the
+         screen stays on — a sleeping screen would end the take. -->
     <LinearLayout android:id="@+id/record_bar" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:orientation="horizontal" android:gravity="center_vertical" android:visibility="gone"
+        android:orientation="horizontal" android:gravity="center_vertical" android:visibility="gone" android:keepScreenOn="true"
         android:paddingStart="8dp" android:paddingEnd="8dp" android:paddingTop="6dp" android:paddingBottom="8dp">
 
         <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="52dp"
             android:orientation="horizontal" android:background="@drawable/bg_input_pill" android:gravity="center_vertical"
             android:paddingStart="16dp" android:paddingEnd="8dp">
-            <TextView android:id="@+id/record_dot" android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="●" android:textSize="16sp" android:textColor="@color/danger" android:importantForAccessibility="no" />
+            <View android:id="@+id/record_dot" android:layout_width="11dp" android:layout_height="11dp"
+                android:background="@drawable/bg_chat_record_dot" android:importantForAccessibility="no" />
             <Chronometer android:id="@+id/record_timer" android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:layout_marginStart="10dp" android:textSize="17sp" android:textColor="@color/text" />
             <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
@@ -126,7 +159,7 @@
                 android:gravity="center" android:maxLines="1" android:ellipsize="end" android:paddingStart="8dp" android:paddingEnd="4dp" />
             <TextView android:id="@+id/record_cancel" android:layout_width="wrap_content" android:layout_height="match_parent"
                 android:text="@string/cancel" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_muted"
-                android:gravity="center" android:paddingStart="12dp" android:paddingEnd="12dp"
+                android:gravity="center" android:paddingStart="12dp" android:paddingEnd="12dp" android:minWidth="48dp"
                 android:background="?attr/selectableItemBackground" />
         </LinearLayout>
 

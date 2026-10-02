@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One of my requests: what I asked, its live state in plain words, a preview of the answer. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/card" android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:layout_marginTop="8dp" android:orientation="vertical" android:background="@drawable/bg_card"
+    android:foreground="?attr/selectableItemBackground"
+    android:paddingStart="14dp" android:paddingEnd="4dp" android:paddingTop="12dp" android:paddingBottom="12dp">
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical">
+        <TextView android:id="@+id/icon" android:layout_width="40dp" android:layout_height="40dp"
+            android:background="@drawable/bg_net_icon" android:gravity="center" android:textSize="19sp"
+            android:importantForAccessibility="no" />
+        <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:orientation="vertical" android:layout_marginStart="12dp">
+            <TextView android:id="@+id/title" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textSize="15.5sp" android:textStyle="bold" android:textColor="@color/text"
+                android:maxLines="2" android:ellipsize="end" />
+            <TextView android:id="@+id/time" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textSize="12.5sp" android:textColor="@color/text_muted" />
+        </LinearLayout>
+        <TextView android:id="@+id/new_badge" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="6dp" android:background="@drawable/bg_net_pill"
+            android:paddingStart="8dp" android:paddingEnd="8dp" android:paddingTop="2dp" android:paddingBottom="2dp"
+            android:text="@string/net_new" android:textSize="11.5sp" android:textStyle="bold"
+            android:textColor="@color/internet_badge" android:visibility="gone" />
+        <ImageButton android:id="@+id/more" android:layout_width="48dp" android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_more"
+            android:scaleType="center" android:contentDescription="@string/more_options" />
+    </LinearLayout>
+
+    <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="8dp" android:layout_marginEnd="10dp" android:textSize="14sp"
+        android:lineSpacingExtra="1dp" android:accessibilityLiveRegion="polite" />
+
+    <TextView android:id="@+id/preview" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="8dp" android:layout_marginEnd="10dp" android:background="@drawable/bg_field"
+        android:padding="12dp" android:textSize="14sp" android:textColor="@color/text" android:lineSpacingExtra="2dp"
+        android:maxLines="4" android:ellipsize="end" android:visibility="gone" />
+
+    <LinearLayout android:id="@+id/offer" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="8dp" android:layout_marginEnd="10dp" android:orientation="vertical"
+        android:background="@drawable/bg_net_warn" android:padding="12dp" android:visibility="gone">
+        <TextView android:id="@+id/offer_text" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="13.5sp" android:textColor="@color/warn_text" android:lineSpacingExtra="1dp" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/offer_btn"
+            android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+            android:minHeight="48dp" style="@style/Widget.Hopline.Button.Quiet" android:textSize="14.5sp" />
+    </LinearLayout>
+
+    <LinearLayout android:id="@+id/actions" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="2dp" android:orientation="horizontal" android:gravity="end" android:visibility="gone">
+        <com.google.android.material.button.MaterialButton android:id="@+id/action"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            style="@style/Widget.Hopline.Net.TextAction" android:visibility="gone" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/read"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/net_read" style="@style/Widget.Hopline.Net.TextAction"
+            app:icon="@drawable/ic_net_chevron" app:iconGravity="textEnd" app:iconSize="20dp" app:iconPadding="0dp"
+            android:visibility="gone" />
+    </LinearLayout>
+</LinearLayout>

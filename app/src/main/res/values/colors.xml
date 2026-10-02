@@ -9,8 +9,7 @@
     <!-- Brand -->
     <color name="ember">#D9481F</color>          <!-- primary actions, FAB, links -->
     <color name="ember_deep">#B03A17</color>     <!-- pressed / emphasis -->
-    <color name="ember_soft">#FDEBE3</color>     <!-- tinted fills: chips, highlights -->
-    <color name="ink">#1A2130</color>            <!-- titles, primary text -->
+    <color name="ember_soft">#FDEBE3</color>     <!-- tinted fills: chips, highlights -->            <!-- titles, primary text -->
 
     <!-- Surfaces -->
     <color name="bg">#F7F5F1</color>             <!-- warm paper window background -->
@@ -72,6 +71,11 @@
     <!-- Unread badge -->
     <color name="unread">#D9481F</color>
     <color name="unread_text">#FFFFFF</color>
+
+    <!-- Long-press menu: the dim layer over the chat, and "this reaction is mine" -->
+    <color name="scrim">#66101420</color>
+    <color name="reaction_mine_bg">#FDE3D8</color>
+    <color name="reaction_mine_stroke">#F3B9A2</color>
 
     <!-- Launcher -->
     <color name="launcher_bg">#1A2130</color>

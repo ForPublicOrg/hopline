@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Photo viewer -->
+    <string name="viewer_photo">Photo</string>
+    <string name="viewer_photo_from">Photo from %1$s</string>
+    <string name="viewer_photo_from_caption">Photo from %1$s: %2$s</string>
+    <string name="viewer_loading">Loading the photo</string>
+    <string name="viewer_save">Save to phone</string>
+    <string name="viewer_share">Share</string>
+    <string name="viewer_open_with">Open with…</string>
+    <string name="viewer_missing">This photo isn\'t on this phone any more.</string>
+    <string name="viewer_cant_show">Hopline can\'t show this picture, but another app on your phone may be able to.</string>
+
+    <!-- Saving, sharing and opening received files -->
+    <string name="media_saved_to">Saved to %1$s</string>
+    <string name="media_saved">Saved</string>
+    <string name="media_save_failed">Couldn\'t save it. Your phone\'s storage may be full.</string>
+    <string name="media_share_failed">Couldn\'t share it. Your phone\'s storage may be full.</string>
+    <string name="media_no_app">No app on this phone can open %1$s.</string>
+    <string name="media_missing">That file isn\'t on this phone any more.</string>
+
+    <!-- Voice notes -->
+    <string name="voice_cant_play">Can\'t play this voice note.</string>
+</resources>

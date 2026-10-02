@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- One choice in the "daily allowance" row: brand colours instead of Material's default purple. -->
+    <style name="Widget.Hopline.Net.Segment" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="backgroundTint">@color/net_seg_bg</item>
+        <item name="android:textColor">@color/net_seg_text</item>
+        <item name="strokeColor">@color/net_seg_stroke</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:paddingStart">2dp</item>
+        <item name="android:paddingEnd">2dp</item>
+        <item name="android:maxLines">1</item>
+    </style>
+
+    <!-- A saved "text home" person: checked = this one gets it. Ember wash, not Material's purple. -->
+    <style name="Widget.Hopline.Net.Chip" parent="Widget.Material3.Chip.Filter">
+        <item name="materialThemeOverlay">@style/ThemeOverlay.Hopline.Net.Chip</item>
+        <item name="chipMinTouchTargetSize">48dp</item>
+        <item name="ensureMinTouchTargetSize">true</item>
+        <item name="android:textSize">14.5sp</item>
+    </style>
+    <style name="ThemeOverlay.Hopline.Net.Chip" parent="">
+        <item name="colorSecondaryContainer">@color/ember_soft</item>
+        <item name="colorOnSecondaryContainer">@color/ember_deep</item>
+        <item name="colorOnSurfaceVariant">@color/text</item>
+        <item name="colorOutline">@color/divider</item>
+    </style>
+
+    <!-- Small text actions on a request card ("Ask again", "Read ›"). -->
+    <style name="Widget.Hopline.Net.TextAction" parent="Widget.Material3.Button.TextButton">
+        <item name="android:minHeight">48dp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">@color/internet_badge</item>
+        <item name="iconTint">@color/internet_badge</item>
+    </style>
+</resources>

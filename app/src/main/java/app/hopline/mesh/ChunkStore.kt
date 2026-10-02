@@ -14,6 +14,21 @@ interface ChunkStore {
     fun get(id: String): Envelope?
     /** Drop chunks older than `before` (their envelope ts). Assembled files are kept elsewhere. */
     fun expire(before: Long)
+
+    /**
+     * What the link-up inventory lists: the pieces held, plus pieces this phone let go of while
+     * friends may still carry them (expired here first, evicted for room, turned away while the
+     * phone was nearly full). Listing those stops a neighbour re-sending them every sync only for
+     * them to be thrown away. [has]/[get]/[ids] stay limited to pieces actually held.
+     */
+    fun advertised(): List<String> = ids()
+
+    /**
+     * Pieces turned away earlier that this phone can take now (space came back, or a stray piece's
+     * message arrived). The router forgets it saw them, so the next sync brings them again.
+     * Each id is handed out once.
+     */
+    fun takeReleased(): List<String> = emptyList()
 }
 
 class MemoryChunkStore : ChunkStore {

@@ -19,16 +19,28 @@ object Permissions {
             list += Manifest.permission.NEARBY_WIFI_DEVICES
             list += Manifest.permission.POST_NOTIFICATIONS
         } else {
+            // Android 12/12L silently ignores a request for FINE without COARSE.
             list += Manifest.permission.ACCESS_FINE_LOCATION
+            list += Manifest.permission.ACCESS_COARSE_LOCATION
         }
         return list
     }
 
-    fun allGranted(context: Context): Boolean = required().all { p ->
-        // notifications are nice-to-have; everything else is needed to link phones
-        p == Manifest.permission.POST_NOTIFICATIONS ||
-            ContextCompat.checkSelfPermission(context, p) == PackageManager.PERMISSION_GRANTED
+    fun allGranted(context: Context): Boolean = missing(context).isEmpty()
+
+    /**
+     * The permissions still missing that Nearby truly needs. Notifications are nice-to-have, and
+     * COARSE only rides along with FINE (Nearby scanning needs precise location below Android 13).
+     */
+    fun missing(context: Context): List<String> = required().filter { p ->
+        p != Manifest.permission.POST_NOTIFICATIONS && p != Manifest.permission.ACCESS_COARSE_LOCATION &&
+            ContextCompat.checkSelfPermission(context, p) != PackageManager.PERMISSION_GRANTED
     }
+
+    /** "Approximate" was chosen where Nearby needs "Precise" (Android 12/12L). */
+    fun onlyApproximate(context: Context): Boolean = Build.VERSION.SDK_INT in 31..32 &&
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED &&
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
 
     /** Older Android needs Location *services* switched on for Bluetooth scanning, even with permission granted. */
     fun needsLocationService(): Boolean = Build.VERSION.SDK_INT < 31

@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Screens: Home, People, Settings, Group info, start/join, code, welcome, permissions (2.2) -->
+
+    <!-- Shared -->
+    <string name="your_group">Your group</string>
+    <string name="our_group">our group</string>
+    <string name="save">Save</string>
+    <string name="starting_try_again">Hopline is starting — try again in a moment.</string>
+    <string name="dismiss">Dismiss</string>
+
+    <!-- Names -->
+    <string name="name_change_explain">Everyone will see your new name — on your old messages too.</string>
+    <string name="name_too_short">Type at least 2 letters</string>
+    <string name="name_shared_warning">Someone else in the group is also called %1$s. Everyone will see a short tag next to your names to tell you apart.</string>
+    <string name="group_rename_explain">Everyone in the group will see the new name. Phones out of range get it when they come back.</string>
+    <string name="group_name_empty">Type a name for the group</string>
+    <string name="group_rename_failed">Couldn\'t rename the group — try again in a moment.</string>
+    <string name="me_row_desc">%1$s, your name. Tap to change it.</string>
+    <string name="group_row_desc">%1$s. Open group info.</string>
+
+    <!-- Home -->
+    <string name="me_avatar_desc">Your name and settings</string>
+    <string name="direct_chats">Direct chats</string>
+    <string name="preview_you">You: %1$s</string>
+    <string name="preview_from">%1$s: %2$s</string>
+    <string name="notice_renamed_by">%1$s renamed the group to “%2$s”</string>
+    <string name="notice_renamed_by_you">You renamed the group to “%1$s”</string>
+    <string name="reacted_you">You reacted %1$s to “%2$s”</string>
+    <plurals name="paused_unread">
+        <item quantity="one">%d new message — tap to connect</item>
+        <item quantity="other">%d new messages — tap to connect</item>
+    </plurals>
+    <string name="wifi_off_linked">WiFi is off — photos and files will be slower. Tap to turn it on</string>
+    <string name="notif_off_row">Notifications are off — you won\'t hear new messages</string>
+    <string name="notif_turn_on">Turn on</string>
+    <string name="notif_still_off">Notifications are still off. Tap Turn on again to change it in Settings.</string>
+    <string name="menu_mute">Mute notifications</string>
+    <string name="menu_unmute">Unmute</string>
+    <string name="menu_clear_chat">Clear chat</string>
+    <string name="menu_delete_chat">Delete chat</string>
+    <string name="menu_group_info">Group info</string>
+    <string name="menu_switch_group">Switch to this group</string>
+    <string name="menu_remove_group">Remove from this phone</string>
+    <string name="muted_desc">Muted</string>
+    <string name="in_range_desc">In range</string>
+    <plurals name="unread_desc">
+        <item quantity="one">%d unread message</item>
+        <item quantity="other">%d unread messages</item>
+    </plurals>
+    <plurals name="internet_answers_desc">
+        <item quantity="one">%d new answer</item>
+        <item quantity="other">%d new answers</item>
+    </plurals>
+
+    <!-- Mute, clear, delete -->
+    <string name="mute_title">Mute notifications</string>
+    <string name="mute_group_body">You won\'t hear new messages in this group. You\'ll still be told when someone mentions you.</string>
+    <string name="mute_dm_body">You won\'t hear new messages from %1$s.</string>
+    <string name="mute_8h">8 hours</string>
+    <string name="mute_week">1 week</string>
+    <string name="mute_always">Always</string>
+    <string name="mute_btn">Mute</string>
+    <string name="mute_off">Off</string>
+    <string name="mute_until">Muted until %1$s</string>
+    <string name="mute_always_state">Muted until you turn it back on</string>
+    <string name="clear_group_title">Clear this chat?</string>
+    <string name="clear_group_body">Every message in “%1$s” will be removed from this phone. Everyone else keeps theirs.</string>
+    <string name="delete_dm_title">Delete chat with %1$s?</string>
+    <string name="delete_dm_body">Your messages with %1$s will be removed from this phone. %1$s keeps their copy.</string>
+    <string name="chat_cleared">Chat cleared</string>
+    <string name="chat_deleted">Chat deleted</string>
+    <string name="group_removed">Removed “%1$s” from this phone</string>
+
+    <!-- People -->
+    <string name="you_change_name">Tap to change your name</string>
+    <string name="people_starting">Hopline is starting…</string>
+    <string name="people_no_match">Nobody here is called “%1$s”</string>
+    <string name="action_private_chat">start a private chat</string>
+
+    <!-- Group info -->
+    <string name="group_info">Group info</string>
+    <string name="group_name_desc">Group name: %1$s. Tap to rename it for everyone.</string>
+    <string name="code_desc">Group code: %1$s. Tap to copy.</string>
+    <string name="code_clip_label">Hopline group code</string>
+    <string name="show_qr">Show QR</string>
+    <plurals name="group_people">
+        <item quantity="one">Group · %d person</item>
+        <item quantity="other">Group · %d people</item>
+    </plurals>
+    <plurals name="members_count">
+        <item quantity="one">%d person</item>
+        <item quantity="other">%d people</item>
+    </plurals>
+    <string name="members_header">%1$s · %2$d in range</string>
+    <string name="only_you">Nobody else has joined yet. Share the code so friends can join.</string>
+    <string name="view_all">See everyone (%1$d)</string>
+    <string name="renamed_by">%1$s renamed the group · %2$s</string>
+    <string name="renamed_by_you">You renamed the group · %1$s</string>
+    <string name="started_by_you">You started this group · %1$s</string>
+    <string name="named_at">Name last changed %1$s</string>
+
+    <!-- Code screen -->
+    <string name="qr_desc">QR code to join %1$s</string>
+
+    <!-- Start / join -->
+    <string name="hello_name">Hi %1$s! 👋</string>
+    <string name="default_group_name">%1$s\'s group</string>
+    <string name="scan_prompt">Point at your friend\'s screen</string>
+    <string name="scan_no_camera">Hopline needs the camera to scan a QR code. You can type the 3 words instead.</string>
+    <string name="did_you_mean_title">Did you mean “%1$s”?</string>
+    <string name="did_you_mean_body">Hopline codes are three words from Hopline\'s own list — this is the closest match.</string>
+    <plurals name="unknown_words">
+        <item quantity="one">%1$s isn\'t one of Hopline\'s code words.</item>
+        <item quantity="other">%1$s aren\'t Hopline code words.</item>
+    </plurals>
+    <string name="use_suggestion">Use that</string>
+    <string name="join_as_typed">Join as typed</string>
+    <string name="check_code_title">Check the code</string>
+    <plurals name="unknown_words_check">
+        <item quantity="one">%1$s isn\'t one of Hopline\'s code words — check the code with your friend. A code that is off by one word finds nobody.</item>
+        <item quantity="other">%1$s aren\'t Hopline code words — check the code with your friend. A code that is off by one word finds nobody.</item>
+    </plurals>
+    <string name="join_anyway">Join anyway</string>
+    <string name="already_in_group">You\'re already in “%1$s”</string>
+    <string name="not_invite_title">That QR code isn\'t a Hopline invite</string>
+    <string name="not_invite_body">It says: “%1$s”\n\nAsk your friend to open Hopline and tap Show group code, then scan the code on their screen.</string>
+    <string name="scan_again">Scan again</string>
+    <string name="bad_link">That invite link is broken — ask your friend for the 3 words instead.</string>
+    <string name="join_link_title">Join “%1$s”?</string>
+    <string name="link_odd_words">This code isn\'t made of Hopline\'s words. Join only if your friend sent you this link.</string>
+
+    <!-- Permissions -->
+    <string name="perm_location_note">Android will also ask for Location: on this Android version, finding phones over Bluetooth needs it. Hopline never shares where you are unless you send it.</string>
+    <string name="perm_denied_nearby">Hopline can\'t find other phones without the Nearby devices permission. Open Settings → Permissions and allow Nearby devices.</string>
+    <string name="perm_denied_location">Hopline can\'t find other phones without the Location permission — on this Android version, Bluetooth needs it. Open Settings → Permissions and allow Location.</string>
+    <string name="perm_denied_both">Hopline can\'t find other phones without the Nearby devices and Location permissions. Open Settings → Permissions and allow both.</string>
+    <string name="perm_precise">On this Android version Hopline needs your precise location to find phones over Bluetooth. Open Settings → Permissions → Location and turn on “Use precise location”. Your position is never shared unless you send it.</string>
+    <string name="play_update">Google Play services on this phone needs an update — Hopline uses it to link phones. The update needs internet once; after that Hopline works with no signal at all.</string>
+    <string name="play_disabled">Google Play services is turned off on this phone — Hopline uses it to link phones. Turn it back on, then come back here.</string>
+    <string name="play_updating">Google Play services is updating. Try again in a minute.</string>
+    <string name="play_update_btn">Update Google Play services</string>
+    <string name="play_enable_btn">Turn on Google Play services</string>
+    <string name="try_again">Try again</string>
+    <string name="check_bt_on">✓  Bluetooth is on</string>
+    <string name="check_bt_off">Bluetooth is off</string>
+    <string name="check_wifi_on">✓  WiFi is on</string>
+    <string name="check_wifi_off">WiFi is off (it doesn\'t need to be connected to anything)</string>
+    <string name="check_loc_on">✓  Location is on</string>
+    <string name="check_loc_off">Location is off (older Android needs it to see Bluetooth)</string>
+
+    <!-- Settings -->
+    <string name="share_internet_sub_budget">Friends can text home, check the weather and look things up through your phone when it has signal — up to %1$d MB of your data a day.</string>
+    <string name="share_internet_sub_unlimited">Friends can text home, check the weather and look things up through your phone when it has signal — with no daily limit.</string>
+    <string name="how_it_works_body_v2">Phones in your group link to each other directly over Bluetooth and WiFi — no tower, no router, no internet.\n\nEvery message is signed with your group\'s code and passed from phone to phone, so it can travel down a line of hikers or across a crowd, far beyond one phone\'s range.\n\nEvery phone keeps the group\'s messages for 48 hours and fills in anyone who was away. Walk off, come back — the chat catches up on its own.\n\nThe ticks never lie: ◷ waiting for a phone in range, ✓ on its way, ✓✓ phones confirmed. Tap your own message to see exactly who has it.\n\nDirect chats only show up on your screen and theirs — but they are not encrypted. Like everything else, they are passed along by the group\'s phones on the way, so someone with the group code and a modified app could read them.\n\nNames aren\'t checked: anyone with the code can call themselves anything. When two people share a name, Hopline adds a short tag to tell them apart.\n\nAnyone with the 3-word code can read the group, so treat it like a walkie-talkie, not a vault.</string>
+</resources>

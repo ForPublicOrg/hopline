@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One numbered link from a page ("[3] Road status — hptdc.in"); tap to read it next. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="horizontal" android:gravity="center_vertical" android:minHeight="52dp"
+    android:paddingStart="14dp" android:paddingEnd="8dp" android:paddingTop="8dp" android:paddingBottom="8dp"
+    android:background="?attr/selectableItemBackground">
+    <TextView android:id="@+id/num" android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:minWidth="30dp" android:textSize="13sp" android:textStyle="bold" android:textColor="@color/internet_badge"
+        android:importantForAccessibility="no" />
+    <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+        android:orientation="vertical" android:layout_marginStart="6dp">
+        <TextView android:id="@+id/label" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="14.5sp" android:textColor="@color/text" android:maxLines="2" android:ellipsize="end" />
+        <TextView android:id="@+id/host" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="12sp" android:textColor="@color/text_muted" android:maxLines="1" android:ellipsize="end" />
+    </LinearLayout>
+    <ImageView android:layout_width="20dp" android:layout_height="20dp" android:src="@drawable/ic_net_chevron"
+        android:importantForAccessibility="no" />
+</LinearLayout>

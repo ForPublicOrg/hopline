@@ -1,14 +1,24 @@
 package app.hopline.mesh
 
 import app.hopline.core.Crypto
+import app.hopline.core.Names
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
 
 class Identity(val id: String, var name: String)
 
-class Group(code: String, var name: String) {
+class Group(code: String, var name: String, nameAt: Long = 0, nameV: Int = 0) {
     val code: String = app.hopline.core.Words.normalise(code)
+    /**
+     * How many renames [name] comes after: each rename is one more than the newest it saw, so a
+     * rename made after another always wins — whatever anyone's clock says. 0 = never renamed
+     * (a name typed at join, a QR's name, or a 2.1-era group).
+     */
+    var nameV: Int = nameV
+    /** When [name] was set, on this phone's clock as best it can tell: only breaks a tie between
+     *  two renames made without seeing each other. 0 = unknown. */
+    var nameAt: Long = nameAt
     val key: ByteArray = Crypto.groupKey(this.code)
     val fingerprint: String = Crypto.fingerprint(key)
 }
@@ -40,6 +50,9 @@ class Envelope(val json: JSONObject) {
         const val PRESENCE = "pres"  // "I'm alive, here's my name, do I have internet"
         const val ERRAND = "errand"  // "someone with internet, please do this"
         const val ERRAND_RESULT = "errres"
+        /** "My phone is on your request" / "I can't, someone else take it". Live only, never carried:
+         *  2.x phones relay unknown kinds without storing them. */
+        const val ERRAND_ACK = "erak"
         const val FILE = "file"      // a photo/file message: caption + attachment meta (name, size, chunk count, thumb)
         const val CHUNK = "fchk"     // one piece of a file's data; id is deterministic: f.<fid>.<index>
         const val REACT = "reac"     // an emoji on message X; 2.0 clients relay but don't carry or show it
@@ -61,7 +74,8 @@ class Envelope(val json: JSONObject) {
  * (name, size, a tiny thumbnail) and to know when it has all the pieces.
  */
 class Attachment(val json: JSONObject) {
-    val fid: String get() = json.getString("fid")
+    /** Empty when a crafted/buggy sender left it out — such a file is refused before it is shown. */
+    val fid: String get() = json.optString("fid", "")
     val name: String get() = json.optString("name", "file")
     val mime: String get() = json.optString("mime", "application/octet-stream")
     val size: Long get() = json.optLong("size", 0)
@@ -71,9 +85,17 @@ class Attachment(val json: JSONObject) {
     val thumb: String get() = json.optString("tb", "")   // tiny base64 JPEG, shown while pieces arrive
     val dur: Int get() = json.optInt("dur", 0).coerceIn(0, 3600)   // seconds, for voice notes
     val isImage: Boolean get() = mime.startsWith("image/")
+    /** A photo this app can draw inline: one we shrank ourselves (it carries its size), or a format
+     *  Android's decoder reads. An SVG/TIFF/RAW picked as a file stays a file and opens elsewhere. */
+    val isInlineImage: Boolean get() = isImage && ((width > 0 && height > 0) || mime.lowercase() in INLINE_MIMES)
     val isAudio: Boolean get() = mime.startsWith("audio/")
 
     companion object {
+        private val INLINE_MIMES = setOf("image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif", "image/bmp")
+        /** File ids come from Crypto.randomId — anything else is a crafted envelope (and a file path). */
+        private val FID = Regex("^[a-z0-9]{6,24}$")
+        fun validFid(fid: String): Boolean = FID.matches(fid)
+
         fun make(fid: String, name: String, mime: String, size: Long, chunks: Int, w: Int, h: Int, thumb: String, dur: Int = 0): Attachment =
             Attachment(JSONObject().apply {
                 put("fid", fid); put("name", name); put("mime", mime); put("size", size); put("n", chunks)
@@ -87,11 +109,13 @@ class Attachment(val json: JSONObject) {
  * What a reply points back at. The name and a snippet travel WITH the reply, so the quote block
  * renders even when the original hasn't hopped in yet (or already expired from the 48 h carry).
  */
-class Quote(val id: String, val name: String, val text: String) {
-    fun toJson(): JSONObject = JSONObject().apply { put("id", id); put("n", name); put("t", text) }
+class Quote(val id: String, val name: String, val text: String, val origin: String = "") {
+    /** "o" (who wrote the original) is new in 2.2; older clients ignore it. */
+    fun toJson(): JSONObject = JSONObject().apply { put("id", id); put("n", name); put("t", text); if (origin.isNotEmpty()) put("o", origin) }
     companion object {
         const val MAX_SNIPPET = 120
-        fun of(m: Message): Quote {
+        /** [name] is who the quoted person is NOW (they may have renamed since the message was sent). */
+        fun of(m: Message, name: String = m.fromName): Quote {
             val snippet = when {
                 m.loc != null -> "📍 " + m.loc.label.ifEmpty { "Location" }
                 m.att?.isAudio == true -> "🎤 Voice note"
@@ -99,12 +123,13 @@ class Quote(val id: String, val name: String, val text: String) {
                 m.att != null -> "📎 " + m.att.name
                 else -> m.text
             }
-            return Quote(m.id, m.fromName, snippet.take(MAX_SNIPPET))
+            return Quote(m.id, name, snippet.take(MAX_SNIPPET), m.from)
         }
         fun fromJson(j: JSONObject?): Quote? {
             if (j == null) return null
             val id = j.optString("id"); if (id.isEmpty() || id.length > 40) return null
-            return Quote(id, j.optString("n", "").take(40), j.optString("t", "").take(MAX_SNIPPET))
+            val o = j.optString("o", "").takeIf { it.length <= 40 } ?: ""
+            return Quote(id, Names.clean(j.optString("n", "")), j.optString("t", "").take(MAX_SNIPPET), o)
         }
     }
 }
@@ -215,6 +240,10 @@ class Message(
     var status: String = SENT            // only meaningful for my own messages
     /** When THIS phone got it (its own clock). Unread badges use this — sender clocks drift. */
     var arrivedAt: Long = ts
+    /** Where it sits in the chat: the sender's time, but never more than a few minutes past the
+     *  moment it reached us — a phone with a wild clock (or a crafted stamp) can't pin a message
+     *  under everything said after it. */
+    val sortKey: Long get() = minOf(ts, arrivedAt + 5 * 60_000L)
     val reached: MutableSet<String> = LinkedHashSet()   // node ids whose phone confirmed it
     var errandId: String? = null
 
@@ -224,6 +253,10 @@ class Message(
 
     /** True for a group-chat-visible message (not a DM). */
     val isGroup: Boolean get() = to == null
+    /** A centred line about the chat itself ("Asha renamed the group"), not something someone said. */
+    val isNotice: Boolean get() = kind == NOTICE
+    /** Internet answers and notices: no reply, no reactions, no ticks, no unread badge for notices. */
+    val isPersonal: Boolean get() = kind != SYSTEM && kind != NOTICE
 
     /**
      * Apply one person's reaction. Envelopes arrive in any order and are re-received from carry,
@@ -244,12 +277,31 @@ class Message(
         return had != emoji.ifEmpty { null }
     }
 
-    /** "👍 3  ❤️ 1" — what the pill under the bubble shows. */
-    fun reactionSummary(): String {
-        if (reactions.isEmpty()) return ""
+    /** Each emoji with how many people chose it, most popular first (ties: whichever came first). */
+    fun reactionCounts(): List<Pair<String, Int>> {
+        if (reactions.isEmpty()) return emptyList()
         val counts = LinkedHashMap<String, Int>()
         for (e in reactions.values) counts[e] = (counts[e] ?: 0) + 1
-        return counts.entries.joinToString("  ") { (e, n) -> if (n == 1) e else "$e $n" }
+        return counts.entries.sortedByDescending { it.value }.map { it.key to it.value }
+    }
+
+    /** When [origin]'s current reaction (or its removal) was made, by their clock. */
+    fun reactionTsOf(origin: String): Long? = reactionTs[origin]
+
+    /** "👍 3  ❤️ 1" — a stable fingerprint of the reactions, for redraw decisions. */
+    fun reactionSummary(): String =
+        reactionCounts().joinToString("  ") { (e, n) -> if (n == 1) e else "$e $n" }
+
+    /**
+     * What the pill under a bubble shows, WhatsApp-style: up to three emoji, most popular first,
+     * then the total when more than one person reacted — "👍❤️😂 7".
+     */
+    fun reactionPill(): String {
+        val counts = reactionCounts()
+        if (counts.isEmpty()) return ""
+        val total = counts.sumOf { it.second }
+        val faces = counts.take(3).joinToString("") { it.first }
+        return if (total > 1) "$faces $total" else faces
     }
 
     fun toJson(): JSONObject = JSONObject().apply {
@@ -270,11 +322,13 @@ class Message(
 
     companion object {
         const val SYSTEM = "system"
+        const val NOTICE = "notice"        // local rendering of a chat-level event, e.g. a group rename
         const val QUEUED = "queued"        // nobody has taken it off my phone yet
         const val SENT = "sent"            // at least one other phone has it
         const val DELIVERED = "delivered"  // the recipient's phone has it (DMs)
         const val MAX_MENTIONS = 20
-        const val MAX_EMOJI = 8            // UTF-16 units; the biggest real emoji sequences fit
+        /** UTF-16 units. 2.1 clipped at 8; 16 fits skin-toned ZWJ sequences and flag tags. */
+        const val MAX_EMOJI = 16
         const val MAX_REACTORS = 500       // per message; far beyond any honest group
 
         fun mentionsFromJson(a: JSONArray?): List<String> {
@@ -287,7 +341,7 @@ class Message(
         }
 
         fun fromJson(j: JSONObject): Message = Message(
-            j.getString("id"), j.getString("kind"), j.getString("from"), j.optString("fromName", ""),
+            j.getString("id"), j.getString("kind"), j.getString("from"), Names.clean(j.optString("fromName", "")),
             j.optString("to", "").ifEmpty { null }, j.getString("text"), j.getLong("ts"),
             j.optJSONObject("att")?.let { Attachment(it) },
             Loc.fromJson(j.optJSONObject("loc")),
@@ -310,6 +364,8 @@ class Message(
 
 class Person(val id: String) {
     var name: String = ""
+    /** The sender-clock time of the envelope that set [name]; older envelopes never overwrite it. */
+    var nameAt: Long = 0
     var lastSeen: Long = 0     // last moment we know their phone was alive
     var hasInternet: Boolean = false
     var hops: Int = 99         // how many phones away, from their latest presence
@@ -318,50 +374,186 @@ class Person(val id: String) {
     /** Live location, while they share it. Rides presence, so it clears itself when they stop.
      *  Deliberately not persisted — a position from before a restart is a lie. */
     var loc: Loc? = null
-    var locAt: Long = 0        // their clock, from the presence envelope that carried it
+    var locAt: Long = 0        // their clock, from the presence envelope that carried it (ordering only)
+    /** How far their clock runs ahead of ours (negative: behind), measured from their latest
+     *  presence — never carried, so it arrives within seconds. 0 until heard. Not persisted. */
+    var skew: Long = 0
+    var skewKnown: Boolean = false
+    var locHeardAt: Long = 0   // OUR clock when that beacon arrived (freshness — their clock may be off)
+    /** Highest protocol version this phone ever showed us. A 4+ phone never gets to fall back to
+     *  the old, relayable link proof. Persisted. */
+    var ver: Int = 0
+    /** Shared-internet protocol and what their phone can do right now (bitmask of Errand.CAP_*).
+     *  From presence only — a capability from before a restart is stale, so not persisted. */
+    var ev: Int = 0
+    var cap: Int = 0
 
     fun toJson(): JSONObject = JSONObject().apply {
-        put("id", id); put("name", name); put("lastSeen", lastSeen); put("hasInternet", hasInternet)
+        put("id", id); put("name", name); put("nameAt", nameAt); put("lastSeen", lastSeen); put("hasInternet", hasInternet)
         put("hops", hops); put("battery", battery)
+        if (ver > 0) put("ver", ver)
     }
     companion object {
         fun fromJson(j: JSONObject): Person = Person(j.getString("id")).also {
-            it.name = j.optString("name", ""); it.lastSeen = j.optLong("lastSeen", 0)
+            it.name = Names.clean(j.optString("name", "")); it.nameAt = j.optLong("nameAt", 0); it.lastSeen = j.optLong("lastSeen", 0)
             it.hasInternet = j.optBoolean("hasInternet", false); it.hops = j.optInt("hops", 99)
             it.battery = j.optInt("battery", -1)
+            it.ver = j.optInt("ver", 0)
         }
     }
 }
 
+/**
+ * A request for the internet, run by whichever phone in the group has signal. Lives on the asker's
+ * phone (with its answer) and, while open, on helpers' phones (so they can pick it up later).
+ */
 class Errand(
     val id: String,
-    val type: String,          // weather | send | read
+    val type: String,          // read | find | wx | send
     val args: JSONObject,
     val from: String,
     val fromName: String,
     val ts: Long,
 ) {
-    var helper: String? = null   // node id of the phone asked to do it
+    var helper: String? = null   // the phone that is on it (claimed), or was asked
     var helperName: String = ""
     var status: String = WAITING
+    /** Plain-text answer: a 2.x helper's public result, or a short summary of a private answer. */
     var result: String? = null
+    var title: String = ""
+    /** The private answer's body, gzip+base64 as it arrived (decoded on demand — see [answer]). */
+    var answerZ: String = ""
+    var answeredAt: Long = 0     // OUR clock
+    var answeredBy: String = ""  // the helper's name
+    var cost: Int = 0            // bytes of the helper's data it used
+    var why: String = ""         // short reason code when it failed
+    var part: Int = 1
+    var parts: Int = 1
+    /** The asker understands private answers (2.2+). A 2.x asker gets the classic public answer. */
+    var rv: Int = 1
+    /** Local-clock deadline after which nobody should start it. */
+    var exp: Long = 0
+    /** Helpers that already had a go (claimed then went quiet, or said no). */
+    val tried = LinkedHashSet<String>()
+    /** Old-version helpers we asked directly after the asker agreed to a public answer. */
+    val legacyAsked = LinkedHashSet<String>()
+    var allowPublic = false
+    /** Local time until which [helper]'s claim holds; 0 = no live claim. */
+    var leaseUntil: Long = 0
+    /** Envelope ts of the newest dispatch applied — an older one replayed by gap-fill loses. */
+    var dispatchTs: Long = 0
+    var lastDispatchAt: Long = 0 // OUR clock, last time the asker (re)sent it
+    /** Ids of helpers the asker preferred, in order. */
+    var pick: List<String> = emptyList()
+
+    val isOpen: Boolean get() = status == WAITING || status == ASKED || status == CLAIMED
+
+    /** The private answer, decoded. Null for a public/legacy answer or a corrupt body. */
+    fun answer(): JSONObject? = if (answerZ.isEmpty()) null else Gz.unpackJson(answerZ)
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id); put("type", type); put("args", args); put("from", from); put("fromName", fromName); put("ts", ts)
         put("helper", helper ?: ""); put("helperName", helperName); put("status", status); put("result", result ?: "")
+        if (title.isNotEmpty()) put("title", title)
+        if (answerZ.isNotEmpty()) put("z", answerZ)
+        if (answeredAt > 0) put("answeredAt", answeredAt)
+        if (answeredBy.isNotEmpty()) put("answeredBy", answeredBy)
+        if (cost > 0) put("cost", cost)
+        if (why.isNotEmpty()) put("why", why)
+        if (parts > 1) { put("part", part); put("parts", parts) }
+        put("rv", rv); put("exp", exp)
+        if (tried.isNotEmpty()) put("tried", JSONArray(tried.toList()))
+        if (legacyAsked.isNotEmpty()) put("legacyAsked", JSONArray(legacyAsked.toList()))
+        if (allowPublic) put("allowPublic", true)
+        if (dispatchTs > 0) put("dispatchTs", dispatchTs)
+        // Local-clock times: a restart must not make a live claim look lapsed (someone else would
+        // start the same fetch, or text the same family), nor forget that the group has the request.
+        if (leaseUntil > 0) put("lease", leaseUntil)
+        if (lastDispatchAt > 0) put("lastDispatchAt", lastDispatchAt)
+        if (pick.isNotEmpty()) put("pick", JSONArray(pick))
     }
+
     companion object {
-        const val WAITING = "waiting"   // nobody with internet yet
-        const val ASKED = "asked"       // sent to a helper
+        const val WAITING = "waiting"     // nobody with signal is around yet — it travels with the group
+        const val ASKED = "asked"         // phones that can do it have it
+        const val CLAIMED = "claimed"     // one of them said "on it"
         const val DONE = "done"
-        const val SEND = "send"
-        const val READ = "read"
+        const val FAILED = "failed"       // a helper tried and it can't be done (bad link, not a text page…)
+        const val EXPIRED = "expired"     // nobody got signal in time
+        const val CANCELLED = "cancelled"
+
+        const val READ = "read"           // a web page, as text
+        const val FIND = "find"           // look something up
+        const val WX = "wx"               // weather for a place
+        const val SEND = "send"           // an SMS or email, sent by a person with signal
+
+        /** What a phone can do for the group right now, advertised in presence "cap". */
+        const val CAP_READ = 1
+        const val CAP_FIND = 2
+        const val CAP_WX = 4
+        const val CAP_SMS = 8             // has mobile service: can text by hand
+        const val CAP_MAIL = 16           // has data: can open an email for someone
+
+        /** Shared-internet protocol version announced in presence "ev". 2 = open requests, claims, private answers. */
+        const val EV = 2
+
+        fun isEmailTarget(args: JSONObject): Boolean = args.optString("to").contains('@')
+
+        fun capFor(type: String, args: JSONObject): Int = when (type) {
+            READ -> CAP_READ
+            FIND -> CAP_FIND
+            WX -> CAP_WX
+            SEND -> if (isEmailTarget(args)) CAP_MAIL else CAP_SMS
+            else -> 0
+        }
+
         fun fromJson(j: JSONObject): Errand = Errand(
-            j.getString("id"), j.getString("type"), j.getJSONObject("args"), j.getString("from"),
-            j.optString("fromName", ""), j.getLong("ts"),
+            j.getString("id"), j.getString("type"), j.optJSONObject("args") ?: JSONObject(), j.getString("from"),
+            Names.clean(j.optString("fromName", "")), j.getLong("ts"),
         ).also {
-            it.helper = j.optString("helper", "").ifEmpty { null }; it.helperName = j.optString("helperName", "")
+            it.helper = j.optString("helper", "").ifEmpty { null }; it.helperName = Names.clean(j.optString("helperName", ""))
             it.status = j.optString("status", WAITING); it.result = j.optString("result", "").ifEmpty { null }
+            it.title = j.optString("title", "")
+            it.answerZ = j.optString("z", "")
+            it.answeredAt = j.optLong("answeredAt", 0)
+            it.answeredBy = j.optString("answeredBy", "")
+            it.cost = j.optInt("cost", 0)
+            it.why = j.optString("why", "")
+            it.part = j.optInt("part", 1); it.parts = j.optInt("parts", 1)
+            it.rv = j.optInt("rv", 1)
+            it.exp = j.optLong("exp", 0)
+            j.optJSONArray("tried")?.let { a -> for (i in 0 until a.length()) it.tried.add(a.optString(i)) }
+            j.optJSONArray("legacyAsked")?.let { a -> for (i in 0 until a.length()) it.legacyAsked.add(a.optString(i)) }
+            it.allowPublic = j.optBoolean("allowPublic", false)
+            it.dispatchTs = j.optLong("dispatchTs", 0)
+            it.leaseUntil = j.optLong("lease", 0)
+            it.lastDispatchAt = j.optLong("lastDispatchAt", 0)
+            j.optJSONArray("pick")?.let { a -> it.pick = (0 until minOf(a.length(), 3)).map { i -> a.optString(i) }.filter { id -> id.isNotEmpty() } }
         }
     }
+}
+
+/** gzip + URL-safe base64 for answers that ride one radio frame. Bounded on the way in (no zip bombs). */
+object Gz {
+    const val MAX_INFLATED = 512 * 1024
+
+    fun pack(json: JSONObject): String {
+        val bos = java.io.ByteArrayOutputStream()
+        java.util.zip.GZIPOutputStream(bos).use { it.write(json.toString().toByteArray(Charsets.UTF_8)) }
+        return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bos.toByteArray())
+    }
+
+    fun unpackJson(z: String): JSONObject? = try {
+        val bytes = java.util.Base64.getUrlDecoder().decode(z)
+        val out = java.io.ByteArrayOutputStream()
+        java.util.zip.GZIPInputStream(java.io.ByteArrayInputStream(bytes)).use { ins ->
+            val buf = ByteArray(8192)
+            while (true) {
+                val n = ins.read(buf); if (n < 0) break
+                out.write(buf, 0, n)
+                if (out.size() > MAX_INFLATED) return null
+            }
+        }
+        JSONObject(String(out.toByteArray(), Charsets.UTF_8))
+    } catch (e: Exception) { null }
 }
