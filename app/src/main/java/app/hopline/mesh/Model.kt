@@ -226,7 +226,7 @@ class Loc(val latE6: Long, val lngE6: Long, val acc: Int, val label: String) {
 
 class Message(
     val id: String,
-    val kind: String,          // Envelope.CHAT / DM / FILE, or SYSTEM
+    val kind: String,          // Envelope.CHAT / DM / FILE, or SYSTEM / NOTICE / LEFT / REJOINED
     val from: String,
     val fromName: String,
     val to: String?,           // DM target, else null
@@ -253,10 +253,20 @@ class Message(
 
     /** True for a group-chat-visible message (not a DM). */
     val isGroup: Boolean get() = to == null
-    /** A centred line about the chat itself ("Asha renamed the group"), not something someone said. */
-    val isNotice: Boolean get() = kind == NOTICE
+    /** A centred line about the chat itself ("Asha renamed the group", "You left"), not something someone said. */
+    val isNotice: Boolean get() = kind == NOTICE || kind == LEFT || kind == REJOINED
+    /** The one notice that came over the air: a group rename, with the new name as its text.
+     *  [LEFT] and [REJOINED] are this phone's own notes and carry no text. */
+    val isRename: Boolean get() = kind == NOTICE
     /** Internet answers and notices: no reply, no reactions, no ticks, no unread badge for notices. */
-    val isPersonal: Boolean get() = kind != SYSTEM && kind != NOTICE
+    val isPersonal: Boolean get() = kind != SYSTEM && !isNotice
+
+    /**
+     * Which chat this belongs to on the phone whose id is [me] — the key read marks, mutes and
+     * Home's rows use: [GROUP_CHAT] for everything the whole group sees (messages, notices,
+     * public internet answers), the other person's id for a private chat.
+     */
+    fun chatKey(me: String): String = if (to == null) GROUP_CHAT else if (from == me) to else from
 
     /**
      * Apply one person's reaction. Envelopes arrive in any order and are re-received from carry,
@@ -323,6 +333,12 @@ class Message(
     companion object {
         const val SYSTEM = "system"
         const val NOTICE = "notice"        // local rendering of a chat-level event, e.g. a group rename
+        /** "You left" / "You rejoined": written by this phone into its own copy of the chat, so a
+         *  gap in the history explains itself. They have no envelope — nothing can put them on the air. */
+        const val LEFT = "left"
+        const val REJOINED = "rejoined"
+        /** The chat key of the group chat (a private chat's key is the other person's id). */
+        const val GROUP_CHAT = "*"
         const val QUEUED = "queued"        // nobody has taken it off my phone yet
         const val SENT = "sent"            // at least one other phone has it
         const val DELIVERED = "delivered"  // the recipient's phone has it (DMs)

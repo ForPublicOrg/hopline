@@ -50,7 +50,7 @@
                     android:minHeight="48dp" android:gravity="center_vertical" android:textSize="20sp" android:textStyle="bold"
                     android:textColor="@color/text" android:fontFamily="monospace" android:textIsSelectable="false"
                     android:background="?attr/selectableItemBackground" />
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                <LinearLayout android:id="@+id/code_actions" android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal" android:layout_marginTop="8dp">
                     <com.google.android.material.button.MaterialButton android:id="@+id/show_qr" android:layout_width="0dp"
                         android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/show_qr"
@@ -87,7 +87,7 @@
             <TextView android:id="@+id/members_header" android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:layout_marginStart="20dp" android:layout_marginEnd="20dp" android:layout_marginTop="20dp"
                 android:textAppearance="@style/Text.Section" android:textSize="12sp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
+            <LinearLayout android:id="@+id/members_card" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
                 android:layout_marginStart="16dp" android:layout_marginEnd="16dp" android:layout_marginTop="8dp"
                 android:background="@drawable/bg_card" android:paddingTop="4dp" android:paddingBottom="4dp">
                 <LinearLayout android:id="@+id/members" android:layout_width="match_parent" android:layout_height="wrap_content"
@@ -101,20 +101,41 @@
                     android:textStyle="bold" android:visibility="gone" />
             </LinearLayout>
 
-            <!-- This phone only: clear; for good: leave -->
+            <!-- A group this phone left: the private chats kept with its chat, each opened to read -->
+            <TextView android:id="@+id/private_header" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginStart="20dp" android:layout_marginEnd="20dp" android:layout_marginTop="20dp"
+                android:text="@string/left_private_chats" android:textAppearance="@style/Text.Section" android:textSize="12sp"
+                android:visibility="gone" />
+            <LinearLayout android:id="@+id/private_chats" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:layout_marginStart="16dp" android:layout_marginEnd="16dp"
+                android:layout_marginTop="8dp" android:background="@drawable/bg_card" android:paddingTop="4dp"
+                android:paddingBottom="4dp" android:visibility="gone" />
+
+            <!-- A group this phone is in: clear its chat (this phone only), or leave.
+                 A group it left: rejoin, or delete it from this phone for good -->
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
                 android:layout_marginStart="16dp" android:layout_marginEnd="16dp" android:layout_marginTop="12dp"
                 android:background="@drawable/bg_card" android:paddingTop="4dp" android:paddingBottom="4dp">
                 <TextView android:id="@+id/clear_chat" android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:minHeight="56dp" android:gravity="center_vertical" android:paddingStart="16dp" android:paddingEnd="16dp"
-                    android:drawableStart="@drawable/ic_clear_chat" android:drawablePadding="16dp"
+                    app:drawableStartCompat="@drawable/ic_clear_chat" android:drawablePadding="16dp"
                     android:background="?attr/selectableItemBackground" android:text="@string/menu_clear_chat"
                     android:textColor="@color/danger" android:textSize="16sp" />
                 <TextView android:id="@+id/leave" android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:minHeight="56dp" android:gravity="center_vertical" android:paddingStart="16dp" android:paddingEnd="16dp"
-                    android:drawableStart="@drawable/ic_exit_group" android:drawablePadding="16dp"
+                    app:drawableStartCompat="@drawable/ic_exit_group" android:drawablePadding="16dp"
                     android:background="?attr/selectableItemBackground" android:text="@string/leave_group"
                     android:textColor="@color/danger" android:textSize="16sp" />
+                <TextView android:id="@+id/rejoin" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:minHeight="56dp" android:gravity="center_vertical" android:paddingStart="16dp" android:paddingEnd="16dp"
+                    app:drawableStartCompat="@drawable/ic_rejoin_group" android:drawablePadding="16dp"
+                    android:background="?attr/selectableItemBackground" android:text="@string/menu_rejoin_group"
+                    android:textColor="@color/text" android:textSize="16sp" android:visibility="gone" />
+                <TextView android:id="@+id/delete_group" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:minHeight="56dp" android:gravity="center_vertical" android:paddingStart="16dp" android:paddingEnd="16dp"
+                    app:drawableStartCompat="@drawable/ic_chat_delete" android:drawablePadding="16dp"
+                    android:background="?attr/selectableItemBackground" android:text="@string/menu_delete_group"
+                    android:textColor="@color/danger" android:textSize="16sp" android:visibility="gone" />
             </LinearLayout>
         </LinearLayout>
     </ScrollView>

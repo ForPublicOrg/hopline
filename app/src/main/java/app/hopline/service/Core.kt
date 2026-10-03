@@ -17,13 +17,19 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.MutableLiveData
 import app.hopline.R
 import app.hopline.core.Crypto
 import app.hopline.core.HelperLimits
 import app.hopline.core.Names
+import app.hopline.core.Words
+import app.hopline.data.History
+import app.hopline.data.SavedGroup
+import app.hopline.data.StateRules
 import app.hopline.data.Store
+import app.hopline.mesh.Archive
 import app.hopline.mesh.Attachment
 import app.hopline.mesh.Errand
 import app.hopline.mesh.Group
@@ -33,14 +39,34 @@ import app.hopline.mesh.NearbyTransport
 import app.hopline.mesh.Quote
 import app.hopline.mesh.Router
 import app.hopline.mesh.RouterListener
+import app.hopline.mesh.Transport
+import app.hopline.ui.ChatDrafts
 import org.json.JSONObject
+import java.util.concurrent.Callable
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * One per process. Owns the router + radio for the ACTIVE group, keeps them alive via MeshService,
- * and exposes a `version` LiveData that screens observe to redraw. Other groups sleep on disk and
- * wake instantly on switch. Everything here runs on the main thread except file byte-work and
- * the state writer.
+ * and exposes a `version` LiveData that screens observe to redraw. The other groups this phone is
+ * in sleep on disk and wake instantly on switch; the groups it left stay on disk too, to be read
+ * ([archive]) until the person deletes them.
+ *
+ * Threads:
+ *  - Everything here runs on the main thread, and so does every router.
+ *  - A group's state file and its history are read and written on ONE writer thread, in the order
+ *    asked ([queueWrite], [loadStateOrdered]). Reading a state file while a save of it is under
+ *    way throws that save away, so nothing but the writer may touch one: the main thread may wait
+ *    for the writer for a moment, never go round it.
+ *  - Slow file work — putting a file together, deleting a folder of pieces — runs on Blobs'
+ *    housekeeping thread, never on the writer, because the main thread may be waiting for that.
+ *
+ * Leaving, rejoining and deleting a group are each ONE committed change to the saved group list,
+ * followed by tidying that can simply be done again: a phone killed half-way finds what is left
+ * to do at its next start ([reconcile]). And a group's state file never has two routers.
  */
 object Core {
     private const val TAG = "Hopline/Core"
@@ -55,7 +81,7 @@ object Core {
     val version = MutableLiveData(0)
     /** Which chat is on screen: null, GROUP, INTERNET or a node id. Used to skip notifications for what you're looking at. */
     var openChat: String? = null
-    const val GROUP = "*"
+    const val GROUP = Message.GROUP_CHAT
     /** The shared-internet screen, as a "chat" for notification purposes. */
     const val INTERNET = "~net"
     var appVisible = false
@@ -70,16 +96,22 @@ object Core {
         store = Store(application)
         Notifications.createChannels(application)
         Cell.onChange = { refreshCaps() }
+        reconcile()
+        Updater.init(application)
     }
 
+    /** Is there a group for the radio? Groups this phone left don't count: they are only read. */
     fun hasGroup(): Boolean = store.group() != null
     fun fingerprint(): String? = router?.group?.fingerprint ?: store.group()?.fingerprint
 
-    /** Build the router for the active group (idempotent) and start the background service. */
+    /**
+     * Build the router for the active group (idempotent) and start the background service. With
+     * no active group — every group left, or none joined yet — nothing is built and nothing starts.
+     */
     fun ensureRunning(): Boolean {
         val group = store.group() ?: return false
         if (!Permissions.allGranted(app)) return false
-        if (router == null) build(group)
+        if (router == null && !build(group)) return false
         try { ContextCompat.startForegroundService(app, Intent(app, MeshService::class.java)) }
         catch (e: Exception) { Log.w(TAG, "could not start service now", e); return false }
         return true
@@ -96,11 +128,43 @@ object Core {
 
     fun stopRadio() { transport?.stop(); flushSave() }
 
-    private fun build(group: Group) {
+    /**
+     * Wake the active group: its router, restored from its saved state, and its radio (not started
+     * here). False — and nothing is built — when the saved state can't be had right now: a router
+     * that started without it would save an empty chat over the real one a few seconds later.
+     */
+    private fun build(group: Group): Boolean {
+        if (buildWaiting) return false   // already queued behind a busy writer: no second wait
+        val fp = group.fingerprint
+        // The state first, and in its turn on the writer: a save of this very group may still be
+        // waiting there (a quick switch away and back), and it must land before this reads.
+        val read = loadStateOrdered(fp)
+        if (!read.usable) {
+            Log.w(TAG, "the group's saved state can't be read yet; not starting it")
+            if (read.busy) buildWhenWriterFree()
+            return false
+        }
         val me = store.identity()
         val t = NearbyTransport(app, group, me)
-        val r = Router(me, group, t, listener, Blobs.chunkStore(app, group.fingerprint))
-        store.loadState(group.fingerprint)?.let { try { r.restore(it) } catch (e: Exception) { Log.w(TAG, "state restore failed", e) } }
+        val chunks = Blobs.chunkStore(app, fp)
+        var restored = Router(me, group, t, listener, chunks)
+        if (read.state != null) {
+            var failed = 0
+            while (true) try { restored.restore(read.state); break } catch (e: Throwable) {
+                // That router now holds half a chat, and its first save would write the half over the
+                // whole: it is dropped. Memory running out half way is not the file's fault and gets
+                // one more try; otherwise the file is set aside for a second look — for good, so
+                // the person is told ([Store.takeAsideNotes]) — and the group starts clean.
+                Log.w(TAG, "state restore failed", e)
+                restored = Router(me, group, t, listener, chunks)
+                if (StateRules.onRestoreFailure(e, failed++) == StateRules.Failed.RETRY) continue
+                if (!moveStateAsideOrdered(fp)) return false
+                break
+            }
+        }
+        val r = restored
+        // Back in a group this phone had left: "You rejoined", once, under the "You left" in its chat.
+        Archive.rejoined(r)
         r.shareInternet = store.shareInternet
         t.events = object : NearbyTransport.Events {
             override fun onLinkUp(linkId: String, nodeId: String, name: String, token: String) { if (transport === t) { r.onLinkUp(linkId, nodeId, name, token); changed() } }
@@ -111,13 +175,40 @@ object Core {
             override fun onStatus(text: String) { if (transport === t) { radioProblem = text; changed() } }
         }
         router = r; transport = t
+        turn(fp)
+        if (archiveFp == fp) dropArchive()   // the file is this router's now: no reading copy beside it
         // The new group's unread count lives on the router from now on.
-        store.setPausedUnread(group.fingerprint, 0)
+        store.setPausedUnread(fp, 0)
         r.hasInternet = internetNow()
         r.setCaps(computeCaps())
         r.resumeErrands()
         scheduleErrandWake()
-        finishInterruptedFiles(r, group.fingerprint)
+        finishInterruptedFiles(r, fp)
+        changed()
+        return true
+    }
+
+    private var buildWaiting = false
+
+    /**
+     * The writer was too busy to hand over the group's state in time. Start the group the moment
+     * the writer has caught up — by queueing behind it, not by waiting on it again and again.
+     */
+    private fun buildWhenWriterFree() {
+        if (buildWaiting) return
+        buildWaiting = true
+        writer.execute { handler.post { buildWaiting = false; if (router == null) ensureRunning() } }
+    }
+
+    /**
+     * Goes up whenever a group's state file changes hands: a router is built for it, the group is
+     * left, or deleted. A router from before that moment may then never write its state again —
+     * it would put an old chat over a newer one, or a deleted one back on the phone.
+     */
+    private val epochs = HashMap<String, Int>()
+    private fun turn(fp: String) {
+        epochs[fp] = (epochs[fp] ?: 0) + 1
+        if (slowRead?.fp == fp) slowRead = null
     }
 
     /** After a restart: files whose last pieces arrived while we were dead get assembled now. */
@@ -148,31 +239,318 @@ object Core {
         changed()
     }
 
-    /** Leave the active group for good: its messages, files and read marks are deleted. */
-    fun leaveActiveGroup() {
-        val leaving = store.activeGroup() ?: return
-        stopLiveLocation()
-        transport?.stop()
-        router?.let { r -> for (e in r.errands.values) stopFetch(e.id) }
-        router = null; transport = null
-        drainWrites()   // a queued save must not resurrect the deleted state file
-        Notifications.clearGroup(app, leaving.fingerprint)
-        Blobs.deleteGroup(app, leaving.fingerprint)
-        store.removeGroup(leaving.code)
-        if (store.group() != null) ensureRunning()
-        else app.stopService(Intent(app, MeshService::class.java))
+    // ------------------------------------------------------------------ leaving, rejoining, deleting
+
+    /**
+     * Leave a group this phone is in — the one on the radio or a paused one. The phone stops
+     * serving it; its chat stays here, to be read, until the person deletes the group.
+     *
+     * What stays and what goes is [Archive.strip]'s rule: every message stays as it is, and what
+     * was only there to serve the group goes — other people's messages in transit, their requests,
+     * and (once the files that are complete have been put together) the pieces carried for others.
+     *
+     * The order matters. The group list is committed FIRST ([Store.markLeft]); only then is the
+     * stripped state written. A phone killed in between has a left group with its full state, and
+     * the next start strips it ([reconcile]). The other way round, a kill would leave a group this
+     * phone is still in with its unsent messages robbed of their envelopes.
+     *
+     * Nothing is said on the radio: the transport stops at once, so a goodbye would not get out,
+     * and the group needs none — to everyone else this phone has simply walked away.
+     *
+     * False — and nothing at all has changed — when the group on the radio could not be saved
+     * first ([StateRules.leave]): its router holds the only whole copy of the chat, and is not let
+     * go until that copy is on disk. The phone stays in the group; the screen says why.
+     */
+    fun leaveGroup(code: String): Boolean {
+        val g = store.allGroups().firstOrNull { it.code == Words.normalise(code) && !it.left } ?: return false
+        val r = router?.takeIf { it.group.fingerprint == g.fingerprint }
+        // A paused group's chat is on disk already, as its router saved it when the radio moved off.
+        return StateRules.leave(saveWhole = { r == null || savedNow(r) }) { letGo(g, r) }
+    }
+
+    /**
+     * Save the router on the radio now, and wait — a few seconds at most — to hear whether its
+     * state reached the disk. False when it did not (no space, most likely), or the writer was too
+     * busy to say in time: the router then saves again shortly, as after any change.
+     */
+    private fun savedNow(r: Router): Boolean {
+        if (router !== r) return false
+        val fp = r.group.fingerprint
+        saveNow()
+        // Behind the write just queued, on the same thread: by then its outcome is known.
+        val saved = try { writer.submit(Callable { fp !in unsaved }).get(WRITER_WAIT_S, TimeUnit.SECONDS) } catch (e: Exception) { false }
+        if (!saved) { Log.w(TAG, "the group's state could not be saved"); saveSoon() }
+        return saved
+    }
+
+    /** The leaving itself, once the chat is safely on disk ([r] is null for a paused group). */
+    private fun letGo(g: SavedGroup, r: Router?) {
+        val fp = g.fingerprint
+        val now = System.currentTimeMillis()
+        val wasActive = r != null || store.activeCode == g.code
+        if (r != null) {
+            stopLiveLocation()   // while the radio is still up, so the beacon that clears my pin goes out
+            for (e in r.errands.values) stopFetch(e.id)
+            handler.removeCallbacks(saveRunnable); savePosted = false
+        }
+        val full = r?.snapshot()
+        // Files whose every piece is here but which were never put together: now is their last
+        // chance, before the pieces go.
+        val complete = if (r == null) emptyList() else r.messages.filter { m -> m.att?.let { r.fileComplete(it) } == true }
+        if (r != null) {
+            // Detached before the radio stops: the link-downs it ends with must not reach a router
+            // that has had its last word, nor queue another save of it.
+            val t = transport
+            router = null; transport = null; radioProblem = ""
+            t?.stop()
+        }
+        dropArchive()
+        turn(fp)
+        val committed = store.markLeft(g.code, now)
+        // If the list didn't reach the disk (no space, most likely), a kill now would find this phone
+        // still in the group: then its state stays whole, and the start that finds it left tidies up.
+        if (r != null && full != null) queueWrite(fp, if (committed) Archive.strip(full, r.me.id, r.me.name, now, now) else full)
+        Notifications.clearGroup(app, fp)
+        ChatDrafts.dropGroup(app, fp)
+        if (committed) {
+            if (r == null) sealPaused(g.code, fp, now)
+            else seal(g.code, fp) { for (m in complete) try { Blobs.assemble(app, fp, r, m) } catch (e: Throwable) { Log.w(TAG, "could not finish a file", e) } }
+        }
+        // The radio moves to the group this phone is still in that it used last. With none — or none
+        // that can start right now — the service has nothing to keep alive.
+        if (wasActive && !ensureRunning()) app.stopService(Intent(app, MeshService::class.java))
         changed()
     }
 
-    /** Remove a paused group (not the one on the radio) without switching to it first. */
-    fun removeSavedGroup(code: String) {
-        val g = store.groups().firstOrNull { it.code == code } ?: return
-        if (g.code == store.activeCode) return
-        drainWrites()
-        Notifications.clearGroup(app, g.fingerprint)
-        Blobs.deleteGroup(app, g.fingerprint)
-        store.removeGroup(g.code)
+    /**
+     * The end of leaving the group that was on the radio, queued behind its stripped state on the
+     * writer: put together the files that are complete ([first], with the detached router — nothing
+     * changes it any more), then let the carried pieces go and note that the tidy-up is done. The
+     * slow part runs on Blobs' housekeeping thread. If the stripped state failed to save, the group
+     * stays unsealed, and the next start does all of it again from the file — which holds the
+     * whole chat: [leaveGroup] made sure of that before it let the router go.
+     */
+    private fun seal(code: String, fp: String, first: () -> Unit) {
+        writer.execute {
+            val stripped = fp !in unsaved
+            Blobs.background {
+                first()
+                if (stripped) dropPieces(code, fp)
+            }
+        }
+    }
+
+    /**
+     * The same end for a group with no router: one that was paused when it was left, or one whose
+     * leaving a kill cut short. Its state is stripped where it lies — on the writer, behind any
+     * save still queued for it. A file that can't be read is left exactly as it is.
+     */
+    private fun sealPaused(code: String, fp: String, leftAt: Long) {
+        val meId = store.nodeId
+        val meName = store.name
+        writer.execute {
+            val done = try {
+                val state = store.peekState(fp)
+                state == null || store.saveState(fp, Archive.strip(state, meId, meName, leftAt, System.currentTimeMillis()))
+            } catch (t: Throwable) { Log.w(TAG, "could not tidy a left group's state", t); false }
+            if (done) Blobs.background { dropPieces(code, fp) }
+        }
+    }
+
+    /**
+     * The pieces go and the group is sealed — but only while it is still left ([Store.markSealed]
+     * checks under its lock): a group joined again a moment after leaving keeps its pieces.
+     */
+    private fun dropPieces(code: String, fp: String) { store.markSealed(code) { Blobs.dropChunks(app, fp) } }
+
+    /**
+     * Join a group this phone had left: its chat is still here, and the radio goes back to it (the
+     * group that was on the radio, if any, is paused exactly as a switch pauses it). False when the
+     * code is not a left group's — or the writer is still busy with the tidy-up after leaving: the
+     * stripped state must be on disk before a router is built on it, and the screen says to try
+     * again in a moment. False, too, when the group now on the radio could not be saved before
+     * being paused, or the saved group list could not be written: then the phone is not back in
+     * the group, nothing says it is, and the radio stays where it was.
+     *
+     * The screens ask for the radio's permissions before they call this (Asks.radioAllowed). Should
+     * those be taken away in between, this is still true — the group is joined — and Home's guard
+     * sends the person to grant them; the group starts then.
+     */
+    fun rejoinGroup(code: String): Boolean {
+        val g = store.allGroups().firstOrNull { it.code == Words.normalise(code) && it.left } ?: return false
+        dropArchive()
+        // Everything queued for the writer has to be on disk first. And the group on the radio now,
+        // if there is one, is about to be paused: its router is let go, so its chat is saved whole
+        // before that — a save that fails here still has a router to try again from.
+        val live = router
+        if (if (live != null) !savedNow(live) else !drainWrites()) return false
+        // The list first, and only then the radio: a rejoin that can't be saved must not have
+        // paused the group the radio is on, nor leave this run believing what the next won't.
+        if (!store.rejoin(g.code, System.currentTimeMillis())) return false
+        stopLiveLocation()   // a position shared with one group must not leak into another
+        retire()
+        radioProblem = ""
+        ensureRunning()
         changed()
+        return true
+    }
+
+    /**
+     * "Delete group": the one thing that takes a group's chat off this phone — every message, photo
+     * and file. Only for a group that was already left (one this phone is in must be left first).
+     * Copies the person saved to Pictures or Downloads are theirs, and stay.
+     */
+    fun deleteLeftGroup(code: String) {
+        val g = store.allGroups().firstOrNull { it.code == Words.normalise(code) && it.left } ?: return
+        dropArchive()
+        Notifications.clearGroup(app, g.fingerprint)
+        store.removeForGood(g.code)
+        purge(g.fingerprint, revived = false)
+        changed()
+    }
+
+    /**
+     * Delete what a deleted group left on the phone. It is asked for by the note [Store.removeForGood]
+     * committed with the delete, so after a kill it is simply done again from the top, as often as
+     * it takes. The state files and the history go on the writer thread — behind any save still
+     * queued for the group, so nothing can write them back, and without the main thread waiting.
+     *
+     * [revived]: the same code has been joined again since the delete, and a kill came before the
+     * old files were gone. What the writer deletes under this fingerprint is then still the deleted
+     * group's — the new group's router reads its state only after this, and saves nothing before —
+     * but the folder of photos and pieces may already be the new group's, and is left alone.
+     */
+    private fun purge(fp: String, revived: Boolean) {
+        turn(fp)
+        earlierKnown.remove(fp)
+        if (!revived) {
+            Blobs.deleteGroup(app, fp)
+            ChatDrafts.dropGroup(app, fp)
+        }
+        writer.execute {
+            synchronized(pendingWrites) { pendingWrites.remove(fp) }
+            unsaved.remove(fp)
+            try {
+                store.deleteStateFiles(fp)
+                History(store.historyDir(fp)).deleteAll()
+            } catch (t: Throwable) { Log.w(TAG, "could not delete a group's files", t) }
+            // Only when they are really gone: otherwise the note stays, and the next start tries again.
+            if (!store.stateExists(fp) && !store.historyDir(fp).exists()) store.finishPurge(fp)
+        }
+    }
+
+    /**
+     * At every start, before anything else can queue a write: finish what a kill cut short. Each
+     * job is asked for by something that was committed — a "purge" note, a left group not yet
+     * sealed — never by what merely looks orphaned. If the group list ever failed to read, "matches
+     * no saved group" would be every chat on the phone.
+     */
+    private fun reconcile() {
+        for (fp in store.purgePending()) purge(fp, revived = store.findGroup(fp) != null)
+        val left = store.leftGroups()
+        for (g in left) if (!g.sealed) sealPaused(g.code, g.fingerprint, g.leftAt)
+        // A notification posted just before a kill mid-leave would sit there offering a reply box.
+        if (left.isNotEmpty()) Notifications.clearGroups(app, left.map { it.fingerprint })
+        Blobs.sweep(app, store.group()?.fingerprint)
+    }
+
+    // ------------------------------------------------------------------ reading a group that was left
+
+    private val noRadio = object : Transport {
+        override fun send(linkId: String, bytes: ByteArray): Long = -1L
+        override fun disconnect(linkId: String) {}
+    }
+
+    /**
+     * All a left group's router can ever cause is a redraw. It never gets Core's own listener: that
+     * one posts notifications, runs requests, and renames the group on the radio.
+     */
+    private val archiveListener = object : RouterListener {
+        override fun onChanged() { changed() }
+        override fun onMessage(m: Message) {}
+        override fun onErrandRequest(e: Errand) {}
+    }
+
+    private var archiveFp: String? = null
+    private var archiveRouter: Router? = null
+
+    /**
+     * The chat of a group this phone left, to read: a router with no radio, restored from the
+     * group's saved state. Null unless [fp] is a LEFT group — never for the group on the radio or
+     * a paused one, whose state file belongs to its real router. Null too when the state can't be
+     * read just now: then nothing is built, so nothing can ever be saved over the file. (A left
+     * group that never had a state gets an empty chat.)
+     *
+     * The router is for looking only. It is never ticked — so nothing in it expires, is trimmed or
+     * is filed away — never polled, and keeps file pieces in memory only (the real piece store
+     * would create folders and treat the group as live). Nothing is ever saved from it except by
+     * [deleteArchivedMessages]. One is kept at a time: ask again on every resume, because leaving,
+     * rejoining, deleting, or a long while in the background lets it go.
+     */
+    fun archive(fp: String): Router? {
+        archiveBusy = false
+        val g = store.findGroup(fp)?.takeIf { it.left } ?: return null
+        if (router?.group?.fingerprint == fp) return null
+        if (archiveFp == fp) archiveRouter?.let { return it }
+        val read = loadStateOrdered(fp, peek = true)
+        archiveBusy = read.busy
+        if (!read.usable) return null
+        val r = Router(store.identity(), Group(g.code, g.name, g.nameAt), noRadio, archiveListener)
+        if (read.state != null) try { r.restore(read.state) } catch (e: Throwable) {
+            Log.w(TAG, "a left group's chat could not be opened", e)
+            return null
+        }
+        archiveFp = fp; archiveRouter = r
+        return r
+    }
+
+    /**
+     * The last [archive] came back empty only because the chat wasn't read in time — the writer was
+     * busy, or the file is big and the phone slow. The read carries on, so asking again in a
+     * moment works; a screen says that, not that the chat can't be opened.
+     */
+    var archiveBusy = false; private set
+
+    /** Let go of the left group's chat held for reading (it is read again from disk when next asked for). */
+    fun dropArchive() {
+        archiveFp = null; archiveRouter = null
+        if (slowRead?.peek == true) slowRead = null
+    }
+
+    /**
+     * "Delete for me" inside a left group's chat — the only thing that ever writes to a left
+     * group's state. The messages go from the chat and from its history, and their files with them.
+     *
+     * In that order ([StateRules.deleteKept]): the state without them is saved first, and their
+     * files and history copies go only once it is on disk. If it can't be saved, nothing of theirs
+     * is deleted, the person is told, and [failed] runs (main thread) so the screen can show the
+     * chat again as the disk has it — otherwise they would come back later without their photos.
+     */
+    fun deleteArchivedMessages(fp: String, ids: Collection<String>, failed: () -> Unit = {}) {
+        val a = archive(fp) ?: return
+        val g = store.findGroup(fp) ?: return
+        val want = ids.toHashSet()
+        val gone = a.hideMessages(want)
+        // A left group's state can hold a message its history holds too (the group was left, or the
+        // phone killed, between filing a batch and saving), so the history is always looked through.
+        val cleanUp = { deleteFiles(fp, gone); if (hasEarlier(fp)) forgetEarlier(fp) { it.optString("id") in want } }
+        changed()
+        // Only earlier messages, which the state doesn't hold: there is nothing to save first.
+        if (gone.isEmpty()) { cleanUp(); return }
+        queueWrite(fp, Archive.strip(a.snapshot(), a.me.id, a.me.name, g.leftAt, System.currentTimeMillis()))
+        // Behind that write, on the same thread: by then its outcome is known.
+        writer.execute {
+            val saved = fp !in unsaved
+            handler.post {
+                StateRules.deleteKept(saved, cleanUp) {
+                    Log.w(TAG, "a delete in a left group's chat could not be saved; nothing of it was deleted")
+                    if (archiveRouter === a) dropArchive()   // it shows them deleted; the disk doesn't
+                    if (appVisible) Toast.makeText(app, R.string.delete_not_saved, Toast.LENGTH_LONG).show()
+                    failed()
+                    changed()
+                }
+            }
+        }
     }
 
     /** Take the current group off the radio, saving everything and remembering its unread count. */
@@ -336,22 +714,165 @@ object Core {
 
     // ------------------------------------------------------------------ delete for me
 
-    /** Remove messages from this phone for good (and their received files). */
+    /**
+     * Remove messages from this phone for good (and their received files): from the live chat, and
+     * — for the earlier ones a chat shows when scrolled up — from the group's history.
+     */
     fun deleteMessages(ids: Collection<String>) {
         val r = router ?: return
         val fp = r.group.fingerprint
-        val gone = r.hideMessages(ids)
-        val files = gone.mapNotNull { m -> m.att?.let { Blobs.fileFor(app, fp, it) } }
-        if (files.isNotEmpty()) Thread { files.forEach { try { it.delete() } catch (e: Exception) { } } }.start()
+        val want = ids.toHashSet()
+        val live = r.hideMessages(want)
+        deleteFiles(fp, live + HistoryRules.dropWaiting(r) { it.id in want })
+        // The history is looked through for every one of them, not only for those the live window
+        // didn't have: a message can be in both (the phone was killed, or a save failed, between
+        // filing a batch and saving the state without it). The router remembers a deleted id for
+        // three days only; after that the copy left in the history would be back in the chat.
+        if (hasEarlier(fp) || filing === r) forgetEarlier(fp) { it.optString("id") in want }
         saveSoon()
         changed()
     }
 
-    /** Empty one chat on this phone: the group chat (peer = null) or a private chat. */
+    /** Empty one chat on this phone: the group chat (peer = null) or a private chat — its earlier messages too. */
     fun clearChat(peer: String?) {
         val r = router ?: return
-        deleteMessages(r.chatMessages(peer).map { it.id })
-        Notifications.clearChat(app, r.group.fingerprint, peer ?: GROUP)
+        val fp = r.group.fingerprint
+        val chat = peer ?: GROUP
+        val me = r.me.id
+        val gone = r.hideMessages(r.chatMessages(peer).map { it.id }) + HistoryRules.dropWaiting(r) { it.chatKey(me) == chat }
+        deleteFiles(fp, gone)
+        if (hasEarlier(fp) || filing === r) forgetEarlier(fp) { HistoryRules.chatOf(it, me) == chat }
+        Notifications.clearChat(app, fp, chat)
+        saveSoon()
+        changed()
+    }
+
+    /** A deleted message's photo, voice note or file goes with it — in the background, with the other file chores. */
+    private fun deleteFiles(fp: String, gone: List<Message>) {
+        val files = gone.mapNotNull { m -> m.att?.let { Blobs.fileFor(app, fp, it) } }
+        if (files.isNotEmpty()) Blobs.background { files.forEach { it.delete() } }
+    }
+
+    // ------------------------------------------------------------------ earlier messages (the history)
+
+    /**
+     * One page of a chat's older messages, read back from the group's history: [messages] in chat
+     * order, and [next] — what to pass as `before` for the page before this one; 0 = nothing older.
+     * A page can repeat a message an earlier page (or the live chat) already showed — the phone was
+     * killed between filing it and saving — so whoever shows pages goes by message id.
+     */
+    class EarlierPage(val messages: List<Message>, val next: Int)
+
+    /** Does a group have anything in its history? Asked on every redraw, so remembered per group. */
+    private val earlierKnown = HashMap<String, Boolean>()
+    private val historyStamps = HashMap<String, Int>()
+
+    /**
+     * Are there older messages on disk than the group's chat shows from memory? True for a group on
+     * the radio or one that was left alike. (Only looks at the names in a folder — cheap, and safe
+     * beside the writer.)
+     */
+    fun hasEarlier(fp: String): Boolean = earlierKnown.getOrPut(fp) {
+        store.findGroup(fp) != null && try { !History(store.historyDir(fp)).isEmpty() } catch (e: Exception) { false }
+    }
+
+    /**
+     * Goes up every time a group's history changes under a chat that may be showing it: older
+     * messages moved out of the live window into a new segment, or some were deleted. The pages a
+     * screen loaded before no longer line up with what is on disk; it starts its paging again.
+     */
+    fun historyStamp(fp: String): Int = historyStamps[fp] ?: 0
+
+    private fun historyChanged(fp: String) {
+        earlierKnown.remove(fp)
+        historyStamps[fp] = historyStamp(fp) + 1
+        changed()
+    }
+
+    /**
+     * Read the page of [chat]'s older messages ([GROUP] or a person's id) that comes before the
+     * segment [before] — null to start from the newest. [cb] is called later, on the main thread,
+     * always; check there that the screen still shows the chat it asked for.
+     *
+     * The reading happens on the writer thread, in order with the saves and the filing of new
+     * segments, a few segments at a time ([HistoryRules.Walk]) so a save never waits long behind it.
+     */
+    fun loadEarlier(fp: String, chat: String, before: Int?, cb: (EarlierPage) -> Unit) {
+        if (store.findGroup(fp) == null) { handler.post { cb(EarlierPage(emptyList(), 0)) }; return }
+        val walk = HistoryRules.Walk(History(store.historyDir(fp)), chat, store.nodeId, before)
+        fun step() {
+            writer.execute {
+                // A delete from this history is still working its way through: a page read now could
+                // show what is being deleted. It waits its turn behind the delete's next step.
+                if ((forgetting[fp] ?: 0) > 0) { step(); return@execute }
+                val ready = try { walk.step() } catch (t: Throwable) { Log.w(TAG, "could not read earlier messages", t); true }
+                if (!ready) { step(); return@execute }
+                val page = EarlierPage(walk.messages(), walk.next)
+                handler.post { cb(page) }
+            }
+        }
+        step()
+    }
+
+    /** Deletes still working through a group's history ([forgetEarlier]), per group. Pages of it wait for them. */
+    private val forgetting = ConcurrentHashMap<String, Int>()
+
+    /**
+     * Delete from a group's history what [gone] picks, and the files those messages had. On the
+     * writer thread, in order with everything else there — but a few segments at a time
+     * ([HistoryRules.Forget]): a long history sifted in one go would hold the writer for seconds,
+     * with every save, and a main thread waiting to open a chat, queued behind it.
+     */
+    private fun forgetEarlier(fp: String, gone: (JSONObject) -> Boolean) {
+        val forget = HistoryRules.Forget(History(store.historyDir(fp)), gone)
+        forgetting.merge(fp, 1) { a, b -> a + b }
+        var any = false   // writer thread only
+        fun step() {
+            writer.execute {
+                val removed = try { forget.step() } catch (t: Throwable) { Log.w(TAG, "could not delete from the history", t); null }
+                if (!removed.isNullOrEmpty()) {
+                    any = true
+                    val files = removed.mapNotNull { m -> m.optJSONObject("att")?.let { Blobs.fileFor(app, fp, Attachment(it)) } }
+                    if (files.isNotEmpty()) Blobs.background { files.forEach { it.delete() } }
+                }
+                if (removed != null && !forget.done) { step(); return@execute }
+                forgetting.computeIfPresent(fp) { _, n -> if (n > 1) n - 1 else null }
+                if (any) handler.post { historyChanged(fp) }
+            }
+        }
+        step()
+    }
+
+    /** The router whose oldest messages are being written to the history right now. */
+    private var filing: Router? = null
+
+    /**
+     * The live window is over its size: its oldest messages move to the group's history on disk,
+     * where the chat finds them again when scrolled up. In two steps ([HistoryRules.offer], then
+     * [HistoryRules.settle] once the segment is written), so they are never in neither place:
+     *  - killed before the segment is on disk: every saved state still holds them;
+     *  - killed after it, before a state without them is saved: they are in both, and readers go by id;
+     *  - the segment could not be written (no space): nothing changes, and the next tick tries again.
+     * The state without them is saved only from here, after the segment — never by a save that
+     * happened to be waiting on the writer already.
+     */
+    private fun fileOverflow(r: Router) {
+        if (filing === r) return
+        val batch = HistoryRules.offer(r)
+        if (batch.isEmpty()) return
+        val fp = r.group.fingerprint
+        val records = batch.map { it.toJson() }
+        filing = r
+        writer.execute {
+            val ok = try { History(store.historyDir(fp)).append(records) } catch (t: Throwable) { false }
+            handler.post {
+                if (filing === r) filing = null
+                if (!ok) { Log.w(TAG, "older messages could not be filed; they stay with the group's state for now"); return@post }
+                // A router that went off the radio meanwhile saved them with its state: in both places, read once.
+                if (router === r) { HistoryRules.settle(r, batch); saveNow() }
+                historyChanged(fp)
+            }
+        }
     }
 
     // ------------------------------------------------------------------ unread & mute
@@ -433,7 +954,7 @@ object Core {
     fun helpPausedReason(): String? {
         if (!store.shareInternet) return null
         if (store.shareWhileRoaming.not() && roamingNow()) return "Paused while roaming"
-        if (batteryPercent() in 0..14 && !charging()) return "Paused — battery below 15%"
+        if (batteryLow()) return "Paused — battery below 15%"
         if (internetNow() && budgetLeft() < MIN_BUDGET_BYTES && !Cell.canText(app)) return "Paused — today's sharing allowance is used up"
         return null
     }
@@ -587,6 +1108,7 @@ object Core {
 
     private fun runErrand(r: Router, e: Errand) {
         val fp = r.group.fingerprint
+        val epoch = epochs[fp]
         if (e.type == Errand.SEND) {
             if (e.from == r.me.id) { r.declineErrand(e.id, "own"); return }
             // Its person already opened Messages for it: only they decide now — never re-checked
@@ -629,9 +1151,12 @@ object Core {
                 is Errands.Outcome.Retry -> r.declineErrand(e.id, out.why)
             }
             if (target == null) {
-                val fp0 = r.group.fingerprint
-                val snap = r.snapshot()
-                if (store.groups().any { it.fingerprint == fp0 }) writer.execute { store.saveState(fp0, snap) }
+                // That router is off the radio. Its answer is saved only where it still belongs: a
+                // group this phone is IN and has merely switched away from, whose state nobody has
+                // touched since — not one that was left (its state is stripped, and stays so), not
+                // one that is back on the radio under a new router, and not one deleted and joined
+                // again. An old router's snapshot over any of those would undo what came after.
+                if (epochs[fp] == epoch && router?.group?.fingerprint != fp && store.groups().any { it.fingerprint == fp }) queueWrite(fp, r.snapshot())
             } else { refreshCaps(); saveSoon() }
             changed()
         }
@@ -659,6 +1184,9 @@ object Core {
     private var lastPeriodicSave = 0L
 
     fun tick() {
+        // The service's tick is Hopline's "in the background": the moment to see whether a look for
+        // a newer version is due. It decides in a few comparisons and does its work on its own thread.
+        Updater.maybeCheck()
         val r = router ?: return
         r.battery = batteryPercent()
         r.hasInternet = internetNow()
@@ -666,6 +1194,7 @@ object Core {
         if (r.hasInternet) runOwnWaiting(r)
         if (liveLocationUntil != 0L) pushMyLocation()   // stops itself once the time is up
         r.tick()
+        fileOverflow(r)
         scheduleErrandWake()
         // Watchdog: phones visible, nothing linked for 4 minutes → bounce the Bluetooth stack.
         // Measured from the last moment we HAD a link (or the radio started), never across a
@@ -691,9 +1220,15 @@ object Core {
 
     // ------------------------------------------------------------------ saving
 
-    /** One writer thread, newest snapshot wins: saves never block the UI, never interleave. */
+    /**
+     * One writer thread for every group's state file and history: saves never block the UI, never
+     * interleave, and a read is always behind the saves queued before it.
+     */
     private val writer = Executors.newSingleThreadExecutor()
+    /** The newest state of each group still waiting for the writer. */
     private val pendingWrites = HashMap<String, JSONObject>()
+    /** Groups whose last save did not reach the disk. Writer thread only. */
+    private val unsaved = HashSet<String>()
     private var savePosted = false
 
     private val saveRunnable = Runnable { savePosted = false; saveNow() }
@@ -704,31 +1239,96 @@ object Core {
         handler.postDelayed(saveRunnable, 2500)
     }
 
-    /** Snapshot on the main thread (the router is single-threaded), write in the background. */
+    /**
+     * Snapshot on the main thread (the router is single-threaded), write in the background. Only
+     * ever the router on the radio: once a group is off it — paused, or left — nothing here saves it.
+     */
     fun saveNow() {
         val r = router ?: return
         lastPeriodicSave = System.currentTimeMillis()
         r.takeDirty()
-        val fp = r.group.fingerprint
-        val snap = r.snapshot()
+        queueWrite(r.group.fingerprint, r.snapshot())
+    }
+
+    /**
+     * Hand a group's state to the writer. One write per group waits at a time, and a newer state
+     * replaces an older one still waiting — newest wins, in the order the groups were queued.
+     */
+    private fun queueWrite(fp: String, state: JSONObject) {
+        if (slowRead?.fp == fp) slowRead = null
         synchronized(pendingWrites) {
             val queued = pendingWrites.containsKey(fp)
-            pendingWrites[fp] = snap
+            pendingWrites[fp] = state
             if (queued) return
         }
         writer.execute {
             val j = synchronized(pendingWrites) { pendingWrites.remove(fp) } ?: return@execute
-            store.saveState(fp, j)
+            if (store.saveState(fp, j)) unsaved.remove(fp) else unsaved.add(fp)
         }
     }
 
     /** Save right away — the app is going to the background, or may be killed. */
     fun flushSave() { handler.removeCallbacks(saveRunnable); savePosted = false; saveNow() }
 
-    /** Wait until every queued write is on disk (before deleting a group's files). */
-    private fun drainWrites() {
-        try { writer.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS) } catch (e: Exception) { }
+    /** Wait, a few seconds at most, until everything queued for the writer is on disk. False if it isn't yet. */
+    private fun drainWrites(): Boolean =
+        try { writer.submit {}.get(WRITER_WAIT_S, TimeUnit.SECONDS); true } catch (e: Exception) { false }
+
+    /**
+     * What reading a group's state gave. [usable] false means there is a state on disk that could
+     * not be had — nothing may be built in its place, or the next save would write over it.
+     * [busy]: only because the writer didn't get to it in time.
+     */
+    private class StateRead(val state: JSONObject?, val usable: Boolean, val busy: Boolean = false)
+
+    /**
+     * Read a group's saved state in its turn on the writer thread: behind every save already
+     * queued, so what comes back is the newest state, and no save is caught half-written. (Reading
+     * a state file from the main thread while its save is under way throws that save away — a quick
+     * switch to another group and back used to lose the last seconds of a chat that way.) The
+     * caller waits, a few seconds at most.
+     *
+     * [peek] is for a group that is only being looked at: nothing is moved aside, whatever the
+     * file's condition. Without it, a state that can't be used is set aside as .corrupt-<time>,
+     * and the group starts clean.
+     */
+    private fun loadStateOrdered(fp: String, peek: Boolean = false): StateRead {
+        slowRead?.let { slow ->
+            // The read an earlier call stopped waiting for has finished, and nothing has written
+            // this state since: that is the answer. (Reading again could only time out again.)
+            if (slow.fp == fp && slow.peek == peek && slow.read.isDone) {
+                slowRead = null
+                return try { slow.read.get() } catch (e: Exception) { StateRead(null, usable = false) }
+            }
+            if (slow.fp != fp || slow.peek != peek) slowRead = null
+        }
+        val read = writer.submit(Callable {
+            val state = if (peek) store.peekState(fp) else store.loadState(fp)
+            StateRead(state, usable = state != null || !store.stateExists(fp))
+        })
+        return try { read.get(WRITER_WAIT_S, TimeUnit.SECONDS) }
+        catch (e: TimeoutException) {
+            // The read keeps its place in the queue. The group going on the radio is built on it
+            // when it is done; a left group's chat opens on it when the person tries again — a
+            // big state on a slow phone would otherwise time out every single time.
+            slowRead = SlowRead(fp, peek, read)
+            StateRead(null, usable = false, busy = true)
+        }
+        catch (e: Exception) { Log.w(TAG, "state read failed", e); StateRead(null, usable = false) }
     }
+
+    /**
+     * A read the main thread stopped waiting for (the writer was busy, or the state is big and the
+     * phone slow): which group's, whether it was only a look ([peek]), and its result once the
+     * writer gets there. Dropped the moment anything else touches that group's state ([turn],
+     * [queueWrite]).
+     */
+    private class SlowRead(val fp: String, val peek: Boolean, val read: Future<StateRead>)
+    private var slowRead: SlowRead? = null
+
+    /** Set a state that won't restore aside, in its turn on the writer. False if it is still in the way. */
+    private fun moveStateAsideOrdered(fp: String): Boolean =
+        try { writer.submit(Callable { store.moveStateAside(fp) }).get(WRITER_WAIT_S, TimeUnit.SECONDS) } catch (e: Exception) { false }
 
     // ------------------------------------------------------------------ router events
 
@@ -786,7 +1386,9 @@ object Core {
         }
 
         override fun onGroupNamed(name: String, at: Long) {
-            store.activeGroup()?.let { store.renameGroup(it.code, name, at) }
+            // The group whose router said so — which is not "whichever group is active" in the
+            // moment a leave or a switch moves that on.
+            router?.let { store.renameGroup(it.group.code, name, at) }
             changed()
         }
 
@@ -818,8 +1420,14 @@ object Core {
         }
     } catch (e: Exception) { false }
 
-    private fun watchInternet() {
-        if (netCallbackRegistered) return
+    /**
+     * Have Android say when internet comes or goes ([refreshInternet]). Asked for when the radio
+     * starts — and by the updater on a phone with no group on the radio, when it has promised to
+     * look for a newer version "when you have signal": with no service ticking, nothing else
+     * would notice. True once the phone is being told; registering twice does nothing.
+     */
+    fun watchInternet(): Boolean {
+        if (netCallbackRegistered) return true
         val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         try {
             cm.registerNetworkCallback(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
@@ -830,11 +1438,14 @@ object Core {
                 })
             netCallbackRegistered = true
         } catch (e: Exception) { Log.w(TAG, "net callback", e) }
+        return netCallbackRegistered
     }
 
     private fun refreshInternet() {
-        val r = router ?: return
         val now = internetNow()
+        // Internet appeared, or changed — mobile data to WiFi, say: Hopline's own update may have been waiting for that.
+        if (now) Updater.maybeCheck()
+        val r = router ?: return
         val caps = computeCaps()
         if (now != r.hasInternet || caps != r.myCaps) { r.hasInternet = now; r.setCaps(caps); scheduleErrandWake(); changed() }
         if (now) runOwnWaiting(r)
@@ -851,6 +1462,9 @@ object Core {
             (i?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
         }
     } catch (e: Exception) { false }
+
+    /** Nearly flat and not on a charger: no time to spend the battery on anything but the mesh. */
+    fun batteryLow(): Boolean = batteryPercent() in 0..14 && !charging()
 
     /** One plain-English line for the top of the screen. Links first: radio advice only when nothing is linked. */
     fun statusLine(): String {
@@ -871,5 +1485,7 @@ object Core {
     }
 
     const val MIN_BUDGET_BYTES = 60_000L
+    /** How long the main thread will wait for the writer to reach it, at most. */
+    private const val WRITER_WAIT_S = 5L
     val isTiramisu get() = Build.VERSION.SDK_INT >= 33
 }

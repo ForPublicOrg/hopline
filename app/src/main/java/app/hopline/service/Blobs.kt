@@ -41,6 +41,8 @@ import java.util.concurrent.Future
  *  - gluing arrived pieces back into a real file,
  *  - keeping a file on the phone (Pictures / Downloads) and handing it to other apps.
  * Layout: files/blobs/<groupFingerprint>/chunks/<envelopeId>.json and .../files/<fid>-<name>.
+ * A group that was left keeps its files/ — they are part of its chat — and loses its chunks/;
+ * only deleting the group removes the kept files.
  */
 object Blobs {
     private const val TAG = "Hopline/Blobs"
@@ -55,7 +57,6 @@ object Blobs {
     val ORPHAN_PIECES = 2 * Router.MAX_CHUNKS
 
     private const val DAY_MS = 24 * 3600_000L
-    private const val HOUR_MS = 3600_000L
 
     /** Deletes and sweeps: never on the main thread, never racing each other. */
     private val housekeeping: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "hopline-files").apply { isDaemon = true } }
@@ -77,10 +78,32 @@ object Blobs {
     /** Groups whose files were deleted; late assemble work must not resurrect the directory. */
     private val closed = java.util.Collections.synchronizedSet(HashSet<String>())
 
+    /**
+     * "Delete group": everything this phone holds of the group's files goes — pieces and kept files
+     * alike. The folder is renamed aside at once and deleted in the background, so the same code
+     * joined again a second later starts in a fresh folder the delete can't reach. Safe to repeat.
+     */
     fun deleteGroup(ctx: Context, fp: String) {
         closed.add(fp)
         val dir = groupDir(ctx, fp)
-        housekeeping.execute { dir.deleteRecursively() }
+        // If it can't be renamed it is deleted where it stands, as before; [closed] keeps late work out.
+        val gone = BlobRules.moveAside(dir, BlobRules.goneGroupName(fp, System.currentTimeMillis())) ?: dir
+        housekeeping.execute { gone.deleteRecursively() }
+    }
+
+    /**
+     * Leaving a group: the pieces it carried for others go (up to 300 MB that serve nobody now);
+     * its photos, voice notes and files stay — they are the chat. The folder of pieces is renamed
+     * aside first, so a rejoin a moment later can never have its new pieces caught by the delete.
+     * The group is NOT closed: its files stay readable, and a late assembly finishing is welcome.
+     * True when no pieces are left under the group's name (false: the rename failed; try again later).
+     */
+    fun dropChunks(ctx: Context, fp: String): Boolean {
+        val dir = chunksDir(ctx, fp)
+        if (!dir.exists()) return true
+        val dead = BlobRules.moveAside(dir, BlobRules.deadChunksName(System.currentTimeMillis())) ?: return false
+        housekeeping.execute { dead.deleteRecursively() }
+        return true
     }
 
     /** Run a slow file job (saving, copying) off the main thread, in order with the other file chores. */
@@ -400,36 +423,37 @@ object Blobs {
         }
     }
 
+    /**
+     * The piece store of the group going on the radio — and of no other: it creates the folder,
+     * wires itself to the live router and reopens a deleted group's space. A group that was left
+     * must never get one (reading its chat needs no pieces; see Core.archive).
+     */
     fun chunkStore(ctx: Context, fp: String): DiskChunkStore {
-        closed.remove(fp)   // rejoining a group reopens its blob space
+        closed.remove(fp)   // joining a deleted group's code again reopens its blob space
         val store = DiskChunkStore(chunksDir(ctx, fp))
         // put() runs on the main thread, where the router lives — so asking it is safe. A store whose
         // router isn't up (or was replaced) treats every piece as wanted.
         store.isKnownFile = { fid -> Core.router?.let { r -> r.chunks !== store || r.fileMessage(fid) != null } ?: true }
         store.isMine = { env -> Core.router?.let { r -> r.chunks === store && env.origin == r.me.id } == true }
-        val app = ctx.applicationContext
-        housekeeping.execute { tidy(app, fp) }
+        sweep(ctx, fp)
         return store
     }
 
     /**
-     * Once per group start: drop camera/share leftovers, half-written files, and pieces of paused
-     * groups that are past their 48 h anyway (no router is around to expire those).
+     * Once per app start and per group start, in the background: drop camera/share leftovers, what
+     * a kill left half-done (half-written files, folders of deleted or left groups on their way
+     * out), and pieces of groups that are not on the radio and past their 48 h anyway (no router
+     * is around to expire those). [activeFp] is the group whose router looks after its own pieces.
+     * Kept files are never touched — see [BlobRules.sweep].
      */
-    private fun tidy(ctx: Context, activeFp: String) {
-        try {
-            sweepCache(ctx)
-            val now = System.currentTimeMillis()
-            File(ctx.filesDir, "blobs").listFiles()?.forEach { group ->
-                if (group.name in closed) return@forEach
-                File(group, "files").listFiles()?.forEach { f ->
-                    if (f.name.endsWith(".part") && now - f.lastModified() > HOUR_MS) f.delete()
-                }
-                if (group.name != activeFp) File(group, "chunks").listFiles()?.forEach { f ->
-                    if (now - f.lastModified() > Router.CARRY_MS) f.delete()
-                }
-            }
-        } catch (e: Exception) { Log.w(TAG, "tidy failed", e) }
+    fun sweep(ctx: Context, activeFp: String?) {
+        val app = ctx.applicationContext
+        housekeeping.execute {
+            try {
+                sweepCache(app)
+                BlobRules.sweep(File(app.filesDir, "blobs"), System.currentTimeMillis(), activeFp) { it in closed }
+            } catch (e: Exception) { Log.w(TAG, "tidy failed", e) }
+        }
     }
 
     /**
@@ -489,7 +513,7 @@ object Blobs {
         if (!dir.isDirectory && !dir.mkdirs()) return false
         var tmp: File? = null
         try {
-            val t = File.createTempFile(out.name.take(40).padEnd(3, '_'), ".part", dir).also { tmp = it }
+            val t = File.createTempFile(BlobRules.tempPrefix(out.name), ".part", dir).also { tmp = it }
             var written = 0L
             t.outputStream().buffered().use { os ->
                 for (i in 0 until att.chunks) {
@@ -523,7 +547,7 @@ object Blobs {
         var tmp: File? = null
         return try {
             if (!dir.isDirectory && !dir.mkdirs()) return false
-            val t = File.createTempFile(out.name.take(40).padEnd(3, '_'), ".part", dir).also { tmp = it }
+            val t = File.createTempFile(BlobRules.tempPrefix(out.name), ".part", dir).also { tmp = it }
             t.writeBytes(bytes)
             t.renameTo(out)
             out.exists()
@@ -692,7 +716,8 @@ object Blobs {
 
     /**
      * Keep a received photo, voice note or file outside Hopline (Pictures/Hopline or Downloads),
-     * so it survives leaving the group. Returns where it went, or null if it couldn't be saved.
+     * so it is the person's own copy: deleting the group (or Hopline) doesn't take it. Returns
+     * where it went, or null if it couldn't be saved.
      * (On Android 8–9 the caller offers the system "Save as…" picker instead — see [copyToUri].)
      */
     fun saveToPhone(ctx: Context, file: File, name: String, mime: String): Uri? = save(ctx, file, name, mime)?.uri

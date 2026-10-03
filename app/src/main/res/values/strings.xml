@@ -46,8 +46,15 @@
     <string name="paused_tap_to_switch">Paused — tap to connect</string>
     <string name="one_group_note">Hopline links to one group at a time. Tap a paused group to switch — its messages are kept.</string>
     <string name="switch_group_title">Switch to “%1$s”?</string>
-    <string name="switch_group_body">Your phone will leave the radio of the current group and start finding this one. Nothing is deleted.</string>
+    <string name="switch_group_body">Your phone will pause the current group and start finding this one. Nothing is deleted.</string>
     <string name="switch_btn">Switch</string>
+    <string name="left_groups">Groups you left</string>
+    <string name="left_row_sub">You left this group</string>
+    <string name="left_groups_note">Chats from groups you left stay on this phone until you delete them. Press and hold one to rejoin or delete it.</string>
+    <string name="no_group_status">Not in a group right now</string>
+    <string name="no_group_title">You\'re not in a group</string>
+    <string name="no_group_body">Your old chats are below. Start or join a group to chat again.</string>
+    <string name="no_group_btn">Start or join a group</string>
     <string name="add_group">New or existing group</string>
     <string name="home_empty_title">Your group is ready</string>
     <string name="home_empty_body">Share the group code so friends can join. Phones find each other on their own — no hotspot, no pairing.</string>
@@ -166,12 +173,16 @@
     <string name="this_group">This group</string>
     <string name="rename_group">Rename group</string>
     <string name="leave_group">Leave group</string>
-    <string name="leave_confirm">Leave “%1$s”? Its messages and photos on this phone will be deleted.</string>
+    <string name="leave_title">Leave “%1$s”?</string>
+    <string name="leave_confirm">You\'ll stop getting this group\'s messages, and your phone will stop passing them along. The chat stays on this phone until you delete it.</string>
+    <string name="leave_confirm_next">Hopline will connect to “%1$s” instead.</string>
     <string name="leave">Leave</string>
+    <string name="left_toast">You left “%1$s”. Its chat is still on this phone.</string>
+    <!-- Leaving was refused: the chat must be safely saved before the phone lets go of the group -->
+    <string name="leave_not_saved">Couldn\'t leave — storage may be full. Nothing was changed.</string>
     <string name="cancel">Cancel</string>
     <string name="about">About</string>
     <string name="how_it_works">How Hopline works</string>
-    <string name="version">Version %1$s</string>
     <string name="made_for">Free and open source — made for ForPublicOrg</string>
 
     <!-- Delivery -->
@@ -218,6 +229,7 @@
     <string name="errand_send_hint">Your phone has signal. Tap Send — your messaging app opens with this filled in.</string>
     <string name="cant_send">Can\'t</string>
     <string name="notif_other_group">That\'s from a group that isn\'t on the radio right now — open Hopline to switch to it.</string>
+    <string name="notif_left_group">You left that group, so your reply wasn\'t sent.</string>
 
     <!-- Notifications -->
     <string name="notif_service">Hopline is on</string>

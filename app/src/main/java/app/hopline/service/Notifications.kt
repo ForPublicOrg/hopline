@@ -30,6 +30,8 @@ import app.hopline.ui.InternetActivity
 object Notifications {
     const val CH_SERVICE = "service"
     const val CH_MESSAGES = "messages"
+    /** "A newer Hopline is ready": its own channel, so it can be switched off without touching messages. */
+    const val CH_UPDATES = "updates"
     const val ID_SERVICE = 1
     const val EXTRA_FP = "fp"
     const val EXTRA_PEER = "peer"
@@ -51,6 +53,9 @@ object Notifications {
     /** The full key is the tag: no hash, so no two chats or requests can collide. */
     private const val ID_CHAT = 2
     private const val ID_ERRAND = 3
+    private const val ID_UPDATE = 4
+    /** Not a group's fingerprint, so clearing a group's notifications never takes this one. */
+    private const val TAG_UPDATE = "update"
     private fun errandTag(fp: String, eid: String) = "$fp|e|$eid"
     private fun errandId(eid: String): Int = 20_000 + (eid.hashCode() and 0xFFFF)   // request codes only
     /** Distinct data per chat/request and action: PendingIntents differing only in extras would be
@@ -62,6 +67,7 @@ object Notifications {
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(NotificationChannel(CH_SERVICE, ctx.getString(R.string.channel_service), NotificationManager.IMPORTANCE_LOW).apply { setShowBadge(false) })
         nm.createNotificationChannel(NotificationChannel(CH_MESSAGES, ctx.getString(R.string.channel_messages), NotificationManager.IMPORTANCE_HIGH))
+        nm.createNotificationChannel(NotificationChannel(CH_UPDATES, ctx.getString(R.string.channel_updates), NotificationManager.IMPORTANCE_DEFAULT).apply { setShowBadge(false) })
     }
 
     fun service(ctx: Context, text: String): Notification =
@@ -81,7 +87,10 @@ object Notifications {
     fun preview(ctx: Context, m: Message): String {
         val att = m.att
         val body = when {
-            m.isNotice -> ctx.getString(R.string.notice_renamed_short, m.text)
+            m.isRename -> ctx.getString(R.string.notice_renamed_short, m.text)
+            // This phone's own notes in a chat carry no text: Home's row says what they mean.
+            m.kind == Message.LEFT -> ctx.getString(R.string.chat_notice_left)
+            m.kind == Message.REJOINED -> ctx.getString(R.string.chat_notice_rejoined)
             m.loc != null -> ctx.getString(R.string.location_label) + if (m.loc.label.isNotEmpty()) " — ${m.loc.label}" else ""
             att == null -> m.text
             att.isAudio && att.dur > 0 -> ctx.getString(R.string.voice_label) + " (${att.dur / 60}:${"%02d".format(att.dur % 60)})"
@@ -177,7 +186,7 @@ object Notifications {
         val k = key(fp, chat)
         val list = lines[k] ?: return
         val private = chat != Core.GROUP
-        val groupName = Core.store.groups().firstOrNull { it.fingerprint == fp }?.name?.ifEmpty { null } ?: "Hopline"
+        val groupName = Core.store.findGroup(fp)?.name?.ifEmpty { null } ?: "Hopline"
         val me = Person.Builder().setName(ctx.getString(R.string.reply_you)).setKey("me").build()
         val style = NotificationCompat.MessagingStyle(me)
         if (!private) style.setConversationTitle(groupName).setGroupConversation(true)
@@ -245,16 +254,20 @@ object Notifications {
         cancel(ctx, fp, 1000 + (chat.hashCode() and 0xFFFF))   // one posted by 2.1, still in the shade after the update
     }
 
-    /** A group went off the radio (switched or left): its notifications must not linger or merge. */
-    fun clearGroup(ctx: Context, fp: String) {
-        for (k in lines.keys.filter { it.startsWith("$fp|") }) lines.remove(k)
-        for (k in counts.keys.filter { it.startsWith("$fp|") }) counts.remove(k)
-        for (k in pending.keys.filter { it.startsWith("$fp|") }) pending.remove(k)
+    /** A group went off the radio (switched, left or deleted): its notifications must not linger or merge. */
+    fun clearGroup(ctx: Context, fp: String) = clearGroups(ctx, listOf(fp))
+
+    /** [clearGroup] for several groups with one look at what is in the shade (every left group, at each start). */
+    fun clearGroups(ctx: Context, fps: Collection<String>) {
+        fun ofThese(tag: String) = fps.any { tag == it || tag.startsWith("$it|") }
+        for (k in lines.keys.filter { ofThese(it) }) lines.remove(k)
+        for (k in counts.keys.filter { ofThese(it) }) counts.remove(k)
+        for (k in pending.keys.filter { ofThese(it) }) pending.remove(k)
         try {
             val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             for (sb in nm.activeNotifications) {
                 val tag = sb.tag ?: continue
-                if (tag == fp || tag.startsWith("$fp|")) nm.cancel(tag, sb.id)
+                if (ofThese(tag)) nm.cancel(tag, sb.id)
             }
         } catch (e: Exception) { }
     }
@@ -333,6 +346,40 @@ object Notifications {
         cancel(ctx, fp, errandId(eid))   // posted by an earlier version
     }
 
+    // ------------------------------------------------------------------ Hopline's own update
+
+    /**
+     * "Hopline 2.3 is ready to install" — the one notification a version ever gets (service/Updater
+     * sees to that). It offers and nothing more: a tap opens Home, where the banner has the
+     * Install button; swiped away, it does not come back. [quiet]: Hopline is on screen, where
+     * the banner already says it — no sound.
+     */
+    @SuppressLint("MissingPermission")  // guarded by canPost()
+    fun updateReady(ctx: Context, version: String, summary: String, quiet: Boolean) {
+        if (!canPost(ctx)) return
+        val text = summary.ifEmpty { ctx.getString(R.string.update_notif_text) }
+        // Back to the Home that is already there (under a chat, say), not a second one on top.
+        val home = Intent(ctx, HomeActivity::class.java).setData(target(TAG_UPDATE))
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        val n = NotificationCompat.Builder(ctx, CH_UPDATES)
+            .setSmallIcon(R.drawable.ic_notif)
+            .setColor(0xFFD9481F.toInt())
+            .setContentTitle(ctx.getString(R.string.update_notif_title, version))
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(quiet)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(open(ctx, home, ID_UPDATE))
+            .build()
+        try { NotificationManagerCompat.from(ctx).notify(TAG_UPDATE, ID_UPDATE, n) } catch (e: Exception) { }
+    }
+
+    /** The version was installed, withdrawn, replaced by a newer one — or the person said "not now". */
+    fun cancelUpdate(ctx: Context) = cancel(ctx, TAG_UPDATE, ID_UPDATE)
+
     private fun open(ctx: Context, intent: Intent, req: Int): PendingIntent =
         PendingIntent.getActivity(ctx, req, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
@@ -343,6 +390,17 @@ object Notifications {
     class ActionReceiver : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
             val fp = intent.getStringExtra(EXTRA_FP) ?: return
+            // A group this phone has left since the notification was posted: nothing can be sent
+            // into it, and none of this may land on the group that is on the radio now (the chat
+            // keys are the same in every group). Its chat is still there to read, so "read" counts.
+            if (Core.store.findGroup(fp)?.left == true) {
+                when (intent.action) {
+                    ACTION_REPLY -> android.widget.Toast.makeText(ctx, R.string.notif_left_group, android.widget.Toast.LENGTH_LONG).show()
+                    ACTION_READ -> intent.getStringExtra(EXTRA_PEER)?.let { Core.store.setLastRead(fp, it, System.currentTimeMillis()) }
+                }
+                clearGroup(ctx, fp)
+                return
+            }
             Core.ensureRunning()
             val r = Core.router
             // A notification from a group that is no longer on the radio must not act on another one.

@@ -67,6 +67,13 @@ object SafeUrl {
             // IPv4-mapped / -compatible: judge the embedded IPv4.
             val mapped = (0 until 10).all { b[it].toInt() == 0 } && ((b[10].toInt() and 0xFF) == 0xFF && (b[11].toInt() and 0xFF) == 0xFF || b[10].toInt() == 0 && b[11].toInt() == 0)
             if (mapped) return publicV4(b.copyOfRange(12, 16))
+            // 64:ff9b::/96 — how a phone on an IPv6-only mobile network (many carriers now) is given
+            // every IPv4-only site: the carrier's gateway passes it on to the IPv4 address in the
+            // last four bytes. As public as that address is; without this, such a phone could
+            // reach nothing at all.
+            val nat64 = b[0].toInt() == 0 && b[1].toInt() == 0x64 && (b[2].toInt() and 0xFF) == 0xFF && (b[3].toInt() and 0xFF) == 0x9B &&
+                (4 until 12).all { b[it].toInt() == 0 }
+            if (nat64) return publicV4(b.copyOfRange(12, 16))
             val first = b[0].toInt() and 0xFF
             if (first and 0xFE == 0xFC) return false                               // fc00::/7 unique local
             if (first == 0xFE && (b[1].toInt() and 0xC0) == 0x80) return false     // fe80::/10

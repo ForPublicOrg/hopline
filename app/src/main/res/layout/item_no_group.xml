@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Home, when every group was left: the old chats are listed below; this is the way to a live one. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="vertical" android:gravity="center"
+    android:layout_marginStart="16dp" android:layout_marginEnd="16dp" android:layout_marginTop="8dp"
+    android:background="@drawable/bg_card" android:padding="24dp">
+
+    <ImageView android:layout_width="56dp" android:layout_height="56dp" android:src="@drawable/ic_chat"
+        android:alpha="0.5" android:importantForAccessibility="no" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="12dp"
+        android:text="@string/no_group_title" android:textAppearance="@style/Text.Title" android:textSize="20sp" android:gravity="center" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+        android:text="@string/no_group_body" android:textAppearance="@style/Text.Muted" android:gravity="center" />
+    <com.google.android.material.button.MaterialButton android:id="@+id/no_group_btn" android:layout_width="wrap_content"
+        android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="@string/no_group_btn"
+        android:paddingStart="28dp" android:paddingEnd="28dp" />
+</LinearLayout>

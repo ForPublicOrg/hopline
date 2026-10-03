@@ -47,8 +47,18 @@
     <!-- Another group's notification -->
     <string name="chat_switch_body">That message is from “%1$s”. Your phone talks to one group at a time — switching moves it to that group. Nothing is deleted.</string>
     <string name="chat_not_now">Not now</string>
-    <string name="chat_from_left_group">That message was from a group you\'ve left.</string>
+    <string name="chat_from_left_group">That message was from a group you\'ve deleted.</string>
     <string name="chat_changed_not_sent">The chat changed — not sent.</string>
+
+    <!-- The kept chat of a group this phone left: to read, not to write in -->
+    <string name="left_bar">You can\'t send messages here because you left this group.</string>
+    <string name="left_chat_sub">You left this group</string>
+    <string name="left_dm_sub">In “%1$s” · you left this group</string>
+    <string name="chat_cant_open">This chat couldn\'t be opened.</string>
+    <!-- Nothing is wrong with the chat: the phone was just too busy to read it in time -->
+    <string name="chat_busy">This chat is still being read — try again in a moment.</string>
+    <!-- "Delete for me" in a left group's chat, when the phone couldn't save the change -->
+    <string name="delete_not_saved">Couldn\'t delete — storage may be full. Nothing was deleted.</string>
 
     <!-- Lines in the chat -->
     <plurals name="chat_unread_divider">
@@ -65,6 +75,8 @@
     </plurals>
     <string name="chat_notice_renamed">%1$s renamed the group to “%2$s”</string>
     <string name="chat_notice_renamed_you">You renamed the group to “%1$s”</string>
+    <string name="chat_notice_left">You left</string>
+    <string name="chat_notice_rejoined">You rejoined</string>
     <string name="chat_system_via">🌐 Shared internet — via %1$s\'s phone</string>
     <string name="chat_system_via_you">🌐 Shared internet — via your phone</string>
 
@@ -104,6 +116,10 @@
     <string name="chat_status_got">Got it: %1$s</string>
     <string name="chat_status_waiting">Still waiting: %1$s</string>
     <string name="chat_status_missed">Didn\'t reach: %1$s</string>
+    <string name="chat_status_left_unsent">Not sent. You left the group before it went out.</string>
+    <string name="chat_status_left_sent">Sent. You left before Hopline could confirm who got it.</string>
+    <!-- In a left group's chat: it had already gone unconfirmed for 48 hours before the leaving. No "Send again" there. -->
+    <string name="chat_status_left_dm_not_delivered">Not delivered — %1$s\'s phone didn\'t confirm within 48 hours.</string>
     <string name="chat_send_again">Send again</string>
     <string name="chat_resend_gone">That file isn\'t on this phone any more, so it can\'t be sent again.</string>
 
@@ -137,6 +153,7 @@
         <item quantity="other">%2$d people reacted %1$s</item>
     </plurals>
     <string name="chat_a11y_options">React, reply and more</string>
+    <string name="chat_a11y_options_left">Copy, save and more</string>
     <string name="chat_a11y_show_original">Show the original message</string>
     <string name="chat_a11y_open_link">Open %1$s</string>
     <string name="chat_photo_desc">Photo</string>
@@ -163,6 +180,7 @@
     <string name="chat_file_empty">That file is empty.</string>
     <string name="chat_file_unreadable">Couldn\'t read that file. If it lives in the cloud, download it to the phone first.</string>
     <string name="chat_file_expired">Didn\'t arrive — no phone nearby carries it any more</string>
+    <string name="chat_file_left">Not on this phone — it hadn\'t arrived when you left.</string>
     <string name="chat_no_app_for_link">No app on this phone can open that link.</string>
 
     <!-- Location from a private chat -->

@@ -10,6 +10,7 @@ import android.telephony.ServiceState
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import android.util.Log
+import androidx.lifecycle.MutableLiveData
 import java.util.concurrent.Executor
 
 /**
@@ -24,6 +25,8 @@ object Cell {
     private var registered = false
     private var callback: Any? = null
     var onChange: (() -> Unit)? = null
+    /** Each service state as it is heard, for a screen with no mesh behind it (Pay) to redraw on. */
+    val heard = MutableLiveData<Int>()
 
     fun start(ctx: Context) {
         if (registered) return
@@ -56,6 +59,7 @@ object Cell {
     private fun update(s: Int) {
         if (s == state) return
         state = s
+        heard.postValue(s)
         Core.handler.post { onChange?.invoke() }
     }
 

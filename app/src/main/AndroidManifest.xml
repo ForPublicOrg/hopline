@@ -25,9 +25,18 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- Only used by the ONE phone that happens to have signal, to run errands for the group. -->
+    <!-- Used by the ONE phone that happens to have signal, to run errands for the group — and by
+         Hopline itself, to ask GitHub whether a newer version is out and to fetch it. The group's
+         messages never use it. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Updating Hopline from inside Hopline. Nothing is ever installed until you tap Install,
+         and the first time Android still asks you itself (and whether Hopline may install apps). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Once Hopline has updated itself that way, Android 12+ takes your tap on Install as the
+         answer instead of asking the same question a second time. -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
 
     <!-- Scanning a friend's QR code, and taking a photo to send. -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -80,6 +89,7 @@
         <activity android:name=".ui.PeopleActivity" />
         <activity android:name=".ui.InternetActivity" android:launchMode="singleTop" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.SettingsActivity" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.PayActivity" android:label="@string/pay_title" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.GroupInfoActivity" />
         <activity android:name=".ui.ReaderActivity" />
         <activity android:name=".ui.ViewerActivity" android:theme="@style/Theme.Hopline.Viewer" />
@@ -92,6 +102,16 @@
 
         <!-- Reply / Mark as read / "Can't send" from a notification. Not reachable by other apps. -->
         <receiver android:name=".service.Notifications$ActionReceiver" android:exported="false" />
+
+        <!-- Android telling Hopline how installing its own update went. Not reachable by other apps. -->
+        <receiver android:name=".service.Updater$InstallReceiver" android:exported="false" />
+        <!-- Hopline was just updated: bring the mesh back without waiting for the app to be opened.
+             Only Android itself can send this. -->
+        <receiver android:name=".service.Updater$ReplacedReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Lets received photos/files be opened and shared with other apps. -->
         <provider

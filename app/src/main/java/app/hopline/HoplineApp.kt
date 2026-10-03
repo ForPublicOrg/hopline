@@ -27,5 +27,8 @@ class HoplineApp : Application() {
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         if (level >= TRIM_MEMORY_UI_HIDDEN) Core.flushSave()
+        // Long enough in the background to be a candidate for killing: the left group's chat that
+        // was being read is only a copy of what is on disk, and is read again on the way back in.
+        if (level >= TRIM_MEMORY_BACKGROUND) Core.dropArchive()
     }
 }

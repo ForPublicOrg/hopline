@@ -34,10 +34,11 @@
                     android:importantForAccessibility="no" />
             </LinearLayout>
 
-            <!-- This group: tap for Group info; quick Show code / Rename / Leave -->
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp"
+            <!-- This group: tap for Group info; quick Show code / Rename / Leave.
+                 Label and card are hidden while no group is on the radio (every group was left) -->
+            <TextView android:id="@+id/group_label" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp"
                 android:layout_marginStart="4dp" android:text="@string/this_group" android:textAppearance="@style/Text.Section" android:textSize="12sp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
+            <LinearLayout android:id="@+id/group_card" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
                 android:layout_marginTop="8dp" android:background="@drawable/bg_card" android:paddingBottom="12dp">
                 <LinearLayout android:id="@+id/group_row" android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal" android:gravity="center_vertical" android:minHeight="64dp"
@@ -87,7 +88,8 @@
                     android:visibility="gone" />
             </LinearLayout>
 
-            <!-- About -->
+            <!-- About: how it works, this phone's version and its updates, where Hopline comes from.
+                 It belongs to the phone, not to a group: shown with or without one. -->
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp"
                 android:layout_marginStart="4dp" android:text="@string/about" android:textAppearance="@style/Text.Section" android:textSize="12sp" />
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
@@ -102,11 +104,60 @@
                         android:importantForAccessibility="no" />
                 </LinearLayout>
                 <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" />
-                <TextView android:id="@+id/version" android:layout_width="match_parent" android:layout_height="wrap_content"
-                    android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="14dp" android:paddingBottom="4dp"
-                    android:textSize="14sp" android:textColor="@color/text_muted" />
+
+                <!-- The version on this phone and what is known about a newer one: the same states
+                     as Home's banner, with the action that fits, also after that banner was closed.
+                     TalkBack reads the lines as one (the description is set in code). -->
+                <LinearLayout android:id="@+id/update_text" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="vertical" android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="14dp"
+                    android:paddingBottom="2dp" android:importantForAccessibility="yes">
+                    <TextView android:id="@+id/version" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text" android:importantForAccessibility="no" />
+                    <TextView android:id="@+id/update_state" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp" android:textSize="14sp" android:textColor="@color/text_muted"
+                        android:importantForAccessibility="no" />
+                    <TextView android:id="@+id/update_detail" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp" android:textSize="13sp" android:textColor="@color/text_muted" android:visibility="gone"
+                        android:importantForAccessibility="no" />
+                </LinearLayout>
+                <com.google.android.material.progressindicator.LinearProgressIndicator android:id="@+id/update_progress"
+                    android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginStart="16dp"
+                    android:layout_marginEnd="16dp" android:layout_marginTop="8dp" android:max="1000" android:visibility="gone"
+                    android:importantForAccessibility="no"
+                    app:indicatorColor="@color/ember" app:trackColor="@color/surface_variant" app:trackCornerRadius="2dp" />
+                <LinearLayout android:id="@+id/update_actions" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:gravity="end" android:paddingStart="6dp" android:paddingEnd="6dp"
+                    android:visibility="gone">
+                    <com.google.android.material.button.MaterialButton android:id="@+id/update_secondary" android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" android:minHeight="48dp" android:minWidth="0dp"
+                        android:paddingStart="12dp" android:paddingEnd="12dp" android:textColor="@color/text_muted"
+                        android:visibility="gone" style="@style/Widget.Material3.Button.TextButton" />
+                    <com.google.android.material.button.MaterialButton android:id="@+id/update_primary" android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" android:minHeight="48dp" android:minWidth="0dp"
+                        android:paddingStart="12dp" android:paddingEnd="12dp" android:textColor="@color/ember"
+                        style="@style/Widget.Material3.Button.TextButton" />
+                </LinearLayout>
+                <com.google.android.material.button.MaterialButton android:id="@+id/update_check" android:layout_width="match_parent"
+                    android:layout_height="wrap_content" android:layout_marginStart="16dp" android:layout_marginEnd="16dp"
+                    android:layout_marginTop="8dp" android:layout_marginBottom="12dp" android:minHeight="48dp"
+                    android:text="@string/update_check_now" style="@style/Widget.Hopline.Button.Quiet" />
+
+                <!-- Off: Hopline neither checks nor downloads by itself; "Check for updates" still works -->
+                <LinearLayout android:id="@+id/update_auto_block" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="vertical">
+                    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" />
+                    <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/update_auto" android:layout_width="match_parent"
+                        android:layout_height="wrap_content" android:minHeight="48dp" android:layout_marginTop="8dp"
+                        android:paddingStart="16dp" android:paddingEnd="16dp" android:text="@string/update_auto" android:textSize="16sp"
+                        android:textStyle="bold" android:textColor="@color/text" />
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp"
+                        android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingBottom="14dp"
+                        android:text="@string/update_auto_sub" android:textSize="13sp" android:textColor="@color/text_muted" />
+                </LinearLayout>
+
+                <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" />
                 <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-                    android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingBottom="14dp"
+                    android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="14dp" android:paddingBottom="14dp"
                     android:text="@string/made_for" android:textSize="13sp" android:textColor="@color/text_faint" />
             </LinearLayout>
         </LinearLayout>

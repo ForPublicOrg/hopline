@@ -64,6 +64,70 @@ object BlobRules {
 
     private val UNSAFE = Regex("[^A-Za-z0-9._-]")
 
+    // ---------------------------------------------------------------- names no kept file can have
+
+    /**
+     * What a file is called while it is still being written. A finished file is <fid>-<safe name>,
+     * and neither a file id nor a safe name can hold a '~' — so nothing a sender calls their file
+     * can ever look like one of these. (Half-written files used to be told apart by ending in
+     * ".part", and a received file really named "backup.part" was swept away with them.)
+     */
+    const val TEMP_PREFIX = "~"
+
+    fun tempPrefix(finalName: String): String = TEMP_PREFIX + finalName.take(40).padEnd(2, '_')
+
+    fun isTemp(name: String): Boolean = name.startsWith(TEMP_PREFIX)
+
+    /** A half-written file older than this was left by a kill, not by work still going on. */
+    const val TEMP_KEEP_MS = 3600_000L
+
+    private const val DEAD_CHUNKS = "chunks.dead-"
+    private const val GONE_GROUP = ".gone-"
+
+    /** What a left group's folder of carried pieces is renamed to, on its way to being deleted. */
+    fun deadChunksName(now: Long): String = DEAD_CHUNKS + now
+    fun isDeadChunks(name: String): Boolean = name.startsWith(DEAD_CHUNKS)
+
+    /** What a deleted group's whole folder is renamed to. The dot can't start a fingerprint, so it is never taken for a group. */
+    fun goneGroupName(fp: String, now: Long): String = "$GONE_GROUP$fp-$now"
+    fun isGoneGroup(name: String): Boolean = name.startsWith(GONE_GROUP)
+
+    /**
+     * Take [dir] out of use in one step, by renaming it to [asideName] beside it. Deleting a folder
+     * of thousands of pieces takes seconds; if the group is joined again meanwhile, whatever it
+     * creates under the old name is a new, empty folder that the slow delete can never reach.
+     * Returns the renamed folder, to delete at leisure — or null when there was nothing to move,
+     * or the rename failed and [dir] is still where it was.
+     */
+    fun moveAside(dir: File, asideName: String): File? {
+        if (!dir.exists()) return null
+        val aside = File(dir.parentFile, asideName)
+        return if (dir.renameTo(aside)) aside else null
+    }
+
+    /**
+     * Housekeeping for every group's folder under [root] (files/blobs): what a kill left behind
+     * goes — deleted groups' folders, left groups' piece folders, half-written files — and, for
+     * the groups no router is looking after ([activeFp] is the one that has one), pieces past their
+     * 48 h. [skip] names folders to leave entirely alone.
+     *
+     * The one thing this never does is touch a kept file: in a group's files/ only [isTemp] names
+     * are ever deleted, whether the group is on the radio, paused, or left years ago.
+     */
+    fun sweep(root: File, now: Long, activeFp: String?, skip: (String) -> Boolean = { false }) {
+        root.listFiles()?.forEach { group ->
+            if (isGoneGroup(group.name)) { group.deleteRecursively(); return@forEach }
+            if (!group.isDirectory || skip(group.name)) return@forEach
+            group.listFiles()?.forEach { if (isDeadChunks(it.name)) it.deleteRecursively() }
+            File(group, "files").listFiles()?.forEach { f ->
+                if (isTemp(f.name) && now - f.lastModified() > TEMP_KEEP_MS) f.delete()
+            }
+            if (group.name != activeFp) File(group, "chunks").listFiles()?.forEach { f ->
+                if (now - f.lastModified() > KEEP_MS) f.delete()
+            }
+        }
+    }
+
     /**
      * A name fit to show in another app or a Downloads folder: the sender's own words (any
      * script), minus path separators, characters file systems refuse, and runaway length. The

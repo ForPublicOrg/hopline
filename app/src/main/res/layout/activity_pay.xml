@@ -1,0 +1,253 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pay without internet: one page in three stages, only one of them showing at a time — whom to
+     pay (scan, type, or someone paid before), then the payee, the amount and what happens in the
+     *99# box, then "did it go through?" once the person is back from the Phone app. No background
+     of its own: the window already paints @color/bg underneath. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/toolbar" android:layout_width="match_parent" android:layout_height="?attr/actionBarSize"
+        android:background="@color/surface" app:title="@string/pay_title" app:titleTextColor="@color/text"
+        app:navigationIcon="@drawable/ic_back" app:navigationIconTint="@color/text"
+        app:navigationContentDescription="@string/back" android:elevation="2dp" />
+
+    <ScrollView
+        android:id="@+id/scroll" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout android:id="@+id/content" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:paddingStart="16dp" android:paddingEnd="16dp"
+            android:paddingTop="16dp" android:paddingBottom="28dp">
+
+            <!-- ============================================================ 1. whom to pay -->
+            <LinearLayout android:id="@+id/start_panel" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="vertical" android:gravity="center_horizontal"
+                    android:background="@drawable/bg_card" android:padding="24dp">
+                    <TextView android:layout_width="88dp" android:layout_height="88dp" android:gravity="center"
+                        android:background="@drawable/bg_net_icon" android:importantForAccessibility="no"
+                        android:text="@string/pay_rupee" android:textSize="40sp" android:textStyle="bold"
+                        android:textColor="@color/internet_badge" />
+                    <TextView android:id="@+id/hero_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp" android:text="@string/pay_hero_title"
+                        android:textAppearance="@style/Text.Title" android:textSize="22sp" android:gravity="center" />
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp" android:text="@string/pay_hero_body"
+                        android:textAppearance="@style/Text.Muted" android:textSize="15sp" android:gravity="center"
+                        android:lineSpacingExtra="2dp" />
+
+                    <com.google.android.material.button.MaterialButton android:id="@+id/scan"
+                        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="22dp"
+                        android:text="@string/pay_scan" app:icon="@drawable/ic_qr" app:iconGravity="textStart" />
+                    <com.google.android.material.button.MaterialButton android:id="@+id/type"
+                        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                        android:text="@string/pay_type" style="@style/Widget.Hopline.Button.Quiet" />
+
+                    <!-- Typing a UPI ID instead: opened by the button above, which it then replaces -->
+                    <LinearLayout android:id="@+id/type_panel" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:orientation="vertical" android:layout_marginTop="16dp" android:visibility="gone">
+                        <EditText android:id="@+id/id_input" android:layout_width="match_parent" android:layout_height="wrap_content"
+                            android:minHeight="52dp" android:background="@drawable/bg_field" android:hint="@string/pay_id_hint"
+                            android:textSize="16sp" android:textColor="@color/text" android:textColorHint="@color/text_faint"
+                            android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="10dp" android:paddingBottom="10dp"
+                            android:inputType="textEmailAddress|textNoSuggestions" android:imeOptions="actionDone|flagNoExtractUi"
+                            android:maxLines="1" android:importantForAutofill="no" android:textAlignment="viewStart" />
+                        <TextView android:id="@+id/id_error" android:layout_width="match_parent" android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp" android:layout_marginStart="6dp" android:layout_marginEnd="6dp"
+                            android:textSize="13.5sp" android:textColor="@color/danger" android:accessibilityLiveRegion="polite"
+                            android:visibility="gone" />
+                        <com.google.android.material.button.MaterialButton android:id="@+id/id_next"
+                            android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                            android:text="@string/pay_id_next" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- Notes about right now, re-checked whenever the screen comes back -->
+                <TextView android:id="@+id/online_note" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp" android:background="@drawable/bg_field" android:padding="14dp"
+                    android:text="@string/pay_note_online" android:textSize="14sp" android:textColor="@color/text"
+                    android:visibility="gone" />
+                <TextView android:id="@+id/signal_note" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp" android:background="@drawable/bg_warn_card" android:padding="14dp"
+                    android:text="@string/pay_note_no_signal" android:textSize="14sp" android:textColor="@color/warn_text"
+                    android:visibility="gone" />
+                <TextView android:id="@+id/jio_note" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp" android:background="@drawable/bg_warn_card" android:padding="14dp"
+                    android:text="@string/pay_note_jio" android:textSize="14sp" android:textColor="@color/warn_text"
+                    android:visibility="gone" />
+
+                <!-- People paid before: label and list hidden together while there is nobody -->
+                <TextView android:id="@+id/recent_label" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="22dp" android:layout_marginStart="4dp" android:text="@string/pay_recent"
+                    android:textAppearance="@style/Text.Section" android:textSize="12sp" android:visibility="gone" />
+                <LinearLayout android:id="@+id/recents" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp" android:orientation="vertical" android:background="@drawable/bg_card"
+                    android:paddingTop="6dp" android:paddingBottom="6dp" android:visibility="gone" />
+
+                <TextView android:id="@+id/know_label" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="22dp" android:layout_marginStart="4dp" android:text="@string/pay_know"
+                    android:textAppearance="@style/Text.Section" android:textSize="12sp" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp" android:orientation="vertical" android:background="@drawable/bg_card"
+                    android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="8dp" android:paddingBottom="8dp">
+                    <LinearLayout android:id="@+id/know_list" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:orientation="vertical" />
+                    <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="14dp"
+                        android:background="@color/divider" />
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp"
+                        android:text="@string/pay_know_setup" android:textSize="14sp" android:textColor="@color/text"
+                        android:lineSpacingExtra="2dp" />
+                    <com.google.android.material.button.MaterialButton android:id="@+id/setup"
+                        android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="-12dp"
+                        android:minHeight="48dp" android:text="@string/pay_setup_btn" android:textAllCaps="false"
+                        android:textSize="15sp" android:textStyle="bold" style="@style/Widget.Material3.Button.TextButton" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- ============================================================ 2. whom, how much, what happens -->
+            <LinearLayout android:id="@+id/confirm_panel" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:visibility="gone">
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:orientation="horizontal" android:gravity="center_vertical">
+                        <TextView android:id="@+id/payee_avatar" android:layout_width="52dp" android:layout_height="52dp"
+                            android:gravity="center" android:background="@drawable/bg_net_icon" android:importantForAccessibility="no"
+                            android:maxLines="1" android:textSize="22sp" android:textStyle="bold" android:textColor="@color/internet_badge" />
+                        <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                            android:orientation="vertical" android:layout_marginStart="14dp">
+                            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                                android:text="@string/pay_paying" android:textSize="13sp" android:textColor="@color/text_muted" />
+                            <!-- The UPI ID that is copied and paid, first; then the name the code claims, marked
+                                 as its claim (hidden when it gave none). Both selectable, to copy by hand, and
+                                 set from saved state, so neither restores its own -->
+                            <TextView android:id="@+id/payee_id" android:layout_width="match_parent" android:layout_height="wrap_content"
+                                android:layout_marginTop="1dp" android:textSize="17sp" android:textStyle="bold" android:textColor="@color/text"
+                                android:fontFamily="monospace" android:textIsSelectable="true" android:saveEnabled="false"
+                                android:textAlignment="viewStart" />
+                            <TextView android:id="@+id/payee_name" android:layout_width="match_parent" android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp" android:textSize="14sp" android:textColor="@color/text_muted"
+                                android:textIsSelectable="true" android:saveEnabled="false" android:textAlignment="viewStart" />
+                        </LinearLayout>
+                    </LinearLayout>
+                    <TextView android:id="@+id/payee_note" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp" android:textSize="13sp" android:textColor="@color/text_muted"
+                        android:lineSpacingExtra="1dp" />
+                </LinearLayout>
+
+                <!-- Said again here, just before the Phone app opens: a code scanned on the Join screen
+                     comes straight to this stage, past the notes on the first one -->
+                <TextView android:id="@+id/confirm_signal_note" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp" android:background="@drawable/bg_warn_card" android:padding="14dp"
+                    android:text="@string/pay_note_no_signal" android:textSize="14sp" android:textColor="@color/warn_text"
+                    android:visibility="gone" />
+                <TextView android:id="@+id/confirm_jio_note" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp" android:background="@drawable/bg_warn_card" android:padding="14dp"
+                    android:text="@string/pay_note_jio" android:textSize="14sp" android:textColor="@color/warn_text"
+                    android:visibility="gone" />
+
+                <TextView android:id="@+id/one_bill" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp" android:background="@drawable/bg_warn_card" android:padding="14dp"
+                    android:text="@string/pay_one_bill" android:textSize="14sp" android:textColor="@color/warn_text"
+                    android:visibility="gone" />
+
+                <TextView android:id="@+id/amount_label" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="22dp" android:layout_marginStart="4dp" android:text="@string/pay_amount"
+                    android:labelFor="@+id/amount" android:textAppearance="@style/Text.Section" android:textSize="12sp" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:orientation="horizontal" android:gravity="center_vertical"
+                        android:background="@drawable/bg_field" android:minHeight="64dp"
+                        android:paddingStart="16dp" android:paddingEnd="16dp">
+                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                            android:text="@string/pay_rupee" android:textSize="28sp" android:textStyle="bold"
+                            android:textColor="@color/text" android:importantForAccessibility="no" />
+                        <!-- Set from saved state by the screen itself, so it never restores its own text -->
+                        <EditText android:id="@+id/amount" android:layout_width="0dp" android:layout_weight="1"
+                            android:layout_height="wrap_content" android:minHeight="56dp" android:layout_marginStart="6dp"
+                            android:background="@null" android:hint="@string/pay_amount_zero" android:saveEnabled="false"
+                            android:textSize="28sp" android:textStyle="bold" android:textColor="@color/text"
+                            android:textColorHint="@color/text_faint" android:inputType="numberDecimal" android:digits="0123456789."
+                            android:imeOptions="actionDone|flagNoExtractUi" android:maxLines="1" android:importantForAutofill="no"
+                            android:textAlignment="viewStart" />
+                    </LinearLayout>
+                    <TextView android:id="@+id/amount_fixed" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp" android:layout_marginStart="6dp" android:text="@string/pay_amount_fixed"
+                        android:textSize="13sp" android:textColor="@color/text_muted" android:visibility="gone" />
+                    <TextView android:id="@+id/amount_error" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp" android:layout_marginStart="6dp" android:layout_marginEnd="6dp"
+                        android:textSize="13.5sp" android:textColor="@color/danger" android:accessibilityLiveRegion="polite"
+                        android:visibility="gone" />
+                </LinearLayout>
+
+                <TextView android:id="@+id/steps_label" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="22dp" android:layout_marginStart="4dp" android:text="@string/pay_steps"
+                    android:textAppearance="@style/Text.Section" android:textSize="12sp" />
+                <LinearLayout android:id="@+id/steps" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp" android:orientation="vertical" android:background="@drawable/bg_card"
+                    android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="4dp" android:paddingBottom="16dp" />
+
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp" android:layout_marginStart="4dp" android:layout_marginEnd="4dp"
+                    android:text="@string/pay_pin_promise" android:textSize="13sp" android:textColor="@color/text_muted" />
+
+                <com.google.android.material.button.MaterialButton android:id="@+id/go"
+                    android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp"
+                    android:text="@string/pay_go" />
+            </LinearLayout>
+
+            <!-- ============================================================ 3. back from the Phone app -->
+            <LinearLayout android:id="@+id/after_panel" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:visibility="gone">
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="vertical" android:background="@drawable/bg_card" android:padding="24dp">
+                    <TextView android:id="@+id/after_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:text="@string/pay_after_title" android:textAppearance="@style/Text.Title" android:textSize="22sp" />
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                        android:text="@string/pay_after_body" android:textAppearance="@style/Text.Muted" android:textSize="15sp"
+                        android:lineSpacingExtra="2dp" />
+                    <TextView android:id="@+id/after_line" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp" android:background="@drawable/bg_field" android:padding="14dp"
+                        android:textSize="17sp" android:textStyle="bold" android:textColor="@color/text"
+                        android:textAlignment="viewStart" />
+                    <com.google.android.material.button.MaterialButton android:id="@+id/after_yes"
+                        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp"
+                        android:text="@string/pay_after_yes" />
+                    <com.google.android.material.button.MaterialButton android:id="@+id/after_no"
+                        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                        android:text="@string/pay_after_no" style="@style/Widget.Hopline.Button.Quiet" />
+                </LinearLayout>
+
+                <!-- "No, or not sure": what each thing the *99# box may have said means, and what to do -->
+                <LinearLayout android:id="@+id/help_card" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp" android:orientation="vertical" android:background="@drawable/bg_card"
+                    android:padding="16dp" android:visibility="gone">
+                    <!-- Said by TalkBack as the card opens: the help is below, out of sight -->
+                    <TextView android:id="@+id/help_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:text="@string/pay_help_title" android:textSize="17sp" android:textStyle="bold" android:textColor="@color/text"
+                        android:accessibilityLiveRegion="polite" />
+                    <LinearLayout android:id="@+id/help_list" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:orientation="vertical" android:layout_marginTop="2dp" />
+                    <com.google.android.material.button.MaterialButton android:id="@+id/again"
+                        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp"
+                        android:text="@string/pay_again" style="@style/Widget.Hopline.Button.Quiet" />
+                    <com.google.android.material.button.MaterialButton android:id="@+id/open_menu"
+                        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                        android:text="@string/pay_open_menu" style="@style/Widget.Hopline.Button.Quiet" />
+                    <com.google.android.material.button.MaterialButton android:id="@+id/done"
+                        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp"
+                        android:minHeight="48dp" android:text="@string/pay_done" android:textAllCaps="false"
+                        android:textSize="15sp" android:textStyle="bold" style="@style/Widget.Material3.Button.TextButton" />
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

@@ -59,13 +59,20 @@ import java.util.Locale
  *
  * Gestures follow every chat app: tap (my own message → delivery details), double-tap (❤️),
  * long-press anywhere on a message — its photo, file, quote or link included — for the menu.
+ *
+ * [leftAt] above 0 is the kept chat of a group this phone left, and when it left. Nothing in it
+ * is still on its way, so nothing is drawn as if it were: a message that never went out reads
+ * "Not sent" whatever its age, and a file that isn't on the phone says so instead of counting
+ * pieces that will never come.
  */
 class MessageAdapter(
     private val ctx: Context,
     private val router: Router,
     private val showNames: Boolean,
     private val listener: Listener,
+    private val leftAt: Long = 0,
 ) : ListAdapter<MessageAdapter.Row, RecyclerView.ViewHolder>(DIFF) {
+    private val readOnly: Boolean get() = leftAt > 0
 
     interface Listener {
         fun onTap(m: Message)
@@ -144,8 +151,14 @@ class MessageAdapter(
                 dividerDue = false; prev = null
             }
             if (m.isNotice) {
-                val label = if (m.from == me) ctx.getString(R.string.chat_notice_renamed_you, m.text)
-                            else ctx.getString(R.string.chat_notice_renamed, Ui.nameOf(router, m.from, m.fromName), m.text)
+                // Only a rename is worded "… renamed the group to …". This phone's own "left" /
+                // "rejoined" notes carry no name, and must never be dressed up as a rename.
+                val label = when {
+                    m.kind == Message.LEFT -> ctx.getString(R.string.chat_notice_left)
+                    m.kind == Message.REJOINED -> ctx.getString(R.string.chat_notice_rejoined)
+                    m.from == me -> ctx.getString(R.string.chat_notice_renamed_you, m.text)
+                    else -> ctx.getString(R.string.chat_notice_renamed, Ui.nameOf(router, m.from, m.fromName), m.text)
+                }
                 rows.add(Row.Chip(m.id, label, CHIP_NOTICE)); prev = null
                 continue
             }
@@ -217,15 +230,21 @@ class MessageAdapter(
     private fun attState(m: Message, now: Long): String {
         val att = m.att ?: return ""
         if (isReady(att)) return "ready"
-        if (neverArrives(m, now)) return "x"
+        if (readOnly || neverArrives(m, now)) return "x"
         // A waiting bubble says when the phone is too full to take pieces: that redraws it too.
         return "${router.fileProgress(att)}/${att.chunks}${if (Blobs.storageLow) "!" else ""}"
     }
 
     private fun tickFor(m: Message, mine: Boolean, active: Set<String>, now: Long): Tick? {
         if (!mine || !m.isPersonal) return null
+        // In a kept chat "it never went out" is certain. Whether a private message that did go out
+        // was read is something this phone stopped hearing about when it left — it stays ✓, unless
+        // its time to be confirmed had already run out by then: that one was "Not delivered"
+        // before the leaving, and leaving doesn't turn it back into a tick.
+        val stopped = if (readOnly) m.status == Message.QUEUED || (m.to != null && m.status != Message.DELIVERED && Ui.settledBeforeLeaving(m, leftAt))
+            else Ui.gaveUp(router, m, now)
         return when {
-            Ui.gaveUp(router, m, now) ->
+            stopped ->
                 if (m.status == Message.QUEUED) Tick(ctx.getString(R.string.chat_tick_not_sent), R.color.chat_tick_failed, R.string.chat_tick_not_sent_desc)
                 else Tick(ctx.getString(R.string.chat_tick_not_delivered), R.color.chat_tick_failed, R.string.chat_tick_not_delivered_desc)
             m.status == Message.QUEUED -> Tick("◷", R.color.tick, R.string.chat_tick_queued_desc)
@@ -352,7 +371,8 @@ class MessageAdapter(
         b.locationRow.setOnClickListener { h.m?.let { listener.onLocation(it) } }
         b.quoteBlock.setOnClickListener { h.m?.let { listener.onQuote(it) } }
         b.reactionsPills.setOnClickListener { h.m?.let { listener.onReactions(it) } }
-        ViewCompat.replaceAccessibilityAction(b.bubble, AccessibilityActionCompat.ACTION_LONG_CLICK, ctx.getString(R.string.chat_a11y_options), null)
+        ViewCompat.replaceAccessibilityAction(b.bubble, AccessibilityActionCompat.ACTION_LONG_CLICK,
+            ctx.getString(if (readOnly) R.string.chat_a11y_options_left else R.string.chat_a11y_options), null)
         ViewCompat.replaceAccessibilityAction(b.quoteBlock, AccessibilityActionCompat.ACTION_CLICK, ctx.getString(R.string.chat_a11y_show_original), null)
         return h
     }
@@ -561,9 +581,11 @@ class MessageAdapter(
         }
         val now = System.currentTimeMillis()
         val ready = isReady(att)
-        val gone = !ready && neverArrives(m, now)
+        val gone = !ready && (readOnly || neverArrives(m, now))
         val got = if (ready) att.chunks else router.fileProgress(att)
         val waiting = when {
+            // The pieces went when the group was left: said at once, not after "Receiving 0 of N" for two days.
+            readOnly -> ctx.getString(R.string.chat_file_left)
             gone -> ctx.getString(R.string.chat_file_expired)
             // Pieces are being turned away to keep the phone usable: say why it's stuck.
             Blobs.storageLow -> ctx.getString(R.string.chat_storage_full)

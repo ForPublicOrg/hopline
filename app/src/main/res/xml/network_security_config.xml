@@ -4,7 +4,15 @@
   falls back to it for the few sites that have no https. Fetch is the app's ONLY http client and
   it checks every hop — public addresses only, no redirects into a private network, size and
   time caps — so this must stay true: never add another http client to Hopline.
+
+  Hopline's own update (service/Updater.kt, through the same Fetch) only ever talks to GitHub,
+  and only over https: Fetch never falls back to http on that path. The second rule below makes
+  Android refuse it too, whatever the code does.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true" />
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">github.com</domain>
+        <domain includeSubdomains="true">githubusercontent.com</domain>
+    </domain-config>
 </network-security-config>

@@ -19,9 +19,11 @@ import app.hopline.core.Words
 import app.hopline.data.SavedGroup
 import app.hopline.databinding.ActivityGroupInfoBinding
 import app.hopline.databinding.ItemPersonBinding
+import app.hopline.mesh.Message
 import app.hopline.mesh.Person
 import app.hopline.mesh.Router
 import app.hopline.service.Core
+import app.hopline.service.Notifications
 import app.hopline.service.Permissions
 import java.util.Locale
 
@@ -29,33 +31,67 @@ import java.util.Locale
  * Group info: the group's name (rename for everyone), its code, mute, its members, clear and leave.
  * Opened by tapping the group chat's header, WhatsApp-style. It belongs to the group that was on
  * the radio when it opened — if that changes, it closes instead of showing another group.
+ *
+ * Opened with [EXTRA_CODE] it is about a group this phone LEFT instead, and shows what is still
+ * true of one: its name, when it was left, its code (which still gets back in), the private chats
+ * kept with its chat, and the two things left to do with it — rejoin, or delete. Nothing that
+ * needs the radio is offered: no rename, no QR or invite, no mute, and no member list (who is "in
+ * range" of a group this phone no longer hears would be a guess). If the group is rejoined or
+ * deleted from somewhere else, the screen closes.
  */
 class GroupInfoActivity : AppCompatActivity() {
     private lateinit var b: ActivityGroupInfoBinding
     private var fp: String? = null
+    /** The code of the left group this screen is about; null when it is about the group on the radio. */
+    private var leftCode: String? = null
     private val rows = ArrayList<ItemPersonBinding>()
+
+    /** One private chat kept with a left group's chat: who it is with, and when it last said something. */
+    private class PrivateChat(val id: String, val name: String, val time: String)
+    private var privateChats: List<PrivateChat> = emptyList()
+    private val privateRows = ArrayList<ItemPersonBinding>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val g = Core.store.activeGroup()
-        if (g == null) { startActivity(Intent(this, LaunchActivity::class.java)); finish(); return }
+        leftCode = intent.getStringExtra(EXTRA_CODE)?.let { Words.normalise(it) }
+        val g = shownGroup()
+        if (g == null) {
+            // No group on the radio: the launch screen knows where to go. A left group that isn't
+            // one any more (rejoined, deleted) just closes — whatever opened this is still there.
+            if (leftCode == null) startActivity(Intent(this, LaunchActivity::class.java))
+            finish(); return
+        }
         fp = g.fingerprint
         b = ActivityGroupInfoBinding.inflate(layoutInflater)
         setContentView(b.root)
-        Core.ensureRunning()
         Asks.listen(this)
 
         b.toolbar.setNavigationOnClickListener { finish() }
+        b.code.setOnClickListener { copyCode() }
+        if (leftCode == null) setUpMember() else setUpLeft()
+        Core.version.observe(this) { refresh() }
+    }
+
+    /**
+     * The group this screen is about, as it is saved right now. Null once it is no longer what the
+     * screen was opened for: not on the radio any more, or — for a left group — rejoined or deleted.
+     */
+    private fun shownGroup(): SavedGroup? {
+        val code = leftCode ?: return Core.store.activeGroup()
+        return Core.store.leftGroups().firstOrNull { it.code == code }
+    }
+
+    private fun setUpMember() {
+        Core.ensureRunning()
         b.editName.setOnClickListener { Asks.groupName(this) }
         b.groupName.setOnClickListener { Asks.groupName(this) }
         b.showQr.setOnClickListener { startActivity(Intent(this, CodeActivity::class.java)) }
         b.shareInvite.setOnClickListener { shareInvite() }
-        b.code.setOnClickListener { copyCode() }
         b.muteRow.setOnClickListener {
             if (Core.isMuted(Core.GROUP)) Core.setMuted(Core.GROUP, 0) else Asks.mute(this, Core.GROUP, currentName())
         }
         b.clearChat.setOnClickListener { Asks.clear(this, null, currentName()) }
-        b.leave.setOnClickListener { Asks.leave(this) }
+        b.leave.setOnClickListener { shownGroup()?.let { Asks.leave(this, it) } }
         b.viewAll.setOnClickListener { startActivity(Intent(this, PeopleActivity::class.java)) }
         // TalkBack hears the mute row as the switch it looks like: "Mute notifications, switch, off".
         ViewCompat.setAccessibilityDelegate(b.muteRow, object : AccessibilityDelegateCompat() {
@@ -66,15 +102,35 @@ class GroupInfoActivity : AppCompatActivity() {
                 info.isChecked = Core.isMuted(Core.GROUP)
             }
         })
-        Core.version.observe(this) { refresh() }
+    }
+
+    /**
+     * A left group: everything that talks to the radio goes, and Rejoin / Delete take the place of
+     * Clear / Leave. The radio is not woken for it — reading needs none.
+     */
+    private fun setUpLeft() {
+        // The pencil keeps its place, unseen, so the name stays centred against the spacer opposite.
+        b.editName.visibility = View.INVISIBLE
+        for (v in listOf(b.namedLine, b.codeActions, b.muteRow, b.membersHeader, b.membersCard, b.clearChat, b.leave)) v.visibility = View.GONE
+        b.rejoin.visibility = View.VISIBLE
+        b.deleteGroup.visibility = View.VISIBLE
+        b.rejoin.setOnClickListener { shownGroup()?.let { Asks.rejoin(this, it) } }
+        b.deleteGroup.setOnClickListener { shownGroup()?.let { Asks.deleteGroup(this, it) } }
     }
 
     override fun onResume() {
         super.onResume()
-        if (Core.store.group() == null || !Permissions.allGranted(this)) {
-            startActivity(Intent(this, LaunchActivity::class.java)); finish(); return
+        if (!::b.isInitialized || isFinishing) return
+        if (leftCode == null) {
+            if (Core.store.group() == null || !Permissions.allGranted(this)) {
+                startActivity(Intent(this, LaunchActivity::class.java)); finish(); return
+            }
+            Core.ensureRunning()
+        } else {
+            // Worked out each time the screen comes to the front, not on every redraw: it reads the
+            // group's saved chat, and only changes by what a chat screen above this one deletes.
+            privateChats = fp?.let { readPrivateChats(it) } ?: emptyList()
         }
-        Core.ensureRunning()
         refresh()
     }
 
@@ -85,8 +141,9 @@ class GroupInfoActivity : AppCompatActivity() {
 
     private fun refresh() {
         if (isFinishing) return
-        val g = Core.store.activeGroup()
+        val g = shownGroup()
         if (g == null || g.fingerprint != fp) { finish(); return }
+        if (leftCode != null) { refreshLeft(g); return }
         val r = Core.router
         val name = currentName()
         b.groupName.text = name
@@ -126,15 +183,80 @@ class GroupInfoActivity : AppCompatActivity() {
         ensureRows(shown.size + 1)
         bindMe(rows[0])
         shown.forEachIndexed { i, p -> PeopleActivity.bindPerson(rows[i + 1], r, p) { openChat(p) } }
-        b.membersNote.text = getString(R.string.only_you)
+        // A group that has been quiet for two days (every rejoin starts this way) isn't a group
+        // nobody joined: its people are in the chat, just not heard from lately.
+        val known = r.people.keys.any { it != r.me.id } || r.messages.any { it.from != r.me.id }
+        b.membersNote.text = getString(if (known) R.string.nobody_lately else R.string.only_you)
         b.membersNote.visibility = if (others.isEmpty()) View.VISIBLE else View.GONE
         b.viewAll.text = getString(R.string.view_all, total)
         b.viewAll.visibility = if (sorted.size > shown.size) View.VISIBLE else View.GONE
     }
 
+    /** A left group, from its saved entry alone: grey like its row on Home, with when it was left. */
+    private fun refreshLeft(g: SavedGroup) {
+        val name = Asks.groupLabel(g)
+        b.groupName.text = name
+        b.avatar.text = Ui.initial(name)
+        b.avatar.background.mutate().setTint(getColor(R.color.surface_variant))
+        b.avatar.setTextColor(getColor(R.color.text_muted))
+        b.subtitle.text = getString(R.string.left_info_subtitle, whenText(g.leftAt))
+        val words = Words.pretty(g.code)
+        b.code.text = words
+        b.code.contentDescription = getString(R.string.code_desc, words)
+        bindPrivateChats(g.fingerprint)
+    }
+
+    /**
+     * The private chats kept with a left group's chat, newest first, from the group's saved state
+     * ([Core.archive]: read from disk the first time, then held by Core). Empty when there are
+     * none — or when the chat can't be read just now, and then the card simply isn't shown.
+     * Only what the rows need is kept: Core lets the chat itself go when the app is in the
+     * background, and holding on to it here would keep it in memory.
+     */
+    private fun readPrivateChats(fp: String): List<PrivateChat> {
+        val a = Core.archive(fp) ?: return emptyList()
+        val me = a.me.id
+        val last = LinkedHashMap<String, Message>()
+        val partnerName = HashMap<String, String>()
+        for (m in a.messages) {
+            if (m.isGroup) continue
+            val chat = m.chatKey(me)
+            last[chat] = m   // a.messages is in chat order
+            if (m.from != me) partnerName[chat] = m.fromName
+        }
+        val now = System.currentTimeMillis()
+        return last.entries.sortedByDescending { minOf(it.value.ts, now) }.map { (id, m) ->
+            PrivateChat(id, Ui.nameOf(a, id, partnerName[id].orEmpty()), Ui.listTime(minOf(m.ts, now)))
+        }
+    }
+
+    private fun bindPrivateChats(fp: String) {
+        val chats = privateChats
+        val show = if (chats.isEmpty()) View.GONE else View.VISIBLE
+        b.privateHeader.visibility = show
+        b.privateChats.visibility = show
+        while (privateRows.size < chats.size) privateRows += ItemPersonBinding.inflate(layoutInflater, b.privateChats, true)
+        while (privateRows.size > chats.size) b.privateChats.removeView(privateRows.removeAt(privateRows.size - 1).root)
+        chats.forEachIndexed { i, c ->
+            val row = privateRows[i]
+            row.name.text = c.name
+            row.avatar.text = Ui.initial(c.name)
+            row.avatar.background.mutate().setTint(MessageAdapter.avatarColor(c.id))
+            row.status.text = c.time
+            row.dot.visibility = View.GONE
+            row.badge.visibility = View.GONE
+            // The chat screen is told which group by its fingerprint, and shows it read-only.
+            row.root.setOnClickListener {
+                startActivity(Intent(this, ChatActivity::class.java).putExtra(Notifications.EXTRA_FP, fp).putExtra(Notifications.EXTRA_PEER, c.id))
+            }
+            ViewCompat.replaceAccessibilityAction(row.root, AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK,
+                getString(R.string.action_read_chat), null)
+        }
+    }
+
     /** Who named the group and when, if this phone knows. */
     private fun namedLine(r: Router, g: SavedGroup): String? {
-        val notice = r.messages.lastOrNull { it.isNotice }
+        val notice = r.messages.lastOrNull { it.isRename }
         val at = r.group.nameAt
         return when {
             notice != null && notice.text == r.group.name ->
@@ -168,8 +290,9 @@ class GroupInfoActivity : AppCompatActivity() {
         } catch (e: ActivityNotFoundException) { }
     }
 
+    /** The three words of the group on screen — a left group's still work, to get back in or to pass on. */
     private fun copyCode() {
-        val g = Core.store.activeGroup() ?: return
+        val g = shownGroup() ?: return
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText(getString(R.string.code_clip_label), Words.pretty(g.code)))
         // Android 13+ confirms a copy on its own; a toast on top would say it twice.
@@ -177,6 +300,11 @@ class GroupInfoActivity : AppCompatActivity() {
     }
 
     companion object {
+        /**
+         * The code of a group this phone LEFT, to show that group (read from the saved list, with
+         * no radio). Without it the screen is about the group on the radio.
+         */
+        const val EXTRA_CODE = "code"
         /** Rows shown here, me included; a bigger group gets "View all" (the People screen). */
         private const val MAX_ROWS = 10
     }

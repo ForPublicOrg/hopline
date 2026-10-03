@@ -27,6 +27,29 @@ No internet. No mobile signal. No account. No server. No hotspot to set up.
 - Google Play services (almost every Android phone outside China has it)
 - Bluetooth **on** and WiFi **on** (WiFi does not need to be connected to anything)
 
+## Updates
+
+Hopline keeps itself up to date from this repository's releases — and never makes you update.
+
+- **What it asks.** When the phone has internet, Hopline asks GitHub (`api.github.com`) whether a
+  newer release exists, at most a few times a day. Nothing about you or your group is sent; GitHub
+  sees the phone's IP address, like any website does. Your group's messages still never touch a
+  server.
+- **What it downloads.** On WiFi it fetches the new `Hopline.apk` by itself; on mobile data only
+  when you tap **Download** (the banner says how big it is).
+- **What it checks.** Before it is offered, the download must be exactly the file GitHub published
+  and be signed with the **same key as the Hopline already on the phone**. Anything else is thrown
+  away and never offered.
+- **You install it.** Nothing installs until you tap **Install**. The first time, Android asks
+  you to confirm, and whether Hopline may install apps (the "install unknown apps" permission). On
+  Android 12 and later, updates after that first one start on your tap alone, with no second
+  question from Android — the tap is the confirmation. Your chats stay as they are, and the mesh
+  comes back by itself afterwards.
+- **Not now?** Close the banner: it stays away for that version, and **Settings → About** still
+  has it whenever you like. *Update Hopline automatically* in Settings switches the looking off
+  altogether (*Check for updates* still works by hand). A phone that never updates keeps working
+  exactly as before.
+
 ## Use it
 
 There are only three things to know:
@@ -73,16 +96,40 @@ that arrive as old backlog.
 **Names** — change your name any time (Settings, or the "You" row in People): everyone sees the
 new name, on your old messages too. Tap the group chat's header for **Group info**: rename the
 group for everyone (a "Asha renamed the group" line appears in the chat, and phones that were out
-of range pick it up when they come back), mute it, see who's in it, or clear the chat.
+of range pick it up when they come back), mute it, see who's in it, clear the chat, or leave the
+group.
 
 **Tidy chats** — long-press for *Reply privately*, *Copy*, *Save to phone*, *Share*, *Info* and
 *Delete for me*. Mute a chat for 8 hours, a week or always (being @mentioned still gets through). A chat opens
 at the first message you haven't read, with an "unread messages" marker — so backlog that hopped in
 after a reunion is never skipped. Reply or mark as read straight from the notification.
 
+**Your whole chat, however long** — a chat opens on its latest messages; scroll up and the earlier
+ones load from the phone's storage as you go. Nothing drops off the end. What reached your phone
+stays on it until *you* delete it: one message (*Delete for me*), one chat (*Clear chat*), or a
+whole group you've left (*Delete group*).
+
 **More than one group** — Home shows every group you've saved. The radio serves one group at a
 time; tap a paused group to switch. Nothing is deleted when you switch — each group keeps its
 own history, unread counts and files.
+
+**Leaving keeps the chat** — *Leave group* (in Group info or Settings, or press and hold a paused
+group on Home) takes your phone off that group: it stops getting the group's messages and stops
+passing them along. Everything already on the phone stays — the group chat, your private chats,
+photos, files and voice notes — under **Groups you left** on Home. You can read it, copy from it,
+save and share its photos and files, and delete messages for yourself; you can't write in it.
+Nobody is told that you left: to the group, your phone has simply walked away.
+
+- **Rejoin** is one tap and one confirm — the phone still knows the three words (typing or
+  scanning them again asks the same question). The chat carries on under a "You left" / "You
+  rejoined" line, and nearby phones fill in whatever the group is still carrying. A message of
+  yours that hadn't gone out when you left is *not* sent behind your back: it reads "Not sent",
+  with *Send again* if you still mean it.
+- **Delete group** is a separate step, offered only for a group you have already left. It is the
+  one thing that takes a whole group — every message, photo and file — off the phone, and it asks
+  first. Copies you saved to Pictures or Downloads are yours, and stay.
+- With every group left, Hopline still opens — on your old chats, with no radio running and no
+  permissions needed — and *Start or join a group* is one tap away.
 
 **Shared internet** — if **anyone** in the group gets signal, everyone can use a sliver of it:
 
@@ -100,6 +147,27 @@ it twice). The answer comes back **only to you** (share it to the group with one
 tap if it's useful to everyone). Your own phone helps only while "Share my internet" is on, within
 a daily allowance you choose (5 MB by default — texts home cost no data and carry on after it runs
 out), never while roaming unless you allow it, and you can see exactly what it fetched and for whom.
+
+**Pay without internet** — Home → *Pay without internet* (India). With a bar of ordinary phone
+signal — on Airtel, Vi, BSNL or MTNL, not Jio — you can pay by UPI: scan the shop's QR code (or
+type a UPI ID), check who and how much, and tap
+*Copy UPI ID and open \*99#*. Hopline hands over to **\*99#**, the banks' own UPI service, which
+runs on plain phone signal with no data at all:
+
+- **Hopline prepares, your bank pays.** The UPI ID goes on the clipboard and the Phone app opens
+  with `*99*1*3#` typed in. You press call, paste the ID, see the name your bank has for it, type
+  the amount, and enter your UPI PIN in your phone company's own box. Hopline never sees, asks for
+  or stores the PIN, and never puts anything in the Phone app but `*99#` or `*99*1*3#` — you press
+  call.
+- **Afterwards it asks "Did it go through?"** Your bank's message and SMS are the proof; if it
+  didn't work, Hopline says what each error means and how to check before paying twice.
+- **It reads the codes shops print** — UPI links and Bharat QR (the checksum must match) — and
+  turns away autopay, foreign-currency and damaged or altered codes. It cannot tell a real code
+  from a sticker pasted over it, so it leads with the UPI ID it will copy and shows a name in the
+  code only as the code's claim: the name your bank shows is the check. People you said you paid
+  are kept under *Recent*.
+- **First time?** *Set up \*99#* opens the Phone app with `*99#` typed in: you'll need your debit
+  card, and no internet.
 
 ## Built for a crowd, not just a trek
 
@@ -133,6 +201,16 @@ the group grows, and every phone follows the same rules on its own:
   without waiting for the link to break and re-form. It is also what makes a chain that keeps
   breaking and re-forming still deliver everything — a person walking between two groups literally
   carries the backlog in their pocket, and a message can hop through any number of hand-offs.
+- **Carrying is not keeping.** After 48 hours a message stops being handed to phones that missed
+  it, but it stays in the chat on every phone that got it. A phone keeps a group's latest 2,000
+  messages at hand and files older ones in plain numbered files on its own storage; the chat reads
+  them back, a page at a time, as you scroll up.
+- Leaving a group puts nothing on the air — no goodbye, no new kind of message — so 2.1 and 2.2
+  phones see a leaver exactly as a phone that walked away. The leaver's phone keeps the chat and
+  lets go of what it only held for the others: the backlog, other people's requests, the pieces of
+  files it was relaying. On a rejoin the group hands that backlog back, and the phone carries it
+  again — its own old receipts and requests included — without showing or announcing any of it a
+  second time.
 - In small groups, delivery receipts flow back the same way, so "Reached 7 of 9" is real, not a guess.
 - Names are last-writer-wins on the writer's own clock, so a rename can never be undone by old
   messages arriving late through gap-fill. A group rename also counts the renames before it, so a
@@ -150,7 +228,9 @@ laptop with simulated phones: `./gradlew test` runs a chain of five, breaks it, 
 a courier between two separated groups, rejects a phone with the wrong code, drops a forged
 message, hops a photo down the line in pieces, carries a request to a phone that only gets signal
 later and hands it on when that phone goes quiet, refuses a relayed handshake, keeps a rename from
-being undone by old backlog, and more.
+being undone by old backlog, leaves a group and rejoins it without showing a message twice or
+sending one that was never meant to go, files a long chat's older messages away without losing
+one, and more.
 
 ## Honest limits
 
@@ -165,6 +245,12 @@ being undone by old backlog, and more.
   the radio signal. Treat Hopline as a group walkie-talkie, not a secure channel.
 - **Shared internet is honest, not magic.** Pages are text only; sites that only work in a full
   browser say so. The person whose phone has signal can see what you asked for.
+- **Paying without internet rides on \*99#, with its limits.** Up to ₹5,000 at a time (your bank may
+  allow less in a day). It works on Airtel, Vi, BSNL and MTNL — **not on Jio** — and only from the
+  SIM whose number your bank has. A code made for one bill (on a card machine or a website) may fail,
+  or reach the shop without saying which bill it paid. Android lets no app answer the \*99# menus, so
+  you type the amount and PIN yourself, and the PIN shows as you type it. Hopline can't see whether
+  the payment went through — your bank's message is the proof.
 - **Bluetooth stacks are flaky.** Links sometimes take 10–60 s to form, and some phones refuse
   to link until Bluetooth is toggled off and on. Hopline retries and restarts the radio on its
   own, but it is not instant.
@@ -174,7 +260,17 @@ being undone by old backlog, and more.
   one full-size photo would take longer to hop than everything the group says in a day.
 - **One group at a time on the radio.** You can save many groups and switch instantly, but the
   phone only relays for the group you're in.
-- Messages older than 48 hours are no longer carried to people who missed them.
+- Messages older than 48 hours are no longer carried to people who missed them. (What already
+  reached your phone stays there.)
+- **Your chats live on your phone, and only there.** No server, no backup: uninstalling Hopline,
+  clearing its data or losing the phone loses them.
+- **A group you left stops where you left it.** Its chat shows what your phone had at that moment
+  and nothing said after; a photo or file that hadn't fully arrived stays missing. Rejoining brings
+  back only what the group is still carrying — the last 48 hours — so a longer absence leaves a
+  gap, marked by the "You left" line.
+- **Leaving is silent.** There is no member list anywhere to take you off: the others aren't told,
+  what you sent stays on their phones, and anyone who has the three words can join again. Groups
+  you left on Hopline 2.2 or earlier were deleted at the time and can't be brought back.
 
 ## Build from source
 
@@ -188,19 +284,33 @@ being undone by old backlog, and more.
 `keystore/hopline.jks` is **not** in the repo. Create your own with `keytool` (see
 `keystore/README.txt`); the passwords go in `keystore/keystore.properties`.
 
+A debug build never updates itself (Settings says "Test build — updates are off"): it is signed
+with a debug key, so a released APK could not replace it anyway. A build signed with your own key
+only accepts updates signed with that key.
+
 ## Layout
 
 ```
 app/src/main/java/app/hopline/
   core/      Crypto (group key, signing), Words (the 3-word codes), Names (cleaning names from the air),
-             WebText / Weather / Search / SmsText / SafeUrl / HelperLimits (the shared-internet engines, pure Kotlin)
-  mesh/      Model, Router (flooding, carry, receipts, files, errands), ChunkStore, NearbyTransport
-  data/      Store (name, saved groups, read marks, per-group state)
+             WebText / Weather / Search / SmsText / SafeUrl / HelperLimits (the shared-internet engines, pure Kotlin),
+             Update (reading GitHub's release, which version is newer, is the download the published one),
+             Upi (reading UPI and Bharat QR codes, amounts, the only two codes Hopline may dial)
+  mesh/      Model, Router (flooding, carry, receipts, files, errands, the live window), ChunkStore, NearbyTransport,
+             Archive (what a group's saved state becomes when you leave it)
+  data/      Store (name, saved groups, read marks, per-group state), GroupRules (the groups you're in, the ones
+             you left, which one the radio serves), History (a chat's older messages, on disk)
   service/   Core (glue), MeshService (foreground), Blobs (photo shrinking, chunk disk store),
-             Errands + Fetch (run requests safely for the group), Cell (mobile service), Notifications
-  ui/        Home (all chats), Chat (group + private), MessageMenu + ReactionSheets, People, Group info,
-             Internet + Reader, Settings, onboarding
-app/src/test/ RouterTest, ProtocolTest, ErrandTest — the simulated group; CoreTextTest — the engines on saved pages
+             HistoryRules (moving old messages to the history, reading them back),
+             Errands + Fetch (run requests safely for the group), Cell (mobile service), Notifications,
+             Updater (checks GitHub, downloads, verifies, installs on your tap)
+  ui/        Home (all chats), Chat (group + private, and read-only for a group you left), EarlierPages,
+             MessageMenu + ReactionSheets, People, Group info, Internet + Reader, Pay (UPI over *99#),
+             Settings, onboarding
+app/src/test/ RouterTest, ProtocolTest, ErrandTest, ArchiveTest, SpillTest — the simulated group;
+              GroupRulesTest, HistoryTest, HistoryRulesTest, EarlierPagesTest — leaving, rejoining and long chats;
+              CoreTextTest — the engines on saved pages; UpdateTest — the updater's rules on a saved GitHub answer;
+              UpiTest — real UPI and Bharat QR codes, tricks and junk
 ```
 
 ## License

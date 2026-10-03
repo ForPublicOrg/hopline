@@ -9,10 +9,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Canvas
+import android.graphics.Color
 import android.location.Location
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Parcelable
 import android.os.SystemClock
 import android.provider.Settings
 import android.text.InputFilter
@@ -22,6 +24,7 @@ import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.animation.OvershootInterpolator
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -50,6 +53,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.SimpleItemAnimator
 import app.hopline.R
+import app.hopline.data.SavedGroup
 import app.hopline.databinding.ActivityChatBinding
 import app.hopline.databinding.SheetAttachBinding
 import app.hopline.databinding.SheetDetailsBinding
@@ -77,6 +81,13 @@ import java.util.Locale
  * photo waiting for its caption, a "delete this?" question. Switching chats (a notification,
  * "Reply privately") puts the draft away and closes the rest; rotation and process death bring
  * all of it back.
+ *
+ * The same screen shows the kept chat of a group this phone LEFT, to read ([archive]): no
+ * composer, no reactions or replies, nothing that would need the radio — Copy, Save, Share,
+ * details and "Delete for me" stay, with the way back in ("Rejoin") where the composer would be.
+ *
+ * Either way a chat is longer than what the mesh keeps in memory: scrolled to the top, it reads
+ * its earlier messages back from the group's history, a page at a time ([earlier]).
  */
 class ChatActivity : AppCompatActivity() {
     private lateinit var b: ActivityChatBinding
@@ -87,6 +98,54 @@ class ChatActivity : AppCompatActivity() {
     private var chatFp: String? = null
     /** Chats opened in place ("Reply privately", a quote from another chat); Back returns to them. */
     private val backStack = ArrayList<String>()
+
+    /**
+     * Set while the screen shows the kept chat of a group this phone left: that group's router
+     * with no radio ([Core.archive]). Null means the group on the radio. Which of the two it is
+     * comes from the saved group list every time the screen is created, handed a new intent or
+     * resumed ([syncMode]) — never from a remembered flag — so a group that was rejoined or
+     * deleted from another screen is never shown as it used to be.
+     *
+     * A chat has the same key in every group ("*" for the group chat, a person's id for a private
+     * one). So while this is set, nothing goes through Core's "the group on the radio" helpers —
+     * the open chat, read marks, mute, clear, delete, drafts, the status line, the banners: they
+     * would silence, mark, mute or empty the chat of the SAME NAME in the group on the radio.
+     */
+    private var archive: Router? = null
+    private val readOnly: Boolean get() = archive != null
+    /** The router this screen reads: the left group's kept chat, or the one on the radio. */
+    private fun router(): Router? = archive ?: Core.router
+    /** The group [router] belongs to. */
+    private fun shownFp(): String? = archive?.group?.fingerprint ?: Core.fingerprint()
+    /** The left group on screen, as it is saved right now; null in a group this phone is in. */
+    private fun leftGroup(): SavedGroup? = if (!readOnly) null else chatFp?.let { Core.store.findGroup(it) }?.takeIf { it.left }
+    /**
+     * When the group on screen was left; 0 in a group this phone is in. Ticks and delivery details
+     * go by it: what was already settled before the leaving is not blamed on the leaving.
+     */
+    private fun leftAt(): Long = if (!readOnly) 0 else leftGroup()?.leftAt ?: System.currentTimeMillis()
+    /**
+     * What to say when [Core.archive] gave no chat: that it can't be opened — or, when the phone
+     * was only too busy to read it in time, to try again in a moment (and then it opens).
+     */
+    private fun cantOpen(): Int = if (Core.archiveBusy) R.string.chat_busy else R.string.chat_cant_open
+
+    /** The chat's older messages, read back from the group's history as the person scrolls up. */
+    private val earlier = EarlierPages()
+    /** A page is being read. One at a time: each starts where the one before it ended. */
+    private var earlierBusy = false
+    /** Goes up whenever the pages are started over (another chat, a changed history): a page asked
+     *  for before that is dropped when it arrives. */
+    private var earlierGen = 0
+    /** [Core.historyStamp] as of the pages on screen. When it moves, they are read again. */
+    private var earlierStamp = 0
+    /** The pages being read again, to replace the ones on screen in one go; see [EarlierPages.restart]. */
+    private var earlierReload: EarlierPages.Reload? = null
+    /** Re-created while scrolled up among earlier messages: the list is filled only once they are
+     *  read again, so that it can put its own scroll position back (it goes by row count). */
+    private var earlierWait = false
+    /** The list's scroll position, carried across a rebuild of the adapter on the same chat. */
+    private var keepScroll: Parcelable? = null
 
     private var adapter: MessageAdapter? = null
     private var adapterRouter: Router? = null
@@ -192,15 +251,26 @@ class ChatActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (Core.store.group() == null) { toLaunch(); return }
-        Core.ensureRunning()
-        // No router right after a start means something is missing (a revoked permission):
-        // the launch screen works out what and asks for it.
-        if (Core.router == null) { toLaunch(); return }
+        val s = savedInstanceState
+        // Which group? A re-created screen shows the one it was showing; a new one, the one its
+        // intent names (Home's "Groups you left", a left group's info, a stale notification).
+        val want = if (s != null) s.getString(S_FP) else intent.getStringExtra(Notifications.EXTRA_FP)
+        if (want != null && Core.store.findGroup(want)?.left == true) {
+            // A group this phone left is read from its kept chat. That needs no radio, no
+            // permissions and no group to be on — this may be a phone that is in no group at all.
+            archive = Core.archive(want)
+            if (archive == null) { toast(getString(cantOpen())); finishToHome(); return }
+        } else {
+            if (Core.store.group() == null) { toLaunch(); return }
+            Core.ensureRunning()
+            // No router right after a start means something is missing (a revoked permission):
+            // the launch screen works out what and asks for it.
+            if (Core.router == null) { toLaunch(); return }
+        }
         b = ActivityChatBinding.inflate(layoutInflater)
         setContentView(b.root)
+        Asks.listen(this)   // "Rejoin" and "Delete group", asked from a left group's chat
 
-        val s = savedInstanceState
         if (s != null) {
             peer = peerOf(s.getString(S_CHAT) ?: Core.GROUP)
             chatFp = s.getString(S_FP)
@@ -218,6 +288,9 @@ class ChatActivity : AppCompatActivity() {
             restoring = true
             viewStatePending = true
             recheckUnread = true   // anything that arrived while we were being re-created still gets a divider
+            // Scrolled up among earlier messages: they are read again before the list is filled.
+            val depth = s.getInt(S_EARLIER, -1)
+            if (depth >= 0 && chatFp != null) { earlierReload = earlier.reread(depth); earlierWait = true }
         } else {
             peer = intent.getStringExtra(Notifications.EXTRA_PEER)
             pendingReplyId = intent.getStringExtra(EXTRA_REPLY_TO)
@@ -227,9 +300,15 @@ class ChatActivity : AppCompatActivity() {
         if (s == null) {
             val fp = intent.getStringExtra(Notifications.EXTRA_FP)
             intent.removeExtra(Notifications.EXTRA_FP)   // answered now; a re-created screen must not ask again
-            if (fp != null && fp != Core.fingerprint()) offerSwitch(fp, peer, pendingReplyId, fromOpen = true)
+            if (readOnly) {
+                chatFp = fp
+                // Opened from a notification that outlived the leaving: nothing can answer it, or its group's others, any more.
+                fp?.let { Notifications.clearGroup(this, it) }
+            } else if (fp != null && fp != Core.fingerprint()) offerSwitch(fp, peer, pendingReplyId, fromOpen = true)
             else { chatFp = Core.fingerprint(); loadDraft() }
         }
+        // Never held back for long: a disk too busy to answer gets the list without them for now.
+        if (earlierWait) b.root.postDelayed({ if (earlierWait && !isDestroyed) { earlierWait = false; earlierHere(); refresh() } }, EARLIER_WAIT_MS)
         sweepCameraLeftovers()
         Core.version.observe(this) { refresh() }
     }
@@ -253,6 +332,7 @@ class ChatActivity : AppCompatActivity() {
         b.replyClose.setOnClickListener { clearReply() }
         b.liveBanner.setOnClickListener { onLiveBannerTapped() }
         b.errandBanner.setOnClickListener { openPendingSends() }
+        b.leftRejoin.setOnClickListener { leftGroup()?.let { Asks.rejoin(this, it) } }
         b.newAbove.setOnClickListener { jumpToNewAbove() }
         b.jump.setOnClickListener { scrollToBottom(smooth = true) }
         b.input.filters = arrayOf(lengthGuard(Router.MAX_TEXT))
@@ -269,8 +349,31 @@ class ChatActivity : AppCompatActivity() {
             } catch (e: ActivityNotFoundException) { openAppSettings() }
         }
         b.list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
-            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) { updateScrollPills() }
+            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) { updateScrollPills(); maybeLoadEarlier() }
         })
+        applyMode()
+    }
+
+    /**
+     * The bottom of the screen for the group it shows: a composer for one this phone is in; for one
+     * it left, a line saying why there is none, with the way back in. Run again whenever the screen
+     * moves between the two — and the keyboard, which a left group's chat has no use for, goes.
+     */
+    private fun applyMode() {
+        val left = readOnly
+        b.leftBar.isVisible = left
+        if (left) {
+            for (v in listOf(b.composerRow, b.recordBar, b.replyBar, b.mentionBar)) v.isVisible = false
+            b.input.clearFocus()
+            Ui.hideKeyboard(this, b.input)
+        } else if (!b.recordBar.isVisible) b.composerRow.isVisible = true
+        // Coming back to a left group's chat (from a photo, from another app) must not bring a keyboard up either.
+        // (Only the "state" half of the window's setting changes; how it resizes stays as the manifest says.)
+        val now = window.attributes.softInputMode
+        val mode = (now and WindowManager.LayoutParams.SOFT_INPUT_MASK_STATE.inv()) or
+            if (left) WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN else WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED
+        if (mode != now) window.setSoftInputMode(mode)
+        headerShown = ""   // the header's tap means something else now
     }
 
     /** singleTop: a notification tap for another chat lands here instead of a fresh instance. */
@@ -283,8 +386,10 @@ class ChatActivity : AppCompatActivity() {
         val newPeer = intent.getStringExtra(Notifications.EXTRA_PEER)
         val reply = intent.getStringExtra(EXTRA_REPLY_TO)
         // A notification from a group that isn't on the radio must not open this group's chat
-        // as if it were that one.
+        // as if it were that one. (From a group this phone left, it opens that group's kept chat.)
         if (fp != null && fp != Core.fingerprint()) { offerSwitch(fp, newPeer, reply, fromOpen = chatFp == null); return }
+        // The group on the radio is meant: a left group's chat on screen makes way for it.
+        if (readOnly && !leaveArchive()) return
         backStack.clear()
         openChat(newPeer, reply)
     }
@@ -292,14 +397,28 @@ class ChatActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         if (!::b.isInitialized || isFinishing) return
-        if (prompt != null && promptDialog == null) restorePrompt()
+        if (prompt != null && promptDialog == null) reaskPrompt()
         else if (chatFp == null && prompt == null) finishToHome()   // nothing on screen and nothing being asked
+    }
+
+    /**
+     * The question that was open comes back with the screen — but not before the earlier messages
+     * a re-created screen is still reading: it may be about one of them ("delete this?").
+     */
+    private fun reaskPrompt() {
+        if (prompt != null && promptDialog == null && !earlierWait && !isFinishing && !isDestroyed) restorePrompt()
+    }
+
+    /** The wait for the earlier messages is over. If the screen is showing, its question is asked now; if not, when it next starts. */
+    private fun earlierHere() {
+        if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) reaskPrompt()
     }
 
     override fun onRestoreInstanceState(savedInstanceState: Bundle) {
         super.onRestoreInstanceState(savedInstanceState)
         if (!::b.isInitialized || !viewStatePending) return
         viewStatePending = false
+        if (readOnly) return   // a left group's chat has no composer, and never follows the radio
         // The composer has its words back: a move to another group that refresh() put off can run now.
         val r = Core.router
         if (r != null && chatFp != null && chatFp != r.group.fingerprint) refresh()
@@ -310,15 +429,19 @@ class ChatActivity : AppCompatActivity() {
         // Closed while starting (followGroup left a private chat): Android 8.x still resumes it, and
         // following again would save the composer it already emptied over the draft it put away.
         if (!::b.isInitialized || isFinishing) return
-        if (!Permissions.allGranted(this)) {
-            // Nearby permission revoked while we were away (e.g. Android auto-revoke).
+        if (!syncMode()) return
+        if (!readOnly && !Permissions.allGranted(this)) {
+            // Nearby permission revoked while we were away (e.g. Android auto-revoke). Reading a
+            // left group's chat needs none — and its phone is exactly the one Android revokes on.
             toLaunch(); return
         }
         Core.appVisible = true
         VoicePlayer.onChanged = { refresh() }
-        if (VoiceRecorder.recording) showRecordingBar()   // a rotation must not lose a recording
-        val r = Core.router
-        if (r != null && !followGroup(r)) return
+        if (!readOnly) {
+            if (VoiceRecorder.recording) showRecordingBar()   // a rotation must not lose a recording
+            val r = Core.router
+            if (r != null && !followGroup(r)) return
+        }
         onChatVisible()
         refresh()
     }
@@ -327,8 +450,11 @@ class ChatActivity : AppCompatActivity() {
         super.onPause()
         if (!::b.isInitialized) return
         Core.appVisible = false
-        if (chatFp != null && chatFp == Core.fingerprint()) Core.markRead(chatKey)
-        Core.openChat = null
+        if (!readOnly) {
+            // Both are about the group on the radio: a left group's chat never claimed either.
+            if (chatFp != null && chatFp == Core.fingerprint()) Core.markRead(chatKey)
+            Core.openChat = null
+        }
         VoicePlayer.onChanged = null
         VoicePlayer.stop()
         // A recording may outlive this screen (rotation), but this screen's callback must not.
@@ -367,6 +493,8 @@ class ChatActivity : AppCompatActivity() {
         outState.putLong(S_UNREAD_SINCE, unreadSince)
         outState.putLong(S_UNREAD_UNTIL, unreadUntil)
         outState.putBoolean(S_UNREAD_JUMP, unreadJump)
+        // How far up the earlier messages went (also when they were just being read again).
+        (earlierReload?.let { it.downTo ?: EarlierPages.NEWEST_ONLY } ?: earlier.depth)?.let { outState.putInt(S_EARLIER, it) }
         val chosen = chosenMentions.entries.toList()
         outState.putStringArrayList(S_CHOSEN_NAMES, ArrayList(chosen.map { it.key }))
         outState.putStringArrayList(S_CHOSEN_IDS, ArrayList(chosen.map { it.value }))
@@ -381,6 +509,7 @@ class ChatActivity : AppCompatActivity() {
         super.onDestroy()
         // A rotation recreates us mid-recording and that's fine; actually leaving throws it away.
         if (isFinishing) VoiceRecorder.cancel()
+        earlierGen++   // a page still being read has no screen to come back to
         if (!::b.isInitialized) return
         menu.also { menu = null }?.dismissNow()
         for (d in sheets.toList()) try { d.dismiss() } catch (e: Exception) { }
@@ -405,7 +534,7 @@ class ChatActivity : AppCompatActivity() {
     private fun goBack() {
         // "Reply privately" and quote jumps opened chats in place: Back walks back through them.
         val back = backStack.removeLastOrNull()
-        if (back != null && chatFp != null && chatFp == Core.fingerprint()) { openChat(peerOf(back), null); return }
+        if (back != null && chatFp != null && chatFp == shownFp()) { openChat(peerOf(back), null); return }
         if (isTaskRoot) startActivity(Intent(this, HomeActivity::class.java))
         finish()
     }
@@ -423,6 +552,15 @@ class ChatActivity : AppCompatActivity() {
     /** Mark the chat seen — after first noting where "unread" begins for the divider. */
     private fun onChatVisible() {
         val fp = chatFp ?: return
+        if (readOnly) {
+            // A left group's chat is only ever read, and nothing arrives in it. Its read mark is
+            // written under ITS group — Core's own "mark read" and "open chat" mean the group on
+            // the radio, whose chat of the same key they would mark read and silence.
+            if (unreadSince == UNREAD_CAPTURE) captureUnread()
+            recheckUnread = false
+            Core.store.setLastRead(fp, chatKey, System.currentTimeMillis())
+            return
+        }
         if (unreadSince == UNREAD_CAPTURE) captureUnread()
         else if (recheckUnread) {
             // Back from a photo or another app: the divider stays, unless messages came in
@@ -445,7 +583,7 @@ class ChatActivity : AppCompatActivity() {
      * belonged to the old chat — draft, reply, recording, open questions — stays with it.
      */
     private fun openChat(newPeer: String?, replyId: String?, push: Boolean = false, jumpTo: String? = null) {
-        val fp = Core.fingerprint()
+        val fp = shownFp()
         if (newPeer != peer || fp != chatFp) {
             if (push && chatFp != null && chatFp == fp) { backStack.add(chatKey); while (backStack.size > MAX_BACK) backStack.removeAt(0) }
             switching = true
@@ -458,7 +596,7 @@ class ChatActivity : AppCompatActivity() {
             } finally { switching = false }
             if (newPeer == null) intent.removeExtra(Notifications.EXTRA_PEER) else intent.putExtra(Notifications.EXTRA_PEER, newPeer)
         }
-        if (replyId != null) {
+        if (replyId != null && !readOnly) {
             val m = Core.router?.message(replyId)
             if (m != null) startReply(m) else pendingReplyId = replyId
         }
@@ -490,14 +628,18 @@ class ChatActivity : AppCompatActivity() {
         followPending = false; pinToBottom = false; restoring = false
         unreadSince = UNREAD_CAPTURE; unreadJump = true; recheckUnread = false
         newAbove.clear(); newBelow.clear(); pendingJumpId = null
+        keepScroll = null
+        resetEarlier()
         updateScrollPills()
     }
 
     /**
      * The radio moved to another group while this screen was away. A private chat belongs to its
      * group, so it closes; the group chat simply becomes the new group's. False when closing.
+     * A left group's chat never follows the radio: it is not on it.
      */
     private fun followGroup(r: Router): Boolean {
+        if (readOnly) return true
         val fp = chatFp ?: return true      // still asking whether to switch
         if (fp == r.group.fingerprint) return true
         switching = true
@@ -515,14 +657,20 @@ class ChatActivity : AppCompatActivity() {
         return true
     }
 
+    /**
+     * A chat of a group the radio isn't on was asked for (a notification, mostly). A group this
+     * phone is in: offer to switch to it. One it left: there is nothing to switch to — its kept
+     * chat opens, to read. One it deleted: nothing is left to show.
+     */
     private fun offerSwitch(fp: String, newPeer: String?, reply: String?, fromOpen: Boolean) {
-        if (Core.store.groups().none { it.fingerprint == fp }) {
-            // That group was left: nothing to switch to, and its notifications are stale.
-            Notifications.clearGroup(this, fp)
+        val g = Core.store.findGroup(fp)
+        if (g == null || g.left) Notifications.clearGroup(this, fp)   // nothing can answer them any more
+        if (g == null) {
             toast(getString(R.string.chat_from_left_group))
             if (fromOpen) finishToHome()
             return
         }
+        if (g.left) { openArchive(fp, newPeer, fromOpen); return }
         showPrompt(bundleOf(P_KIND to P_SWITCH, "fp" to fp, "peer" to newPeer, "reply" to reply, "open" to fromOpen))
     }
 
@@ -534,25 +682,133 @@ class ChatActivity : AppCompatActivity() {
             Core.switchGroup(code)
             // The same goes for a switch that failed: the old chat's draft is already put away.
             if (Core.router == null || Core.fingerprint() != fp) { chatFp = null; finishToHome(); return }
+            archive = null   // asked from a left group's chat: the screen is on the radio's group now
             peer = newPeer
             chatFp = fp
             resetChatState()
             loadDraft()
         } finally { switching = false }
+        applyMode()
         if (reply != null) pendingReplyId = reply
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) onChatVisible()
         refresh()
     }
 
+    // ------------------------------------------------------------------ a group this phone left
+
+    /**
+     * Is the group on screen one this phone is in, or one it left? Asked of the saved group list
+     * every time the screen comes to the front, never remembered: either can change behind it — a
+     * group left, rejoined or deleted from another screen. False when there is nothing left to
+     * show and the screen is closing.
+     */
+    private fun syncMode(): Boolean {
+        val fp = chatFp ?: return true   // still asking whether to switch groups: no chat is on screen
+        val g = Core.store.findGroup(fp)
+        if (g != null && g.left) {
+            // Asked for every time: Core lets a left group's chat go while the app is in the
+            // background, and reads it again from disk — as another router.
+            val a = Core.archive(fp)
+            if (a == null) { toast(getString(cantOpen())); finishToHome(); return false }
+            if (archive != null) { adoptArchive(a); return true }
+            // It was left while this screen was away. From here on it is only read: nothing of it
+            // is saved as a draft, and the screen lets go of its claim on the radio's chat.
+            switching = true
+            try {
+                Core.openChat = null
+                archive = a
+                leaveChat()
+                resetChatState()
+            } finally { switching = false }
+            applyMode()
+            return true
+        }
+        if (archive == null) return true
+        // It was a left group's chat, and the group isn't a left one any more.
+        if (g == null) { finishToHome(); return false }   // deleted: nothing to read
+        // Rejoined: a group this phone is in again, shown like any other.
+        switching = true
+        try {
+            leaveChat()
+            archive = null
+            resetChatState()
+            loadDraft()
+        } finally { switching = false }
+        applyMode()
+        return true
+    }
+
+    /**
+     * The left group's chat on screen, as Core holds it now. A new copy of the same chat (read
+     * again from disk) has the same rows: the list is rebuilt on it, and put back where it was.
+     */
+    private fun adoptArchive(a: Router) {
+        if (a === archive) return
+        keepScroll = if (adapter != null) (b.list.layoutManager as LinearLayoutManager).onSaveInstanceState() else null
+        archive = a
+    }
+
+    /**
+     * Show a chat of a group this phone left, in place: its group chat, or its private chat with
+     * [newPeer]. Whatever chat is on screen is put away first — with its draft, if it has a composer.
+     */
+    private fun openArchive(fp: String, newPeer: String?, fromOpen: Boolean) {
+        val a = Core.archive(fp)
+        if (a == null) {
+            toast(getString(cantOpen()))
+            if (fromOpen) finishToHome()
+            return
+        }
+        // Already reading that group: just another of its chats (or the very one on screen).
+        if (a === archive && fp == chatFp) { backStack.clear(); openChat(newPeer, null); return }
+        switching = true
+        try {
+            leaveChat()
+            backStack.clear()
+            if (!readOnly) Core.openChat = null   // this screen no longer shows a chat of the radio's group
+            archive = a
+            peer = newPeer
+            chatFp = fp
+            resetChatState()
+        } finally { switching = false }
+        applyMode()
+        if (newPeer == null) intent.removeExtra(Notifications.EXTRA_PEER) else intent.putExtra(Notifications.EXTRA_PEER, newPeer)
+        if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) onChatVisible()
+        refresh()
+    }
+
+    /**
+     * From a left group's chat to the group on the radio (a notification of its was tapped): the
+     * same guards as a fresh open. False when there is no such group to show; the screen then
+     * stays as it is, or — when only a permission is missing — hands over to the launch screen.
+     */
+    private fun leaveArchive(): Boolean {
+        if (Core.store.group() == null) return false
+        Core.ensureRunning()
+        if (Core.router == null) { toLaunch(); return false }
+        switching = true
+        try {
+            leaveChat()
+            backStack.clear()
+            archive = null
+            chatFp = null   // openChat takes it from here, as for any chat it opens
+            resetChatState()
+        } finally { switching = false }
+        applyMode()
+        return true
+    }
+
     // ------------------------------------------------------------------ drafts
 
+    /** Only a chat with a composer has a draft: a left group's is never saved, and never looked for. */
     private fun saveDraft() {
-        if (!::b.isInitialized) return
+        if (!::b.isInitialized || readOnly) return
         val fp = chatFp ?: return
         ChatDrafts.put(this, fp, chatKey, ChatDrafts.Draft(b.input.text?.toString().orEmpty(), replyTo?.id ?: pendingReplyId, HashMap(chosenMentions)))
     }
 
     private fun loadDraft() {
+        if (readOnly) return
         val fp = chatFp ?: return
         val d = ChatDrafts.get(this, fp, chatKey) ?: return
         b.input.setText(d.text)
@@ -564,6 +820,7 @@ class ChatActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ sending
 
     private fun sendText() {
+        if (readOnly) return
         val r = Core.router ?: return
         val text = b.input.text?.toString()?.trim().orEmpty()
         if (text.isEmpty()) return
@@ -608,7 +865,7 @@ class ChatActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ replies
 
     private fun startReply(m: Message, focus: Boolean = true) {
-        if (!m.isPersonal) return
+        if (!m.isPersonal || readOnly) return
         val r = Core.router ?: return
         replyTo = m
         pendingReplyId = null
@@ -629,7 +886,15 @@ class ChatActivity : AppCompatActivity() {
         b.replyBar.isVisible = false
     }
 
-    private fun replyPrivately(m: Message) = openChat(m.from, m.id, push = true)
+    private fun replyPrivately(m: Message) {
+        openChat(m.from, m.id, push = true)
+        // An earlier message is not one the router can look up by id: the reply starts from the
+        // message itself — also over the reply a saved draft of that chat brought back with it.
+        if (ScreenRules.replyStillToSet(replyTo?.id, m.id)) startReply(m)
+    }
+
+    /** A message on screen, by id: in the router's live window, or among the earlier ones read back. */
+    private fun find(r: Router, id: String): Message? = r.message(id) ?: earlier.find(id)
 
     /**
      * Swipe a bubble toward the middle to reply — the WhatsApp muscle memory. The row never
@@ -647,7 +912,7 @@ class ChatActivity : AppCompatActivity() {
 
             override fun getMovementFlags(rv: RecyclerView, vh: RecyclerView.ViewHolder): Int {
                 val m = adapter?.messageAt(vh.bindingAdapterPosition) ?: return 0   // chips don't swipe
-                if (!m.isPersonal || menu?.isShowing == true) return 0
+                if (!m.isPersonal || menu?.isShowing == true || readOnly) return 0   // nothing to reply into in a left group
                 return makeMovementFlags(0, ItemTouchHelper.END)
             }
 
@@ -668,7 +933,7 @@ class ChatActivity : AppCompatActivity() {
                     else if (pull < trigger && armed === vh) armed = null
                 } else if (armed === vh) {
                     armed = null
-                    adapter?.messageAt(vh.bindingAdapterPosition)?.let { m -> Core.router?.message(m.id)?.let { startReply(it) } }
+                    adapter?.messageAt(vh.bindingAdapterPosition)?.let { m -> Core.router?.let { r -> find(r, m.id) }?.let { startReply(it) } }
                 }
                 if (pull > 10f * density) {
                     val size = (22f * density).toInt()
@@ -692,13 +957,16 @@ class ChatActivity : AppCompatActivity() {
     private fun jumpToMessage(id: String) {
         val pos = adapter?.positionOf(id) ?: -1
         if (pos < 0) {
-            val r = Core.router
+            val r = router()
             val orig = r?.message(id)
             if (r != null && orig != null) {
                 val other = if (orig.isGroup) null else if (orig.from == r.me.id) orig.to else orig.from
                 if (other != peer) { openChat(other, null, push = true, jumpTo = id); return }
             }
-            toast(getString(R.string.original_gone)); return
+            // Not in what is loaded. With earlier messages still on disk it may well be among
+            // them, further up — then "isn't on this phone" would be a guess, and nothing is said.
+            if (chatFp?.let { Core.hasEarlier(it) } != true) toast(getString(R.string.original_gone))
+            return
         }
         newAbove.remove(id); newBelow.remove(id)
         (b.list.layoutManager as LinearLayoutManager).scrollToPositionWithOffset(pos, listHeight() / 3)
@@ -731,7 +999,7 @@ class ChatActivity : AppCompatActivity() {
     /** Typing "@" in the group chat offers name chips; tapping one completes the mention. */
     private fun updateMentionBar() {
         val r = Core.router
-        val open = if (r == null || chatFp == null) null else openMention()
+        val open = if (r == null || chatFp == null || readOnly) null else openMention()
         val matches = if (r == null || open == null) emptyList()
         else r.people.values.filter { it.name.isNotEmpty() && it.name.startsWith(open.second, ignoreCase = true) }
             .sortedWith(compareBy<Person>({ !r.isInRange(it) }, { it.name.lowercase(Locale.ROOT) })).take(6)
@@ -775,6 +1043,7 @@ class ChatActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ photos & files
 
     private fun onImagePicked(uri: Uri, temp: File?) {
+        if (readOnly) { temp?.delete(); return }
         val r = Core.router ?: run { temp?.delete(); toast(getString(R.string.chat_starting)); return }
         if (!r.canSendFiles()) { temp?.delete(); toast(getString(R.string.files_crowd_off)); return }
         val draft = b.input.text?.toString()?.trim().orEmpty()
@@ -799,7 +1068,7 @@ class ChatActivity : AppCompatActivity() {
 
     private fun sendPhoto(uri: Uri, caption: String, temp: File?, prefill: String, target: String?) {
         val r = Core.router
-        if (r == null || !checkTarget(target)) { temp?.delete(); return }
+        if (r == null || readOnly || !checkTarget(target)) { temp?.delete(); return }
         val mentions = if (peer == null) Ui.mentionsIn(r, caption, chosenMentions) else emptyList()
         if (prefill.isNotEmpty() && caption == prefill) b.input.setText("")
         val quote = replyTo?.let { quoteOf(r, it) }
@@ -810,13 +1079,14 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun sendPickedFile(uri: Uri, target: String) {
+        if (readOnly) return
         val r = Core.router ?: return
         if (!r.canSendFiles()) { toast(getString(R.string.files_crowd_off)); return }
         val app = applicationContext
         Thread {
             val result = Blobs.readPicked(app, uri)
             runOnUiThread {
-                if (isFinishing || isDestroyed || !checkTarget(target)) return@runOnUiThread
+                if (isFinishing || isDestroyed || readOnly || !checkTarget(target)) return@runOnUiThread
                 when (result) {
                     is Blobs.Picked.Ok -> {
                         val picked = result.file
@@ -836,6 +1106,7 @@ class ChatActivity : AppCompatActivity() {
 
     private fun sendFile(picked: Blobs.PickedFile) {
         pendingPicked = null
+        if (readOnly) return
         val r = Core.router ?: return
         val quote = replyTo?.let { quoteOf(r, it) }
         clearReply()
@@ -844,6 +1115,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun launchCamera() {
+        if (readOnly) return
         try {
             val dir = File(cacheDir, "camera").apply { mkdirs() }
             val f = File(dir, "shot-${System.currentTimeMillis()}.jpg")
@@ -871,17 +1143,25 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun openAttachment(m: Message) {
-        val r = Core.router ?: return
+        val r = router() ?: return
         val att = m.att ?: return
         val file = Blobs.fileFor(this, r.group.fingerprint, att)
         if (!file.exists()) {
-            toast(if (MessageAdapter.neverArrives(m, System.currentTimeMillis())) getString(R.string.chat_file_expired)
-                  else getString(R.string.receiving_file, r.fileProgress(att), att.chunks))
+            toast(when {
+                // Its pieces went when the group was left: no more of it will ever arrive.
+                readOnly -> getString(R.string.chat_file_left)
+                MessageAdapter.neverArrives(m, System.currentTimeMillis()) -> getString(R.string.chat_file_expired)
+                else -> getString(R.string.receiving_file, r.fileProgress(att), att.chunks)
+            })
             return
         }
         if (att.isInlineImage) {
+            // The viewer finds the photo's message by its file — but only one the mesh holds in
+            // memory. For an earlier message it is told who sent it, when and with what words.
             startActivity(Intent(this, ViewerActivity::class.java)
-                .putExtra("path", file.absolutePath).putExtra("name", att.name).putExtra("mime", att.mime))
+                .putExtra("path", file.absolutePath).putExtra("name", att.name).putExtra("mime", att.mime)
+                .putExtra(ViewerActivity.EXTRA_FROM, if (m.from == r.me.id) getString(R.string.reply_you) else Ui.nameOf(r, m.from, m.fromName))
+                .putExtra(ViewerActivity.EXTRA_AT, m.ts).putExtra(ViewerActivity.EXTRA_CAPTION, m.text))
             return
         }
         // Under its real name, so the other app shows "report.pdf", not a piece id.
@@ -890,15 +1170,15 @@ class ChatActivity : AppCompatActivity() {
 
     private fun fileOnPhone(r: Router, m: Message): Boolean = m.att?.let { Blobs.fileFor(this, r.group.fingerprint, it).exists() } == true
 
-    /** Keep a photo, voice note or file outside Hopline — it survives leaving the group. */
+    /** Keep a photo, voice note or file outside Hopline — a copy of the person's own, which outlives even deleting the group. */
     private fun saveToPhone(m: Message) {
-        val r = Core.router ?: return
+        val r = router() ?: return
         val att = m.att ?: return
         media.save(Blobs.fileFor(this, r.group.fingerprint, att), att.name, att.mime)
     }
 
     private fun shareFile(m: Message) {
-        val r = Core.router ?: return
+        val r = router() ?: return
         val att = m.att ?: return
         media.share(Blobs.fileFor(this, r.group.fingerprint, att), att.name, att.mime)
     }
@@ -908,40 +1188,52 @@ class ChatActivity : AppCompatActivity() {
      * because every phone drops the old one once its 48 h are up. The stale one then goes.
      */
     private fun sendAgain(m: Message) {
+        if (readOnly) return   // nothing is sent from a group this phone left
         val r = Core.router ?: return
-        val old = r.message(m.id) ?: return
+        val old = find(r, m.id) ?: return
         if (!Ui.gaveUp(r, old)) return
         val att = old.att
         val loc = old.loc
         when {
-            loc != null -> { r.sendLocation(loc, old.to); Core.deleteMessages(listOf(old.id)); sent() }
+            loc != null -> { r.sendLocation(loc, old.to); forget(old.id); sent() }
             att != null -> {
                 if (!r.canSendFiles()) { toast(getString(R.string.files_crowd_off)); return }
                 if (!Blobs.fileFor(this, r.group.fingerprint, att).exists()) { toast(getString(R.string.chat_resend_gone)); return }
                 toast(getString(R.string.sending_file))
                 val t = targetKey()
-                Core.resendFile(old) { err -> onSent(err, t) }
+                Core.resendFile(old) { err ->
+                    // Core deleted the stale copy once the new one was on its way; an earlier one leaves the screen with it.
+                    if (err == null && t == targetKey()) earlier.remove(listOf(old.id))
+                    onSent(err, t)
+                }
             }
             else -> {
                 val to = old.to
                 if (to == null) r.sendChat(old.text, old.quote, old.mentions) else r.sendDm(to, old.text, old.quote)
-                Core.deleteMessages(listOf(old.id))
+                forget(old.id)
                 sent()
             }
         }
+    }
+
+    /** The stale copy of a message that was sent again goes — from the chat, and from the earlier ones on screen. */
+    private fun forget(id: String) {
+        earlier.remove(listOf(id))
+        Core.deleteMessages(listOf(id))
     }
 
     // ------------------------------------------------------------------ voice notes
 
     private fun onMicTapped() {
         val r = Core.router ?: return
-        if (chatFp == null) return
+        if (chatFp == null || readOnly) return
         if (!r.canSendFiles()) { toast(getString(R.string.files_crowd_off)); return }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startRecording()
         else micPermission.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     private fun startRecording() {
+        if (readOnly) return
         VoicePlayer.stop()
         if (!VoiceRecorder.start(this)) { toast(getString(R.string.voice_failed)); return }
         b.mic.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -971,9 +1263,9 @@ class ChatActivity : AppCompatActivity() {
         VoiceRecorder.onMaxReached = null
         b.recordTimer.stop()
         b.recordBar.isVisible = false
-        b.composerRow.isVisible = true
+        b.composerRow.isVisible = !readOnly
         b.recordDot.animate().cancel(); b.recordDot.alpha = 1f
-        if (!send) { VoiceRecorder.cancel(); return }
+        if (!send || readOnly) { VoiceRecorder.cancel(); return }
         val clip = VoiceRecorder.finish()
         if (clip == null) { toast(getString(R.string.voice_too_short)); return }
         val (file, seconds) = clip
@@ -990,7 +1282,7 @@ class ChatActivity : AppCompatActivity() {
 
     private fun showAttachSheet() {
         val r = Core.router ?: return
-        if (chatFp == null) return
+        if (chatFp == null || readOnly) return
         val sheet = BottomSheetDialog(this)
         val sb = SheetAttachBinding.inflate(layoutInflater)
         sheet.setContentView(sb.root)
@@ -1022,6 +1314,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun showLocationSheet() {
+        if (readOnly) return
         val r = Core.router ?: return
         val sheet = BottomSheetDialog(this)
         val sb = SheetLocationBinding.inflate(layoutInflater)
@@ -1053,6 +1346,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun runLocationAction(action: String?) {
+        if (readOnly) return
         when (action) {
             PENDING_LOC_FIX -> if (requireLocationOn()) showPrompt(bundleOf(P_KIND to P_FIX, P_TARGET to targetKey()))
             PENDING_LOC_LIVE -> if (requireLocationOn()) showPrompt(bundleOf(P_KIND to P_LIVE_FOR))
@@ -1078,6 +1372,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun onLiveBannerTapped() {
+        if (readOnly) return
         if (Core.liveLocationActive()) showPrompt(bundleOf(P_KIND to P_LIVE_STOP))
         else startActivity(Intent(this, PeopleActivity::class.java))
     }
@@ -1086,7 +1381,7 @@ class ChatActivity : AppCompatActivity() {
 
     private fun openLocation(m: Message) {
         val loc = m.loc ?: return
-        val r = Core.router
+        val r = router()
         val label = loc.label.ifEmpty {
             if (m.from == r?.me?.id) getString(R.string.loc_pin_mine)
             else getString(R.string.loc_pin_theirs, r?.let { Ui.nameOf(it, m.from, m.fromName) } ?: m.fromName.ifEmpty { getString(R.string.someone) })
@@ -1167,19 +1462,26 @@ class ChatActivity : AppCompatActivity() {
         } else showPrompt(p)
     }
 
-    private fun buildPrompt(p: Bundle): Dialog? = when (p.getString(P_KIND)) {
-        P_CAPTION -> captionDialog(p)
-        P_BIGFILE -> bigFileDialog(p)
-        P_PLACE -> placeDialog(p)
-        P_DELETE -> deleteDialog(p)
-        P_CLEAR -> clearDialog(p)
-        P_MUTE -> muteDialog(p)
-        P_LIVE_WARN -> liveWarnDialog()
-        P_LIVE_FOR -> liveDurationDialog()
-        P_LIVE_STOP -> liveStopDialog()
-        P_FIX -> fixDialog(p)
-        P_SWITCH -> switchDialog(p)
-        else -> null
+    private fun buildPrompt(p: Bundle): Dialog? {
+        val kind = p.getString(P_KIND)
+        // A left group's chat asks two questions only: delete this message, and switch to the
+        // group a notification came from. Any other is a leftover of a chat on the radio (a
+        // re-creation, the group left under it) and its answer would act on THAT group: dropped.
+        if (readOnly && kind != P_DELETE && kind != P_SWITCH) return null
+        return when (kind) {
+            P_CAPTION -> captionDialog(p)
+            P_BIGFILE -> bigFileDialog(p)
+            P_PLACE -> placeDialog(p)
+            P_DELETE -> deleteDialog(p)
+            P_CLEAR -> clearDialog(p)
+            P_MUTE -> muteDialog(p)
+            P_LIVE_WARN -> liveWarnDialog()
+            P_LIVE_FOR -> liveDurationDialog()
+            P_LIVE_STOP -> liveStopDialog()
+            P_FIX -> fixDialog(p)
+            P_SWITCH -> switchDialog(p)
+            else -> null
+        }
     }
 
     private fun bigFileDialog(p: Bundle): Dialog? {
@@ -1213,19 +1515,36 @@ class ChatActivity : AppCompatActivity() {
     private fun confirmDelete(m: Message) = showPrompt(bundleOf(P_KIND to P_DELETE, P_TARGET to targetKey(), "id" to m.id))
 
     private fun deleteDialog(p: Bundle): Dialog? {
-        val r = Core.router ?: return null
-        val m = r.message(p.getString("id") ?: return null) ?: return null
+        val r = router() ?: return null
+        val m = find(r, p.getString("id") ?: return null) ?: return null
         // Mine and still ◷: it never left this phone, so deleting it also means it won't be sent.
-        val unsent = m.from == r.me.id && m.status == Message.QUEUED
+        // (In a left group nothing is waiting to be sent: there it is only ever "for me".)
+        val unsent = !readOnly && m.from == r.me.id && m.status == Message.QUEUED
         return AlertDialog.Builder(this).setTitle(R.string.chat_delete_title)
             .setMessage(if (unsent) R.string.chat_delete_unsent else R.string.chat_delete_body)
             .setPositiveButton(R.string.chat_delete) { _, _ -> if (checkTarget(p.getString(P_TARGET))) deleteMessages(listOf(m.id)) }
             .setNegativeButton(R.string.cancel, null).show().also { danger(it) }
     }
 
+    /**
+     * "Delete for me". Earlier messages on screen go at once; Core takes them out of the history.
+     * A left group's chat has its own delete: Core's plain one means the group on the radio.
+     */
     private fun deleteMessages(ids: List<String>) {
         if (replyTo?.id in ids) clearReply()
-        Core.deleteMessages(ids)
+        earlier.remove(ids)
+        val fp = chatFp
+        if (!readOnly) Core.deleteMessages(ids)
+        else if (fp != null) {
+            Core.deleteArchivedMessages(fp, ids) {
+                // The delete could not be saved (Core has said so), and nothing of it was deleted:
+                // the chat is read again as the disk has it, with those messages in it.
+                if (!isDestroyed && !isFinishing && readOnly && chatFp == fp &&
+                    lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && syncMode()) refresh()
+            }
+            // Core deleted from the copy it holds — the one on screen, unless that was let go meanwhile.
+            Core.archive(fp)?.let { adoptArchive(it) }
+        }
         refresh()
     }
 
@@ -1236,8 +1555,9 @@ class ChatActivity : AppCompatActivity() {
             if (unsent > 0) "\n\n" + resources.getQuantityString(R.plurals.chat_clear_unsent, unsent, unsent) else ""
         return AlertDialog.Builder(this).setTitle(R.string.chat_clear_title).setMessage(body)
             .setPositiveButton(R.string.chat_clear) { _, _ ->
-                if (!checkTarget(p.getString(P_TARGET))) return@setPositiveButton
+                if (readOnly || !checkTarget(p.getString(P_TARGET))) return@setPositiveButton
                 Core.clearChat(peer)
+                resetEarlier()   // its earlier messages went with it
                 if (replyTo?.let { Core.router?.message(it.id) } == null) clearReply()
                 newAbove.clear(); newBelow.clear()
                 unreadSince = UNREAD_NONE
@@ -1247,6 +1567,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun toggleMute() {
+        if (readOnly) return
         if (Core.isMuted(chatKey)) { Core.setMuted(chatKey, 0); toast(getString(R.string.chat_unmuted)); refresh() }
         else showPrompt(bundleOf(P_KIND to P_MUTE, P_TARGET to targetKey()))
     }
@@ -1255,7 +1576,7 @@ class ChatActivity : AppCompatActivity() {
         val labels = arrayOf(getString(R.string.chat_mute_8h), getString(R.string.chat_mute_week), getString(R.string.chat_mute_always))
         return AlertDialog.Builder(this).setTitle(R.string.chat_mute_title)
             .setItems(labels) { _, which ->
-                if (!checkTarget(p.getString(P_TARGET))) return@setItems
+                if (readOnly || !checkTarget(p.getString(P_TARGET))) return@setItems
                 val now = System.currentTimeMillis()
                 Core.setMuted(chatKey, when (which) { 0 -> now + 8 * 3_600_000L; 1 -> now + 7 * 86_400_000L; else -> Long.MAX_VALUE })
                 // A muted group still lets an @mention through — say so, so nobody is surprised.
@@ -1351,26 +1672,52 @@ class ChatActivity : AppCompatActivity() {
 
     private fun refresh() {
         if (!::b.isInitialized || isDestroyed || switching || isFinishing) return
-        val r = Core.router
+        val r = router()
         if (r == null) { b.subtitle.text = getString(R.string.chat_starting); return }
         if (chatFp == null) { renderAwaiting(); return }
         // Back after the process died, and the radio is on another group now: following it this
         // early would save an empty composer over the real draft, then the restored words would
         // land in the new group's composer. onRestoreInstanceState runs this again once they're back.
-        if (viewStatePending && chatFp != r.group.fingerprint) return
+        // (A left group's chat has no composer and follows nothing.)
+        if (!readOnly && viewStatePending && chatFp != r.group.fingerprint) return
         if (!followGroup(r)) return
+        val fp = chatFp ?: return
         // The first draw already knows where "unread" starts, so it can open right there.
         if (unreadSince == UNREAD_CAPTURE) captureUnread()
+        val live = r.chatMessages(peer)
+        // Messages leaving the live window for the history stay on screen for someone reading near them.
+        earlier.follow(live, r) { nearEarlier(r, live) }
+        // The group's history changed under the earlier messages on screen — a batch of this
+        // chat's oldest live messages was filed, or something was deleted from it.
+        val stamp = Core.historyStamp(fp)
+        if (stamp != earlierStamp) { earlierStamp = stamp; restartEarlier(r, live) }
+        if (earlierWait) {
+            // Re-created while scrolled up among earlier messages. The list puts its own position
+            // back, but it goes by row count: it is filled only once those messages are here again.
+            if (earlierReload != null && Core.hasEarlier(fp)) {
+                if (!earlierBusy) fetchEarlier()
+                renderHeader(r)
+                renderBanners(r, live)
+                return
+            }
+            earlierWait = false; earlierReload = null; earlierBusy = false; earlierGen++   // nothing to wait for
+            earlierHere()
+        }
         var a = adapter
         if (a == null || adapterRouter !== r) {
-            a = MessageAdapter(this, r, showNames = peer == null, listener = rowListener)
+            a = MessageAdapter(this, r, showNames = peer == null, listener = rowListener, leftAt = leftAt())
             adapter = a; adapterRouter = r
             b.list.adapter = a
             lastShownId = null; committedIds = emptySet()
+            // The same chat on a fresh copy of its router (a left group's, read again from disk):
+            // the same rows, so the list goes back to where it was instead of to the bottom.
+            keepScroll?.let { (b.list.layoutManager as LinearLayoutManager).onRestoreInstanceState(it); restoring = true }
+            keepScroll = null
         }
         // A reply target from a draft or a re-creation; one no longer on this phone is dropped.
-        pendingReplyId?.let { id -> pendingReplyId = null; r.message(id)?.let { startReply(it, focus = false) } }
-        val shown = r.chatMessages(peer)
+        pendingReplyId?.let { id -> pendingReplyId = null; if (!readOnly) find(r, id)?.let { startReply(it, focus = false) } }
+        // The chat as it is shown: its earlier messages, read back from the history, then the live ones.
+        val shown = earlier.shown(live, r)
         renderHeader(r)
         renderBanners(r, shown)
 
@@ -1399,7 +1746,7 @@ class ChatActivity : AppCompatActivity() {
     /** The diff landed: pills for arrivals out of sight, then the one scroll this refresh earned. */
     private fun committed(a: MessageAdapter, ids: Set<String>, anchorTop: String?, anchorBottom: String?, restored: Boolean) {
         if (isDestroyed || adapter !== a) return
-        val r = Core.router ?: return
+        val r = router() ?: return
         val lm = b.list.layoutManager as LinearLayoutManager
         val before = committedIds
         committedIds = ids
@@ -1434,6 +1781,97 @@ class ChatActivity : AppCompatActivity() {
             else -> unreadJump = false
         }
         updateScrollPills()
+        // Once the rows are laid out: a chat too short to scroll, or one opened near its top,
+        // fetches its earlier messages without waiting for a scroll that can't happen.
+        b.list.post { maybeLoadEarlier() }
+    }
+
+    // ------------------------------------------------------------------ earlier messages
+
+    /**
+     * At (or near) the top of what is loaded — or with a chat too short to scroll at all — and
+     * the group has older messages on disk: read the page above. One page at a time; the rows it
+     * brings are put in above the ones on screen, which stay where they are.
+     */
+    private fun maybeLoadEarlier() {
+        if (!::b.isInitialized || isDestroyed || isFinishing || switching) return
+        if (earlierBusy || earlierReload != null || earlier.exhausted || adapter == null) return
+        val fp = chatFp ?: return
+        val lm = b.list.layoutManager as? LinearLayoutManager ?: return
+        if (lm.findFirstVisibleItemPosition() > EARLIER_NEAR_TOP && b.list.canScrollVertically(-1)) return
+        if (!Core.hasEarlier(fp) || noEarlier[targetKey()] == Core.historyStamp(fp)) return
+        fetchEarlier()
+    }
+
+    /**
+     * Ask Core for one page: the next one up, or — while the pages are being read again — the next
+     * of those. The answer comes later, from the thread that owns the history; by then the screen
+     * may show another chat or have started over, and a page nobody is waiting for is dropped.
+     */
+    private fun fetchEarlier() {
+        val fp = chatFp ?: return
+        val gen = earlierGen
+        val re = earlierReload
+        val key = targetKey()
+        val stamp = Core.historyStamp(fp)
+        earlierBusy = true
+        Core.loadEarlier(fp, chatKey, if (re != null) re.next else earlier.next) { page ->
+            if (gen != earlierGen || isDestroyed) return@loadEarlier
+            earlierBusy = false
+            if (re != null) {
+                if (earlier.take(re, page.messages, page.next)) { fetchEarlier(); return@loadEarlier }
+                earlier.finish(re)
+                earlierReload = null
+                if (earlierWait) { earlierWait = false; earlierHere() }
+            } else {
+                earlier.add(page.messages, page.next)
+                // Looked through the whole history and this chat has nothing in it (a short private
+                // chat beside a long group chat): not looked through again until the history changes.
+                if (earlier.exhausted && earlier.isEmpty && stamp == Core.historyStamp(fp)) noEarlier[key] = stamp
+            }
+            refresh()
+        }
+    }
+
+    /**
+     * The history changed under the pages on screen. Someone reading up there gets them read
+     * again, and swapped in when they are all here — nothing moves under their thumb. Someone far
+     * below, among the newest messages, would never see the difference: for them the pages are
+     * simply let go (they come back on the way up), so a chat that stays open for days does not
+     * re-read, and carry, more and more of the history each time a batch is filed.
+     */
+    private fun restartEarlier(r: Router, live: List<Message>) {
+        val pending = earlierReload
+        if (pending == null && (earlier.isEmpty || !nearEarlier(r, live))) {
+            if (!earlier.isEmpty || earlier.next != null) { earlierGen++; earlierBusy = false; earlier.unload() }
+            return
+        }
+        val re = pending?.again() ?: earlier.restart() ?: return
+        earlierGen++   // a page still on its way was read from the history as it was before
+        earlierReload = re
+        fetchEarlier()
+    }
+
+    /**
+     * Is the top of the screen at (or close to) the chat's oldest live messages, or above them,
+     * among the earlier ones? Those are the rows a filed batch takes out of the live window.
+     */
+    private fun nearEarlier(r: Router, live: List<Message>): Boolean {
+        val a = adapter ?: return false
+        val first = (b.list.layoutManager as? LinearLayoutManager)?.findFirstVisibleItemPosition() ?: return false
+        if (first < 0) return false
+        // The first message at or under the top edge (a day chip or the unread line may sit above it).
+        val top = (first until minOf(first + 4, a.itemCount)).firstNotNullOfOrNull { a.messageAt(it) } ?: return false
+        if (r.message(top.id) == null) return true   // an earlier message, or one that has just left the window
+        for (i in 0 until minOf(live.size, EARLIER_NEAR_LIVE)) if (live[i].id == top.id) return true
+        return false
+    }
+
+    /** Another chat, or this one emptied: no earlier messages, and none on their way. */
+    private fun resetEarlier() {
+        earlierGen++
+        earlier.clear()
+        earlierReload = null; earlierBusy = false; earlierWait = false
     }
 
     private fun renderAwaiting() {
@@ -1445,41 +1883,57 @@ class ChatActivity : AppCompatActivity() {
 
     private fun renderHeader(r: Router) {
         val to = peer
+        // A left group goes by the name on its Home row (its three words when it never had one);
+        // where the radio's status would be, the header says why this chat is only to be read.
+        val left = leftGroup()
+        val group = left?.let { Asks.groupLabel(it) } ?: groupName(r)
         val name: String
         val sub: String
+        var grey = false
         if (to == null) {
-            name = groupName(r)
-            sub = Core.statusLine()
+            name = group
+            sub = if (readOnly) getString(R.string.left_chat_sub) else Core.statusLine()
             b.avatar.text = Ui.initial(name)
-            b.avatar.background.mutate().setTint(MessageAdapter.avatarColor(r.group.fingerprint))
+            // Grey like its row on Home: not a group this phone is in.
+            grey = readOnly
+            b.avatar.background.mutate().setTint(if (grey) getColor(R.color.surface_variant) else MessageAdapter.avatarColor(r.group.fingerprint))
         } else {
             val p = r.people[to]
             // Someone not heard from in a month is forgotten by the mesh; their messages still know their name.
             val fallback = if (p == null) r.messages.lastOrNull { it.from == to }?.fromName.orEmpty() else ""
             name = Ui.uniqueName(r, to, fallback)
             // The header has one line; the People screen shows the same status with room to wrap.
-            sub = p?.let { Ui.personStatus(r, it).replace("\n", " · ") }.orEmpty()
+            // ("In range" is not something a phone knows about people in a group it left.)
+            sub = if (readOnly) getString(R.string.left_dm_sub, group) else p?.let { Ui.personStatus(r, it).replace("\n", " · ") }.orEmpty()
             b.avatar.text = Ui.initial(Ui.nameOf(r, to, fallback))
             b.avatar.background.mutate().setTint(MessageAdapter.avatarColor(to))
         }
+        b.avatar.setTextColor(if (grey) getColor(R.color.text_muted) else Color.WHITE)
         b.title.text = name
         b.subtitle.text = sub
-        val muted = Core.isMuted(chatKey)
+        val muted = !readOnly && Core.isMuted(chatKey)
         b.titleArea.contentDescription = listOf(name, sub, if (muted) getString(R.string.chat_muted_desc) else "")
             .filter { it.isNotEmpty() }.joinToString(", ")
         // Only on change: this runs on every redraw (twice a second while a voice note plays).
-        val headerKey = "$chatKey|$muted"
+        val headerKey = "$chatKey|$muted|$readOnly"
         if (headerKey != headerShown) {
             headerShown = headerKey
             b.title.setCompoundDrawablesRelativeWithIntrinsicBounds(0, 0, if (muted) R.drawable.ic_chat_muted else 0, 0)
+            // In a left group every header leads to that group's info: its People screen is the radio's.
             ViewCompat.replaceAccessibilityAction(b.titleArea, AccessibilityActionCompat.ACTION_CLICK,
-                getString(if (to == null) R.string.chat_group_info else R.string.people), null)
+                getString(if (to == null || readOnly) R.string.chat_group_info else R.string.people), null)
         }
     }
 
     private fun groupName(r: Router): String = r.group.name.ifEmpty { getString(R.string.chat_your_group) }
 
     private fun renderBanners(r: Router, shown: List<Message>) {
+        if (readOnly) {
+            // The radio's troubles, live locations, requests waiting for this phone, who is out
+            // of range: all of it is about the group on the radio, none of it about this one.
+            for (v in listOf(b.warn, b.liveBanner, b.errandBanner, b.hint, b.awayBanner)) v.isVisible = false
+            return
+        }
         val warn = when {
             !Core.bluetoothOn() -> getString(R.string.bt_off)
             !Core.wifiOn() -> getString(R.string.wifi_off)
@@ -1535,6 +1989,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun openPendingSends() {
+        if (readOnly) return
         val sends = Core.pendingSends()
         val i = Intent(this, InternetActivity::class.java)
         Core.fingerprint()?.let { i.putExtra(Notifications.EXTRA_FP, it) }
@@ -1594,13 +2049,37 @@ class ChatActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ header & menu
 
     private fun openHeader() {
-        if (chatFp == null || Core.router == null) return
+        if (chatFp == null || router() == null) return
+        if (readOnly) {
+            // The left group's own info — never the radio's Group info or People, which are another group's.
+            leftGroup()?.let { startActivity(Intent(this, GroupInfoActivity::class.java).putExtra(GroupInfoActivity.EXTRA_CODE, it.code)) }
+            return
+        }
         startActivity(Intent(this, if (peer == null) GroupInfoActivity::class.java else PeopleActivity::class.java))
     }
 
     private fun showMenu() {
-        if (chatFp == null || Core.router == null) return
+        if (chatFp == null || router() == null) return
         val popup = PopupMenu(this, b.more)
+        if (readOnly) {
+            // Everything else on the usual menu belongs to the group on the radio.
+            popup.menu.add(0, M_INFO, 0, R.string.chat_group_info)
+            popup.menu.add(0, M_REJOIN, 1, R.string.menu_rejoin_group)
+            popup.menu.add(0, M_DELETE_GROUP, 2, R.string.menu_delete_group)
+            popup.setOnMenuItemClickListener { item ->
+                // The group as it is when tapped, not when the menu opened.
+                val g = leftGroup()
+                when {
+                    g == null -> {}
+                    item.itemId == M_INFO -> openHeader()
+                    item.itemId == M_REJOIN -> Asks.rejoin(this, g)
+                    item.itemId == M_DELETE_GROUP -> Asks.deleteGroup(this, g)
+                }
+                true
+            }
+            popup.show()
+            return
+        }
         var order = 0
         if (peer == null) popup.menu.add(0, M_INFO, order++, R.string.chat_group_info)
         popup.menu.add(0, M_MUTE, order++, if (Core.isMuted(chatKey)) R.string.chat_unmute else R.string.chat_mute_title)
@@ -1637,9 +2116,12 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun showMessageMenu(m: Message, row: View, bubble: View) {
-        val r = Core.router ?: return
+        val r = router() ?: return
         if (menu?.isShowing == true || isFinishing) return
-        val live = r.message(m.id) ?: return
+        val live = find(r, m.id) ?: return
+        // Reactions travel on the radio and land on the live message: none in a group this phone
+        // left, and none on a message that has moved into the history (it would not keep them).
+        val reactions = live.isPersonal && !readOnly && r.message(live.id) != null
         // Bring the whole message into view first, so its lifted copy isn't cut by the header or composer.
         val pad = (8 * resources.displayMetrics.density).toInt()
         val h = b.list.height
@@ -1654,7 +2136,7 @@ class ChatActivity : AppCompatActivity() {
             val vh = b.list.findContainingViewHolder(row) as? MessageAdapter.MsgVH
             if (isFinishing || isDestroyed || vh?.m?.id != live.id || menu?.isShowing == true) return@post
             vh.stopFlash()   // the lifted copy is a snapshot of the row: never a half-faded one
-            menu = MessageMenu(this, row, bubble, live.reactions[r.me.id], live.isPersonal, actionsFor(r, live),
+            menu = MessageMenu(this, row, bubble, live.reactions[r.me.id], reactions, actionsFor(r, live),
                 onReact = { e -> react(live, e) },
                 onMoreReactions = { ReactionSheets.showPicker(this) { e -> react(live, e) }?.let { trackSheet(it) } },
                 // Posted: a close during teardown must not redraw from inside it.
@@ -1665,20 +2147,22 @@ class ChatActivity : AppCompatActivity() {
     private fun actionsFor(r: Router, m: Message): List<MessageMenu.Action> {
         val out = ArrayList<MessageMenu.Action>()
         val mine = m.from == r.me.id
-        if (m.isPersonal) out.add(MessageMenu.Action(R.drawable.ic_reply, getString(R.string.reply)) { startReply(m) })
-        if (m.isPersonal && m.isGroup && !mine) out.add(MessageMenu.Action(R.drawable.ic_chat_private, getString(R.string.chat_reply_privately)) { replyPrivately(m) })
+        // A left group's chat keeps what works without the radio: copy, save, share, details, delete.
+        if (m.isPersonal && !readOnly) out.add(MessageMenu.Action(R.drawable.ic_reply, getString(R.string.reply)) { startReply(m) })
+        if (m.isPersonal && m.isGroup && !mine && !readOnly) out.add(MessageMenu.Action(R.drawable.ic_chat_private, getString(R.string.chat_reply_privately)) { replyPrivately(m) })
         if (m.text.isNotEmpty()) out.add(MessageMenu.Action(R.drawable.ic_copy, getString(R.string.copy)) { copy(m) })
         if (fileOnPhone(r, m)) {
             out.add(MessageMenu.Action(R.drawable.ic_chat_save, getString(R.string.chat_save_to_phone)) { saveToPhone(m) })
             out.add(MessageMenu.Action(R.drawable.ic_share, getString(R.string.chat_share)) { shareFile(m) })
         }
         if (mine && m.isPersonal) out.add(MessageMenu.Action(R.drawable.ic_info, getString(R.string.message_info)) { showDetails(m) })
-        if (Ui.gaveUp(r, m)) out.add(MessageMenu.Action(R.drawable.ic_chat_retry, getString(R.string.chat_send_again)) { sendAgain(m) })
+        if (!readOnly && Ui.gaveUp(r, m)) out.add(MessageMenu.Action(R.drawable.ic_chat_retry, getString(R.string.chat_send_again)) { sendAgain(m) })
         out.add(MessageMenu.Action(R.drawable.ic_chat_delete, getString(R.string.chat_delete_for_me), danger = true) { confirmDelete(m) })
         return out
     }
 
     private fun react(m: Message, emoji: String) {
+        if (readOnly) return
         val r = Core.router ?: return
         val live = r.message(m.id) ?: return
         if (!live.isPersonal) return
@@ -1692,6 +2176,9 @@ class ChatActivity : AppCompatActivity() {
 
     /** Double-tap a bubble: ❤️ (or take my ❤️ back), with a little burst so it's clear what happened. */
     private fun doubleTapReact(m: Message, bubble: View) {
+        // Nothing to do in a left group — but the adapter keeps listening for the double tap all
+        // the same: the single tap that opens a link or the details is told apart by it.
+        if (readOnly) return
         val r = Core.router ?: return
         val live = r.message(m.id) ?: return
         if (!live.isPersonal || menu?.isShowing == true) return
@@ -1727,9 +2214,12 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun showReactors(m: Message) {
-        val r = Core.router ?: return
-        val live = r.message(m.id) ?: return
-        ReactionSheets.showReactors(this, r, live) { react(live, "") }?.let { trackSheet(it) }
+        val r = router() ?: return
+        val live = find(r, m.id) ?: return
+        // Mine can be taken back only where a reaction can be sent: on a live message of the radio's group.
+        val canRemove = !readOnly && r.message(live.id) != null
+        ReactionSheets.showReactors(this, r, live, stillShown = { router() === r && find(r, live.id) != null },
+            onRemoveMine = if (canRemove) ({ react(live, "") }) else null)?.let { trackSheet(it) }
     }
 
     private fun copy(m: Message) {
@@ -1741,8 +2231,8 @@ class ChatActivity : AppCompatActivity() {
 
     /** Plain-English answer to "did it get there?", in a sheet that follows the mesh while open. */
     private fun showDetails(m: Message) {
-        val r = Core.router ?: return
-        if (r.message(m.id) == null || isFinishing) return
+        val r = router() ?: return
+        if (find(r, m.id) == null || isFinishing) return
         val sheet = BottomSheetDialog(this)
         val sb = SheetDetailsBinding.inflate(layoutInflater)
         sheet.setContentView(sb.root)
@@ -1751,10 +2241,10 @@ class ChatActivity : AppCompatActivity() {
             java.text.SimpleDateFormat("HH:mm", Locale.getDefault()).format(java.util.Date(m.ts)))
         sb.detailsRetry.setOnClickListener { sheet.dismiss(); sendAgain(m) }
         fun render() {
-            val live = if (Core.router === r) r.message(m.id) else null
+            val live = if (router() === r) find(r, m.id) else null
             if (live == null) { sheet.dismiss(); return }
-            sb.detailsBody.text = Ui.statusDetail(this, r, live)
-            sb.detailsRetry.isVisible = Ui.gaveUp(r, live)
+            sb.detailsBody.text = Ui.statusDetail(this, r, live, leftAt = leftAt())
+            sb.detailsRetry.isVisible = !readOnly && Ui.gaveUp(r, live)   // nothing is sent again from a left group
         }
         val obs = Observer<Int> { if (sheet.isShowing) render() }
         Core.version.observe(this, obs)
@@ -1781,6 +2271,12 @@ class ChatActivity : AppCompatActivity() {
         private const val BIG_FILE = 300_000
         private const val MAX_PLACE_INPUT = 400
         private const val MAX_BACK = 8
+        /** This close to the first loaded row (in rows), the page above is read. */
+        private const val EARLIER_NEAR_TOP = 6
+        /** This many of the oldest live messages count as "next to the earlier ones": a batch and a half. */
+        private const val EARLIER_NEAR_LIVE = Router.SPILL_BATCH * 3 / 2
+        /** How long a re-created screen holds its list back for the earlier messages it had. */
+        private const val EARLIER_WAIT_MS = 1_500L
         /** Capture the unread mark on the next resume. */
         private const val UNREAD_CAPTURE = -1L
         /** No divider until the person leaves the chat (they sent something, or cleared it). */
@@ -1789,6 +2285,13 @@ class ChatActivity : AppCompatActivity() {
         /** One sweep of old camera shots per process. */
         private var swept = false
 
+        /**
+         * Chats whose history was read to the end without finding a single message of theirs,
+         * and the history stamp that was true of: "group|chat" -> stamp. Opening a short private
+         * chat must not read a long group history through every time.
+         */
+        private val noEarlier = HashMap<String, Int>()
+
         private const val M_INFO = 1
         private const val M_MUTE = 2
         private const val M_CLEAR = 3
@@ -1796,6 +2299,8 @@ class ChatActivity : AppCompatActivity() {
         private const val M_INTERNET = 5
         private const val M_CODE = 6
         private const val M_SETTINGS = 7
+        private const val M_REJOIN = 8
+        private const val M_DELETE_GROUP = 9
 
         private const val S_CHAT = "chat"
         private const val S_FP = "chatFp"
@@ -1810,6 +2315,7 @@ class ChatActivity : AppCompatActivity() {
         private const val S_CHOSEN_NAMES = "chosenNames"
         private const val S_CHOSEN_IDS = "chosenIds"
         private const val S_PROMPT = "prompt"
+        private const val S_EARLIER = "earlier"
 
         private const val P_KIND = "k"
         private const val P_TARGET = "target"

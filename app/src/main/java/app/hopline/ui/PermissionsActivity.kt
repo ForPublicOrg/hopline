@@ -50,7 +50,15 @@ class PermissionsActivity : AppCompatActivity() {
         b.playBtn.setOnClickListener { checkPlayServices(offer = true); refresh() }
         b.next.setOnClickListener {
             Core.store.permissionsDone = true
-            startActivity(Intent(this, LaunchActivity::class.java)); finish()
+            // Opened on top of a screen that was about to put a group on the radio (Asks.radioAllowed):
+            // back to that screen, where the tap is made again. Nothing was changed meanwhile, so
+            // the Back button leads there just the same, with the permission still not given.
+            // A rejoin the person had already confirmed when this screen had to ask is finished
+            // here; if it can't be right now, they are back on their chat, as with any other return.
+            val rejoin = intent.getStringExtra(EXTRA_REJOIN)
+            if (rejoin != null && Asks.rejoinAfterPermissions(this, rejoin)) return@setOnClickListener
+            if (!intent.getBooleanExtra(EXTRA_RETURN, false)) startActivity(Intent(this, LaunchActivity::class.java))
+            finish()
         }
     }
 
@@ -160,6 +168,10 @@ class PermissionsActivity : AppCompatActivity() {
     } catch (e: Exception) { true }
 
     companion object {
+        /** Opened over another screen rather than as the front door: "Continue" goes back to it, not to the launch screen. */
+        const val EXTRA_RETURN = "return"
+        /** With [EXTRA_RETURN]: the code of a left group whose confirmed rejoin is waiting on this screen. */
+        const val EXTRA_REJOIN = "rejoin"
         private const val K_ASKED = "asked"
         private const val K_PLAY = "playPrompted"
         private const val REQ_PLAY = 9001

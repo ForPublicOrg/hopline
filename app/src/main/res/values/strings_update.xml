@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Hopline updating itself from its GitHub releases (2.3). Updating is always the person's
+         choice: one banner per version that can be closed for good, one notification, and the
+         About card in Settings. Nothing here may sound like a demand. -->
+
+    <!-- Home banner, and the same states in Settings → About -->
+    <string name="update_available">Hopline %1$s is out</string>
+    <string name="update_available_body">A newer version is ready to download (%1$s).</string>
+    <string name="update_download">Download</string>
+    <string name="update_downloading">Getting Hopline %1$s…</string>
+    <string name="update_progress">%1$s of %2$s</string>
+    <!-- What TalkBack says as a download moves on: only at each quarter, never every tick -->
+    <string name="update_progress_spoken">%1$d%%</string>
+    <string name="update_ready">Hopline %1$s is ready</string>
+    <string name="update_ready_body">Tap Install — your chats stay as they are.</string>
+    <string name="update_install">Install</string>
+    <string name="update_installing_title">Updating to Hopline %1$s</string>
+    <string name="update_installing">Installing…</string>
+    <string name="update_failed">Couldn\'t update to Hopline %1$s</string>
+    <string name="update_open_page">Open download page</string>
+    <string name="update_try_again">Try again</string>
+    <string name="update_dismiss">Not now</string>
+    <string name="update_no_browser">No app on this phone can open the download page.</string>
+
+    <!-- Why an update didn't happen, in plain words -->
+    <string name="update_fail_network">The download didn\'t finish — the connection dropped or was too slow.</string>
+    <string name="update_fail_space">There isn\'t enough free space on this phone.</string>
+    <string name="update_fail_fetch">GitHub didn\'t hand over the download.</string>
+    <string name="update_fail_mismatch">The download didn\'t match what was published, so Hopline threw it away.</string>
+    <!-- The one failure with no "Open download page" button: the page is offering that very file -->
+    <string name="update_fail_signer">The download isn\'t signed with the same key as the Hopline on this phone, so Hopline refused it. Don\'t uninstall Hopline to install it by hand — your chats would go with it. Wait for a corrected version instead.</string>
+    <string name="update_fail_unusable">The download isn\'t something this phone can install over the Hopline it has.</string>
+    <string name="update_fail_refused">Android wouldn\'t install it on this phone.</string>
+    <string name="update_fail_install">The install didn\'t go through.</string>
+
+    <!-- Settings → About -->
+    <string name="update_installed">Hopline %1$s</string>
+    <string name="update_state_current">Up to date · checked %1$s</string>
+    <!-- GitHub answered, but with a release Hopline couldn't read: it may or may not be newer, so "Up to date" is not said -->
+    <string name="update_state_unsure">Checked %1$s · no newer version Hopline can install</string>
+    <string name="update_state_checking">Checking…</string>
+    <string name="update_state_never">Hopline checks for a new version when your phone has internet.</string>
+    <string name="update_state_off">Hopline isn\'t checking for new versions by itself.</string>
+    <string name="update_state_available">Hopline %1$s is available</string>
+    <string name="update_state_debug">Test build — updates are off.</string>
+    <string name="update_check_now">Check for updates</string>
+    <string name="update_no_internet">No internet right now — Hopline will check when you have signal.</string>
+    <!-- The same, with "Update Hopline automatically" off: then it will not check by itself, and must not say so -->
+    <string name="update_no_internet_manual">No internet right now — try again when you have signal.</string>
+    <string name="update_check_failed">Couldn\'t reach GitHub just now. Try again in a while.</string>
+    <string name="update_auto">Update Hopline automatically</string>
+    <string name="update_auto_sub">Checks GitHub for a new version when you have internet, and downloads it on WiFi. You tap once to install.</string>
+    <!-- "Up to date · checked …" -->
+    <string name="update_checked_now">just now</string>
+    <plurals name="update_checked_minutes">
+        <item quantity="one">%d minute ago</item>
+        <item quantity="other">%d minutes ago</item>
+    </plurals>
+    <plurals name="update_checked_hours">
+        <item quantity="one">%d hour ago</item>
+        <item quantity="other">%d hours ago</item>
+    </plurals>
+    <plurals name="update_checked_days">
+        <item quantity="one">%d day ago</item>
+        <item quantity="other">%d days ago</item>
+    </plurals>
+
+    <!-- The one notification a version gets -->
+    <string name="channel_updates">App updates</string>
+    <string name="update_notif_title">Hopline %1$s is ready to install</string>
+    <string name="update_notif_text">Tap to update.</string>
+</resources>

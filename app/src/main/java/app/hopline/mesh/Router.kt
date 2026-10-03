@@ -125,6 +125,18 @@ class Router(
     private val fillPayloads = HashMap<Long, String>()
     /** Messages deleted on this phone ("Delete for me"): id -> when. Never shown again. */
     private val hidden = LinkedHashMap<String, Long>()
+    /**
+     * Messages that have just left the live window (see [spill]), oldest first, waiting for the app
+     * to file them in the group's history. Until [takeOverflow] hands them over they are still part
+     * of every [snapshot], so a router nobody drains loses nothing.
+     */
+    private val overflow = ArrayList<Message>()
+    private val overflowIds = HashSet<String>()
+    /**
+     * Messages handed to the history ([takeOverflow]): id -> when. Like [hidden], an id in here is
+     * never taken in again — a friend still carrying the message must not make it pop up as new.
+     */
+    private val spilled = LinkedHashMap<String, Long>()
 
     var hasInternet = false
     var shareInternet = true
@@ -382,10 +394,15 @@ class Router(
     private fun receive(from: Link?, env: Envelope, fill: Boolean) {
         try {
             val id = env.id
-            if (seen.containsKey(id) || liveSeen.containsKey(id)) return
+            if (seen.containsKey(id) || liveSeen.containsKey(id)) {
+                // Nothing new — but if it is one this phone knows and has stopped carrying, the
+                // phone handing it over will go on doing so until it is carried here again.
+                if (!carry.containsKey(id) && (env.origin == me.id || id in hidden || id in spilled)) carryAgain(env)
+                return
+            }
             // Ids become map keys, inventory entries and (for chunks) file names on disk.
             if (!ENVELOPE_ID.matches(id) || id.contains("..")) { listener.onLog("bad envelope id dropped"); return }
-            if (env.origin == me.id) { markSeen(env); return }
+            if (env.origin == me.id) { carryAgain(env); return }
             // The live flood has a hop ceiling; backlog and file pieces are deduped by id instead.
             if (!fill && env.kind != Envelope.CHUNK && env.hops >= Envelope.MAX_HOPS) return
             if (!env.verify(group.key)) { listener.onLog("forged/garbled envelope dropped"); return }
@@ -409,6 +426,54 @@ class Router(
 
     private fun markSeen(env: Envelope) {
         if (env.kind == Envelope.PRESENCE || env.kind == Envelope.ERRAND_ACK) liveSeen[env.id] = true else seen[env.id] = true
+    }
+
+    /**
+     * An envelope this phone has no use for — one of its own, or the envelope of a message it
+     * deleted or filed away — handed over by a friend because this phone's inventory doesn't list
+     * it. That is the state leaving a group and joining it again leaves behind: the backlog went
+     * with the leaving, while the group still carries my receipts, my reactions, my requests, the
+     * pieces of my photos. Ignoring such an envelope (as this phone always did with its own) makes
+     * the friend offer it again at every sync, a minute apart, until its time runs out — every
+     * receipt of a day, every piece of a photo, over and over.
+     *
+     * So it is carried again, exactly as it would have been had this phone never left — and that
+     * is all. It is not read, so no message comes back that was deleted here, none is shown twice,
+     * nothing is notified, answered or run; and it is not passed on, because whoever handed it
+     * over got it from the flood the first time round.
+     *
+     * Only inside its time, by its own stamp: a receipt for a day, anything else for 48 h. Never
+     * longer than it would have lived here anyway — and a stamp from the future says nothing about
+     * age, so that one is left alone. File pieces go to the piece store, which keeps its own time.
+     *
+     * A message of mine still marked unsent whose envelope a friend hands back did get out — that
+     * friend has it. It reads "sent" from here on, and the tick has nothing to send again.
+     */
+    private fun carryAgain(env: Envelope) {
+        val id = env.id
+        val mine = env.origin == me.id
+        if (env.kind == Envelope.CHUNK) {
+            if (!mine || chunks.has(id)) return
+            if (!env.verify(group.key)) { listener.onLog("forged/garbled envelope dropped"); return }
+            if (!validChunk(env)) { listener.onLog("malformed chunk dropped"); return }
+            seen[id] = true
+            if (!chunks.put(env)) seen.remove(id)
+            return
+        }
+        // Presence and "I'm on it" are never carried: an echo of mine is only remembered, as before.
+        if (env.kind !in Envelope.CARRIED) { if (mine) markSeen(env); return }
+        if (carry.containsKey(id) || !ENVELOPE_ID.matches(id) || id.contains("..")) return
+        val now = clock()
+        val limit = if (env.kind == Envelope.RECEIPT) RECEIPT_MS else CARRY_MS
+        if (env.ts > now + FUTURE_SLACK_MS || now - env.ts > limit) return
+        if (!env.verify(group.key)) { listener.onLog("forged/garbled envelope dropped"); return }
+        markSeen(env)
+        carry[id] = env
+        carryBorn[id] = minOf(env.ts, now)
+        touched()
+        if (!mine) return
+        val m = messageById[id] ?: return
+        if (m.from == me.id && m.status == Message.QUEUED) { m.status = Message.SENT; listener.onChanged() }
     }
 
     /**
@@ -633,7 +698,8 @@ class Router(
         val emoji = p.optString("e", "").take(Message.MAX_EMOJI)
         val m = messageById[target]
         if (m == null) {
-            if (target in hidden) return
+            // Deleted here, or filed in the history: that message is never coming (back) to wait for.
+            if (target in hidden || target in spilled || target in overflowIds) return
             // The message may still be hopping toward us — hold the reaction for it, bounded.
             val list = pendingReactions.getOrPut(target) { ArrayList() }
             if (list.size < 40) list.add(Triple(env.origin, emoji, env.ts))
@@ -851,6 +917,26 @@ class Router(
         else messages.filter { !it.isGroup && ((it.from == peer && it.to == me.id) || (it.from == me.id && it.to == peer)) }
 
     fun isHidden(id: String): Boolean = id in hidden
+
+    /**
+     * A line this phone writes into its own copy of the group chat: [Message.LEFT] or
+     * [Message.REJOINED]. It has no envelope, so nothing can put it on the air — the inventory, the
+     * gap-fill and the retry of unsent messages all work from carried envelopes — and it is neither
+     * counted as unread nor notified. Null for any other kind, or when the very same line is
+     * already there.
+     *
+     * [notBefore]: the line is stamped no earlier than this. A line that answers another ("You
+     * rejoined", under "You left") has to sort after it whatever this phone's clock says now — a
+     * clock that ran fast and was put right in between would otherwise file the answer above the
+     * line it answers.
+     */
+    fun addLocalNotice(kind: String, notBefore: Long = 0): Message? {
+        if (kind != Message.LEFT && kind != Message.REJOINED) return null
+        val now = maxOf(clock(), notBefore)
+        val m = addMessage(Message("local.$kind.$now", kind, me.id, me.name, null, "", now)) ?: return null
+        listener.onChanged()
+        return m
+    }
 
     // ---------------------------------------------------------------- shared internet: helper side
 
@@ -1122,8 +1208,14 @@ class Router(
             touched()
         } else if (e == null) markDone(eid)
         if (env.to != me.id || e == null || e.from != me.id) return
-        if (e.status == Errand.DONE || e.status == Errand.CANCELLED) { sendReceipt(env.id, env.origin); return }   // two helpers raced: first answer stands
-        applyAnswer(e, er.optBoolean("ok", true), Names.clean(er.optString("title"), 200), z,
+        val ok = er.optBoolean("ok", true)
+        // Two helpers raced: the first answer stands. And a "couldn't" never closes a request that
+        // is closed already. After leaving a group and joining it again, a friend hands the old
+        // answers back (leaving let their envelopes go); the failure this phone was told about
+        // then must not be announced, and dated, a second time. A real answer still gets through
+        // to a request that had failed or run out.
+        if (e.status == Errand.DONE || e.status == Errand.CANCELLED || (!e.isOpen && !ok)) { sendReceipt(env.id, env.origin); return }
+        applyAnswer(e, ok, Names.clean(er.optString("title"), 200), z,
             Names.clean(er.optString("by")).ifEmpty { Names.clean(env.originName) }, er.optInt("cost", 0).coerceAtLeast(0),
             er.optString("why", "").take(40), er.optInt("part", 1), er.optInt("parts", 1),
             summary = env.payload.optString("text").take(500))
@@ -1407,7 +1499,12 @@ class Router(
     fun resumeErrands() {
         for (eid in running.toList()) {
             val e = errands[eid]
-            if (e == null || !e.isOpen || eid in doneErrands) { running.remove(eid); continue }
+            // Gone, answered, or past its deadline while this phone was off (or out of the group):
+            // picking it up now would fetch a page nobody is waiting for, or ask its person to send
+            // a text that is days late.
+            if (e == null || !e.isOpen || eid in doneErrands || clock() >= e.exp) {
+                running.remove(eid); sendOpened.remove(eid); touched(); continue
+            }
             e.leaseUntil = clock() + leaseMs(e)
             lastBeat[eid] = clock(); runningSince[eid] = clock()
             if (announced(e)) sendAck(e, "claim")
@@ -1496,7 +1593,7 @@ class Router(
                 if (carry.size <= MAX_CARRY) break
             }
         }
-        while (messages.size > MAX_MESSAGES) messageById.remove(messages.removeAt(0).id)
+        spill(now)
         // People not heard from in a month are history; names live on in their messages.
         if (people.size > 50) {
             val pit = people.entries.iterator()
@@ -1507,6 +1604,95 @@ class Router(
         }
         val hit = hidden.entries.iterator()
         while (hit.hasNext()) if (now - hit.next().value > CARRY_MS + 86_400_000L) hit.remove()
+        // Same rule for messages filed in the history: once no phone can still be carrying them,
+        // nobody can hand them back, and the id need not be remembered.
+        val sit = spilled.entries.iterator()
+        while (sit.hasNext()) if (now - sit.next().value > CARRY_MS + 86_400_000L) sit.remove()
+    }
+
+    /**
+     * Keep the live window a size the phone can redraw and save in one go. Nothing is thrown away:
+     * once the window is a whole batch over, its oldest messages move to [overflow], and the app
+     * files them in the group's history, where a chat finds them again when scrolled up.
+     *
+     * What stays, however old:
+     *  - the newest [KEEP_PER_CHAT] messages of every chat, so a busy group chat can never push a
+     *    quiet private chat off the chat list;
+     *  - a message of mine that is still trying to leave this phone — the tick retries it from here;
+     *  - a file whose pieces may still be arriving — it is put together through its live message.
+     * If that leaves too few to move (thousands of tiny chats), the oldest go regardless of their
+     * chat's size; the other two rules always hold.
+     */
+    private fun spill(now: Long) {
+        val n = messages.size
+        if (n < MAX_MESSAGES + SPILL_BATCH) return
+        var excess = n - MAX_MESSAGES
+        val live = HashMap<String, Int>()
+        for (m in messages) { val k = m.chatKey(me.id); live[k] = (live[k] ?: 0) + 1 }
+        fun pinned(m: Message): Boolean =
+            (m.from == me.id && m.status == Message.QUEUED && carry.containsKey(m.id)) ||
+            (m.att != null && m.att.fid !in fileReadyFired && now - m.arrivedAt < CARRY_MS)
+        val go = BooleanArray(n)
+        var i = 0
+        while (i < n && excess > 0) {
+            val m = messages[i]; val k = m.chatKey(me.id)
+            val inChat = live[k] ?: 0
+            if (inChat > KEEP_PER_CHAT && !pinned(m)) { go[i] = true; live[k] = inChat - 1; excess-- }
+            i++
+        }
+        // Thousands of tiny chats: no chat has anything to spare, so the oldest go whatever their chat.
+        i = 0
+        while (i < n && excess > 0) {
+            if (!go[i] && !pinned(messages[i])) { go[i] = true; excess-- }
+            i++
+        }
+        val kept = ArrayList<Message>(n)
+        var inOrder = true
+        for (j in 0 until n) {
+            val m = messages[j]
+            if (!go[j]) { kept.add(m); continue }
+            if (overflow.isNotEmpty() && overflow[overflow.size - 1].sortKey > m.sortKey) inOrder = false
+            overflow.add(m); overflowIds.add(m.id)
+            messageById.remove(m.id)
+            // A file is found (and marked ready) through its live message; with that gone, neither holds.
+            m.att?.let { if (filesByFid[it.fid] === m) { filesByFid.remove(it.fid); fileReadyFired.remove(it.fid) } }
+        }
+        if (kept.size == n) return
+        messages.clear(); messages.addAll(kept)
+        // A late arrival can be older than what an earlier, undrained batch already holds.
+        if (!inOrder) overflow.sortBy { it.sortKey }
+    }
+
+    /**
+     * Hand over the messages that left the live window, oldest first, for the app to file in the
+     * group's history — and from here on refuse their ids, exactly like deleted ones, so a friend
+     * still carrying one can't make it show up again as new.
+     */
+    fun takeOverflow(): List<Message> {
+        if (overflow.isEmpty()) return emptyList()
+        val out = ArrayList(overflow)
+        val now = clock()
+        for (m in out) spilled[m.id] = now
+        overflow.clear(); overflowIds.clear()
+        touched()
+        return out
+    }
+
+    /**
+     * The history could not take [back] after all (its write failed): they return to the overflow —
+     * so the next [snapshot] holds them again — and the next [takeOverflow] offers them once more.
+     * Only messages that really were handed over count; anything else is ignored.
+     */
+    fun returnOverflow(back: List<Message>) {
+        var any = false
+        for (m in back) {
+            if (m.id !in spilled || messageById.containsKey(m.id) || !overflowIds.add(m.id)) continue
+            spilled.remove(m.id)
+            overflow.add(m); any = true
+        }
+        if (!any) return
+        overflow.sortBy { it.sortKey }
+        touched()
     }
 
     private fun refreshDirect() {
@@ -1518,6 +1704,8 @@ class Router(
 
     private fun addMessage(m: Message): Message? {
         if (messageById.containsKey(m.id) || m.id in hidden) return null
+        // Already filed in the history (or about to be): this phone has it, just not in the live window.
+        if (m.id in spilled || m.id in overflowIds) return null
         messageById[m.id] = m
         // keep chronological order; new ones are almost always at the end
         val key = m.sortKey
@@ -1564,11 +1752,15 @@ class Router(
     fun activePeopleList(): List<Person> { val now = clock(); return people.values.filter { now - it.lastSeen < CARRY_MS } }
     fun authedLinks(): List<Link> = links.values.filter { it.authed }
     fun carrySize(): Int = carry.size
+    /** Is this phone still holding [id]'s envelope to hand on? Once it isn't, an unsent message of
+     *  mine has nothing left to send — it will not go out on its own. */
+    fun carries(id: String): Boolean = carry.containsKey(id)
 
     // ---------------------------------------------------------------- persistence
 
     fun snapshot(): JSONObject = JSONObject().apply {
-        put("messages", JSONArray(messages.map { it.toJson() }))
+        // Messages on their way to the history are saved with the rest until the app has taken them.
+        put("messages", JSONArray((overflow + messages).map { it.toJson() }))
         put("carry", JSONArray(carry.values.map { it.json }))
         put("born", JSONObject().also { b -> for ((id, t) in carryBorn) if (id in carry) b.put(id, t) })
         put("people", JSONArray(people.values.map { it.toJson() }))
@@ -1577,6 +1769,7 @@ class Router(
         put("running", JSONArray(running.toList()))
         put("sendOpened", JSONArray(sendOpened.filter { it in running }))
         put("hidden", JSONObject().also { h -> for ((id, t) in hidden) h.put(id, t) })
+        if (spilled.isNotEmpty()) put("spilled", JSONObject().also { s -> for ((id, t) in spilled) s.put(id, t) })
         put("shareInternet", shareInternet)
         if (group.nameV > 0) put("group", JSONObject().put("n", group.name).put("v", group.nameV))
     }
@@ -1584,7 +1777,9 @@ class Router(
     /** Every record is restored on its own: one bad entry must never cost the rest of the history. */
     fun restore(j: JSONObject) {
         val now = clock()
+        // Deleted and filed-away ids first: the messages below must not bring one of them back.
         j.optJSONObject("hidden")?.let { h -> for (id in h.keys()) hidden[id] = h.optLong(id, now) }
+        j.optJSONObject("spilled")?.let { s -> for (id in s.keys()) spilled[id] = s.optLong(id, now) }
         j.optJSONArray("messages")?.let { a ->
             for (i in 0 until a.length()) try {
                 val m = Message.fromJson(a.getJSONObject(i))
@@ -1597,8 +1792,15 @@ class Router(
             for (i in 0 until a.length()) try {
                 val e = Envelope(a.getJSONObject(i))
                 if (!ENVELOPE_ID.matches(e.id)) continue
-                carry[e.id] = e; seen[e.id] = true
-                carryBorn[e.id] = born?.optLong(e.id, 0)?.takeIf { it > 0 } ?: minOf(e.ts, now)
+                val limit = if (e.kind == Envelope.RECEIPT) RECEIPT_MS else CARRY_MS
+                val bornAt = born?.optLong(e.id, 0)?.takeIf { it > 0 } ?: minOf(e.ts, now)
+                seen[e.id] = true
+                // Its time ran out while this phone was off — or out of the group, for weeks. It must
+                // never reach the inventory: a link can come up before the first tick expires it,
+                // and a phone that took it would carry and show the ancient message as new.
+                if (now - bornAt > limit) continue
+                carry[e.id] = e
+                carryBorn[e.id] = bornAt
             } catch (ex: Exception) { listener.onLog("bad saved envelope skipped") }
         }
         for (m in messages) {
@@ -1606,6 +1808,7 @@ class Router(
             m.att?.let { filesByFid[it.fid] = m }
         }
         for (id in hidden.keys) seen[id] = true
+        for (id in spilled.keys) seen[id] = true
         // A reaction whose message hadn't arrived before the restart is still in carry — re-point
         // it so it lands the moment the message hops in (applyReaction dedupes ones already shown).
         for (e in carry.values) if (e.kind == Envelope.REACT) try { applyReactionEnvelope(e, live = false) } catch (ex: Exception) { }
@@ -1679,7 +1882,15 @@ class Router(
         /** Chunk envelopes in flight per link during a backlog fill (~19 KB each). */
         const val FILL_WINDOW = 4
         const val MAX_CARRY = 6000
+        /**
+         * The live window: how many messages a group keeps in memory and in its state file. Not a
+         * cap on history — older messages move to the group's history segments, never away.
+         */
         const val MAX_MESSAGES = 2000
+        /** How far over the window the list may grow before its oldest move out, a batch at a time. */
+        const val SPILL_BATCH = 200
+        /** Every chat keeps at least this many of its newest messages in the live window. */
+        const val KEEP_PER_CHAT = 30
         const val MAX_PEOPLE = 2000
         const val FORGET_PEOPLE_MS = 30 * 86_400_000L
         const val MAX_INV_PARTS = 64

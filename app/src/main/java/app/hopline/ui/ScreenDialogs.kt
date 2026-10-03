@@ -24,9 +24,11 @@ import androidx.fragment.app.FragmentActivity
 import app.hopline.R
 import app.hopline.core.Names
 import app.hopline.core.Words
+import app.hopline.data.GroupRules
 import app.hopline.data.SavedGroup
 import app.hopline.databinding.DialogScreenPromptBinding
 import app.hopline.service.Core
+import app.hopline.service.Permissions
 import java.util.Locale
 
 /**
@@ -208,21 +210,23 @@ class ScreenDialog : DialogFragment() {
 }
 
 /**
- * The prompts several screens share — my name, the group's name, mute, clear, leave — so each
- * one behaves the same wherever it is opened from. Every answer carries the group it was asked
- * about: if the radio moved to another group meanwhile, the answer is dropped, never misapplied.
+ * The prompts several screens share — my name, the group's name, mute, clear, leave, rejoin,
+ * delete — so each one behaves the same wherever it is opened from. Every answer carries the
+ * group it was asked about, and is checked against what that group is NOW: if the radio moved to
+ * another group meanwhile, or the group was left, rejoined or deleted while the question stood,
+ * the answer is dropped, never misapplied.
  */
 object Asks {
     private const val MY_NAME = "ask.myName"
     private const val GROUP_NAME = "ask.groupName"
     private const val LEAVE = "ask.leave"
+    private const val REJOIN = "ask.rejoin"
+    private const val DELETE = "ask.deleteGroup"
     private const val MUTE = "ask.mute"
     private const val CLEAR = "ask.clear"
-    private const val REMOVE = "ask.removeGroup"
     private const val FP = "fp"
     private const val CHAT = "chat"
     private const val CODE = "code"
-    private const val NAME = "name"
 
     private const val HOUR = 3_600_000L
 
@@ -231,9 +235,10 @@ object Asks {
         ScreenDialog.listen(a, MY_NAME) { b -> savedMyName(a, b.getString(ScreenDialog.VALUE).orEmpty()) }
         ScreenDialog.listen(a, GROUP_NAME) { b -> savedGroupName(a, b) }
         ScreenDialog.listen(a, LEAVE) { b -> leaveNow(a, b.getString(CODE)) }
+        ScreenDialog.listen(a, REJOIN) { b -> rejoinNow(a, b.getString(CODE)) }
+        ScreenDialog.listen(a, DELETE) { b -> deleteNow(a, b.getString(CODE)) }
         ScreenDialog.listen(a, MUTE) { b -> muteNow(b) }
         ScreenDialog.listen(a, CLEAR) { b -> clearNow(a, b) }
-        ScreenDialog.listen(a, REMOVE) { b -> removeNow(a, b) }
     }
 
     /**
@@ -288,31 +293,130 @@ object Asks {
         if (!Core.renameGroup(name)) toast(a, a.getString(R.string.group_rename_failed))
     }
 
-    // ------------------------------------------------------------------ leave / remove
+    // ------------------------------------------------------------------ leave, rejoin, delete a group
 
-    fun leave(a: AppCompatActivity) {
-        val g = Core.store.activeGroup() ?: return
-        ScreenDialog.confirm(a, LEAVE, a.getString(R.string.leave_group), a.getString(R.string.leave_confirm, groupLabel(g)),
-            a.getString(R.string.leave), danger = true, data = bundleOf(CODE to g.code))
+    /**
+     * A fresh Home with nothing of the old state underneath — the chat or info screen of a group
+     * that was just left, rejoined or deleted must not be there to come back to. With no group
+     * saved any more, the launch screen instead: it leads to "Start or join".
+     */
+    private fun goHome(a: AppCompatActivity) {
+        val next = if (Core.store.allGroups().isEmpty()) LaunchActivity::class.java else HomeActivity::class.java
+        a.startActivity(Intent(a, next).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        // An invite link opens the join screen in the task it was tapped in, which the flags don't reach.
+        a.finish()
+    }
+
+    /**
+     * Leave a group this phone is in: the one on the radio, or a paused one (without waking it
+     * first). Leaving keeps the chat, and the question says so; when the radio will move on to
+     * another group, it says which.
+     */
+    fun leave(a: AppCompatActivity, g: SavedGroup) {
+        if (g.left) return
+        val store = Core.store
+        val next = if (g.code != store.activeCode) null
+            else GroupRules.nextActive(store.allGroups(), excluding = g.code)?.let { code -> store.groups().firstOrNull { it.code == code } }
+        val body = listOfNotNull(a.getString(R.string.leave_confirm), next?.let { a.getString(R.string.leave_confirm_next, groupLabel(it)) })
+            .joinToString("\n\n")
+        ScreenDialog.confirm(a, LEAVE, a.getString(R.string.leave_title, groupLabel(g)), body, a.getString(R.string.leave),
+            danger = true, data = bundleOf(CODE to g.code))
     }
 
     private fun leaveNow(a: AppCompatActivity, code: String?) {
-        if (code == null || Core.store.activeCode != code) return
-        Core.leaveActiveGroup()
-        val next = if (Core.store.group() == null) GroupActivity::class.java else HomeActivity::class.java
-        a.startActivity(Intent(a, next).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        // Still a group this phone is in? One left or deleted while the question stood needs nothing.
+        val g = Core.store.groups().firstOrNull { it.code == code } ?: return
+        val wasActive = g.code == Core.store.activeCode
+        // Refused: the chat could not be saved first, so nothing was let go. Never "its chat is
+        // still on this phone" for a leave that would have cost the latest messages.
+        if (!Core.leaveGroup(g.code)) { toast(a, a.getString(R.string.leave_not_saved), long = true); return }
+        if (!Core.store.isLeft(g.code)) return
+        toast(a, a.getString(R.string.left_toast, groupLabel(g)), long = true)
+        // Every screen under this one belonged to the group on the radio. A paused group has none: Home just redraws.
+        if (wasActive) goHome(a)
     }
 
-    /** A paused group: same words as leaving (it is leaving), without waking it first. */
-    fun removeGroup(a: AppCompatActivity, g: SavedGroup) = ScreenDialog.confirm(a, REMOVE, a.getString(R.string.leave_group),
-        a.getString(R.string.leave_confirm, groupLabel(g)), a.getString(R.string.leave), danger = true,
-        data = bundleOf(CODE to g.code, NAME to groupLabel(g)))
+    /**
+     * Join a group this phone left again. One question, wherever it is asked — Home, the group's
+     * info, its chat, or its code typed, scanned or tapped as a link — and never a silent way back
+     * in: the radio goes to that group, and the group it is on now (named, if there is one) is paused.
+     */
+    fun rejoin(a: AppCompatActivity, g: SavedGroup) {
+        if (!g.left) return
+        val paused = Core.store.activeGroup()
+        val body = listOfNotNull(a.getString(R.string.rejoin_body), paused?.let { a.getString(R.string.rejoin_body_switch, groupLabel(it)) })
+            .joinToString("\n\n")
+        ScreenDialog.confirm(a, REJOIN, a.getString(R.string.rejoin_title, groupLabel(g)), body, a.getString(R.string.rejoin),
+            data = bundleOf(CODE to g.code))
+    }
 
-    private fun removeNow(a: AppCompatActivity, b: Bundle) {
-        val code = b.getString(CODE) ?: return
-        if (code == Core.store.activeCode || Core.store.groups().none { it.code == code }) return
-        Core.removeSavedGroup(code)
-        toast(a, a.getString(R.string.group_removed, b.getString(NAME).orEmpty()))
+    private fun rejoinNow(a: AppCompatActivity, code: String?) {
+        // Only a group that is still left: one deleted meanwhile is gone, one already rejoined is in.
+        val g = Core.store.leftGroups().firstOrNull { it.code == code } ?: return
+        if (!radioAllowed(a, rejoin = g.code)) return
+        finishRejoin(a, g)
+    }
+
+    private fun finishRejoin(a: AppCompatActivity, g: SavedGroup): Boolean {
+        // False: the tidy-up after leaving is still being written, or the rejoin couldn't be saved.
+        // Nothing has changed, and in a moment it works.
+        if (!Core.rejoinGroup(g.code)) { toast(a, a.getString(R.string.rejoin_busy)); return false }
+        toast(a, a.getString(R.string.rejoined_toast, groupLabel(g)))
+        goHome(a)
+        return true
+    }
+
+    /**
+     * The permissions screen, opened by [radioAllowed] in the middle of a rejoin the person had
+     * already said yes to, finishes that rejoin once the permission is there — they are not asked
+     * the same question twice. False (nothing changed) when the group is no longer a left one, the
+     * permission still isn't given, or the rejoin can't be saved right now.
+     */
+    fun rejoinAfterPermissions(a: AppCompatActivity, code: String): Boolean {
+        val g = Core.store.leftGroups().firstOrNull { it.code == code } ?: return false
+        if (!Permissions.allGranted(a)) return false
+        return finishRejoin(a, g)
+    }
+
+    /**
+     * Asked before a group is put on the radio — rejoined, started or joined — and before anything
+     * is saved for it: may the radio run at all? If not, the permissions screen opens on top of
+     * [a] and this is false; nothing has changed, and Back leads straight back to [a].
+     *
+     * It matters on a phone that only has groups it left: that phone gets to Home, and to its old
+     * chats, without the permission (Android takes it back from an app left unopened). Joining
+     * first and asking afterwards would put every one of those chats behind the permissions
+     * screen, with no way back but to grant — and no way to undo the join.
+     */
+    fun radioAllowed(a: AppCompatActivity, rejoin: String? = null): Boolean {
+        if (ScreenRules.beforeRadio(Permissions.allGranted(a)) == ScreenRules.Radio.GO) return true
+        toast(a, a.getString(if (rejoin == null) R.string.perm_first else R.string.perm_first_rejoin), long = true)
+        // [rejoin]: the left group whose rejoin was already confirmed — that screen finishes it.
+        a.startActivity(Intent(a, PermissionsActivity::class.java).putExtra(PermissionsActivity.EXTRA_RETURN, true)
+            .apply { if (rejoin != null) putExtra(PermissionsActivity.EXTRA_REJOIN, rejoin) })
+        return false
+    }
+
+    /**
+     * Delete a group this phone left, and everything of it on this phone. Only ever offered for a
+     * left group — one this phone is in must be left first — so the tap that destroys a chat is
+     * never the tap that takes the phone off a radio.
+     */
+    fun deleteGroup(a: AppCompatActivity, g: SavedGroup) {
+        if (!g.left) return
+        ScreenDialog.confirm(a, DELETE, a.getString(R.string.delete_group_title, groupLabel(g)), a.getString(R.string.delete_group_body),
+            a.getString(R.string.menu_delete_group), danger = true, data = bundleOf(CODE to g.code))
+    }
+
+    private fun deleteNow(a: AppCompatActivity, code: String?) {
+        // Only a group that is still left. One rejoined while the question stood is a group this
+        // phone is in again: its chat is not deleted on an old answer.
+        val g = Core.store.leftGroups().firstOrNull { it.code == code } ?: return
+        Core.deleteLeftGroup(g.code)
+        if (Core.store.hasGroup(g.code)) return
+        toast(a, a.getString(R.string.group_deleted, groupLabel(g)))
+        // Home only lists the group, and redraws without it; a screen that was showing it has nothing left to show.
+        if (ScreenRules.afterDelete(onHome = a is HomeActivity, anySaved = Core.store.allGroups().isNotEmpty()) != ScreenRules.After.STAY) goHome(a)
     }
 
     // ------------------------------------------------------------------ mute

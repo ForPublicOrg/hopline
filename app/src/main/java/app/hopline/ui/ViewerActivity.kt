@@ -35,6 +35,9 @@ class ViewerActivity : AppCompatActivity() {
     private var barsHidden = false
     private var problem = false
     private var caption = ""
+    /** Who sent it, when and with what words, for a photo with no message on the radio to follow. */
+    private class Kept(val who: String, val at: Long, val caption: String, val thumb: String)
+    private var kept: Kept? = null
     private val showSpinner = Runnable { if (!isDestroyed) b.loading.isVisible = true }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -50,6 +53,7 @@ class ViewerActivity : AppCompatActivity() {
         name = intent.getStringExtra(EXTRA_NAME).orEmpty().ifEmpty { file?.name.orEmpty() }
         mime = intent.getStringExtra(EXTRA_MIME)?.takeIf { it.contains('/') } ?: "image/jpeg"
         barsHidden = savedInstanceState?.getBoolean(STATE_BARS_HIDDEN) ?: false
+        kept = readKept()
 
         // The back arrow points the way the reading goes.
         b.back.drawable?.mutate()?.isAutoMirrored = true
@@ -83,7 +87,7 @@ class ViewerActivity : AppCompatActivity() {
         if (f == null || !f.isFile) { showProblem(R.string.viewer_missing, canOpen = false); return }
         // A spinner only if decoding is slow: a flash of one on every open would be noise.
         b.root.postDelayed(showSpinner, 250)
-        val thumb = message()?.att?.thumb?.let { Images.thumb(it) }
+        val thumb = (message()?.att?.thumb ?: kept?.thumb)?.let { Images.thumb(it) }
         Images.load(f, b.image, targetPx = targetPx(), placeholder = thumb) { ok ->
             b.root.removeCallbacks(showSpinner)
             b.loading.isVisible = false
@@ -111,17 +115,22 @@ class ViewerActivity : AppCompatActivity() {
         setBarsHidden(false, animate = false)
     }
 
-    /** Who sent it, when, and its caption — from the message, once the mesh is up. */
+    /**
+     * Who sent it, when, and its caption — from the message, once the mesh is up. A photo of a
+     * group this phone left (or from further up a chat than the mesh keeps in memory) has no live
+     * message: it shows what was read for it when the screen opened.
+     */
     private fun showDetails() {
         val r = Core.router
         val m = message()
-        if (r != null && m != null) {
-            val who = if (m.from == r.me.id) getString(R.string.reply_you) else Ui.nameOf(r, m.from, m.fromName)
+        if ((r != null && m != null) || kept != null) {
+            val who = if (r != null && m != null) { if (m.from == r.me.id) getString(R.string.reply_you) else Ui.nameOf(r, m.from, m.fromName) }
+                      else kept?.who.orEmpty()
             b.title.text = who
-            val at = minOf(m.ts, System.currentTimeMillis())
+            val at = minOf(m?.ts ?: kept?.at ?: 0L, System.currentTimeMillis())
             b.subtitle.text = DateUtils.getRelativeDateTimeString(this, at, DateUtils.DAY_IN_MILLIS, DateUtils.WEEK_IN_MILLIS, 0)
             b.subtitle.isVisible = true
-            caption = m.text.trim()
+            caption = (m?.text ?: kept?.caption).orEmpty().trim()
             b.image.contentDescription = if (caption.isEmpty()) getString(R.string.viewer_photo_from, who)
                                          else getString(R.string.viewer_photo_from_caption, who, caption)
         } else {
@@ -142,6 +151,26 @@ class ViewerActivity : AppCompatActivity() {
         val fid = f.name.substringBefore('-')
         if (!Attachment.validFid(fid)) return null
         return r.fileMessage(fid)?.takeIf { it.att?.fid == fid }
+    }
+
+    /**
+     * The same for a photo the radio's router has no message for. One from a group this phone left
+     * is looked up in that group's kept chat — once, here: nothing in a kept chat changes, and Core
+     * may let the chat go while this screen is open. Failing that (the message has moved into the
+     * group's history), the chat that opened the photo said who sent it, when and with what words.
+     */
+    private fun readKept(): Kept? {
+        val f = file ?: return null
+        val fp = f.parentFile?.parentFile?.name ?: return null
+        val fid = f.name.substringBefore('-')
+        if (Attachment.validFid(fid)) Core.archive(fp)?.let { a ->
+            a.fileMessage(fid)?.takeIf { it.att?.fid == fid }?.let { m ->
+                val who = if (m.from == a.me.id) getString(R.string.reply_you) else Ui.nameOf(a, m.from, m.fromName)
+                return Kept(who, m.ts, m.text, m.att?.thumb.orEmpty())
+            }
+        }
+        val who = intent.getStringExtra(EXTRA_FROM)?.takeIf { it.isNotEmpty() } ?: return null
+        return Kept(who.take(MAX_EXTRA), intent.getLongExtra(EXTRA_AT, 0L), intent.getStringExtra(EXTRA_CAPTION).orEmpty().take(MAX_EXTRA), "")
     }
 
     private fun save() {
@@ -204,6 +233,12 @@ class ViewerActivity : AppCompatActivity() {
         const val EXTRA_PATH = "path"
         const val EXTRA_NAME = "name"
         const val EXTRA_MIME = "mime"
+        /** Optional: the sender's name as shown, when it was sent, and the caption — used only
+         *  when the photo's message is not one the radio's router (or a left group's chat) holds. */
+        const val EXTRA_FROM = "from"
+        const val EXTRA_AT = "at"
+        const val EXTRA_CAPTION = "caption"
+        private const val MAX_EXTRA = 2_000
         private const val STATE_BARS_HIDDEN = "barsHidden"
         private const val FADE_MS = 160L
     }

@@ -41,7 +41,11 @@
     <string name="menu_delete_chat">Delete chat</string>
     <string name="menu_group_info">Group info</string>
     <string name="menu_switch_group">Switch to this group</string>
-    <string name="menu_remove_group">Remove from this phone</string>
+    <string name="menu_leave_group">Leave group</string>
+    <string name="menu_rejoin_group">Rejoin group</string>
+    <string name="menu_delete_group">Delete group</string>
+    <string name="action_read_chat">read the saved chat</string>
+    <string name="action_rejoin_or_delete">rejoin or delete</string>
     <string name="muted_desc">Muted</string>
     <string name="in_range_desc">In range</string>
     <plurals name="unread_desc">
@@ -70,7 +74,23 @@
     <string name="delete_dm_body">Your messages with %1$s will be removed from this phone. %1$s keeps their copy.</string>
     <string name="chat_cleared">Chat cleared</string>
     <string name="chat_deleted">Chat deleted</string>
-    <string name="group_removed">Removed “%1$s” from this phone</string>
+
+    <!-- Leaving keeps the chat: rejoin, or delete it for good -->
+    <string name="rejoin">Rejoin</string>
+    <string name="rejoin_title">Rejoin “%1$s”?</string>
+    <string name="rejoin_body">Your phone will start finding this group\'s phones again. Messages sent while you were away may be missing — phones only carry them for 48 hours.</string>
+    <string name="rejoin_body_switch">Hopline links to one group at a time, so “%1$s” will be paused. Nothing is deleted.</string>
+    <string name="rejoined_toast">You\'re back in “%1$s”</string>
+    <string name="rejoin_busy">Still tidying up — try again in a moment.</string>
+    <string name="delete_group_title">Delete “%1$s”?</string>
+    <string name="delete_group_body">Every message, photo and file from this group will be deleted from this phone. This can\'t be undone. Everyone else keeps theirs.</string>
+    <string name="group_deleted">Deleted “%1$s” from this phone</string>
+    <!-- Rejoin / Start / Join on a phone that hasn't allowed Nearby devices: asked for before anything is changed -->
+    <string name="perm_first">Hopline needs this to find your group\'s phones. Allow it, then try again.</string>
+    <string name="perm_first_rejoin">Hopline needs this to find your group\'s phones. Allow it to rejoin.</string>
+    <!-- A group's saved chat wouldn't read and was set aside: said once, so a chat that starts empty is never unexplained -->
+    <string name="chat_aside_title">A saved chat couldn\'t be read</string>
+    <string name="chat_aside_body">Hopline couldn\'t read what it had saved for “%1$s”, so that chat starts empty. Nothing was deleted — the old file is still on this phone — but Hopline can\'t show it.</string>
 
     <!-- People -->
     <string name="you_change_name">Tap to change your name</string>
@@ -94,11 +114,14 @@
     </plurals>
     <string name="members_header">%1$s · %2$d in range</string>
     <string name="only_you">Nobody else has joined yet. Share the code so friends can join.</string>
+    <string name="nobody_lately">Nobody else has been heard from in the last two days. They\'ll show up here when their phones are near.</string>
     <string name="view_all">See everyone (%1$d)</string>
     <string name="renamed_by">%1$s renamed the group · %2$s</string>
     <string name="renamed_by_you">You renamed the group · %1$s</string>
     <string name="started_by_you">You started this group · %1$s</string>
     <string name="named_at">Name last changed %1$s</string>
+    <string name="left_info_subtitle">You left this group · %1$s</string>
+    <string name="left_private_chats">Private chats</string>
 
     <!-- Code screen -->
     <string name="qr_desc">QR code to join %1$s</string>
@@ -152,5 +175,5 @@
     <!-- Settings -->
     <string name="share_internet_sub_budget">Friends can text home, check the weather and look things up through your phone when it has signal — up to %1$d MB of your data a day.</string>
     <string name="share_internet_sub_unlimited">Friends can text home, check the weather and look things up through your phone when it has signal — with no daily limit.</string>
-    <string name="how_it_works_body_v2">Phones in your group link to each other directly over Bluetooth and WiFi — no tower, no router, no internet.\n\nEvery message is signed with your group\'s code and passed from phone to phone, so it can travel down a line of hikers or across a crowd, far beyond one phone\'s range.\n\nEvery phone keeps the group\'s messages for 48 hours and fills in anyone who was away. Walk off, come back — the chat catches up on its own.\n\nThe ticks never lie: ◷ waiting for a phone in range, ✓ on its way, ✓✓ phones confirmed. Tap your own message to see exactly who has it.\n\nDirect chats only show up on your screen and theirs — but they are not encrypted. Like everything else, they are passed along by the group\'s phones on the way, so someone with the group code and a modified app could read them.\n\nNames aren\'t checked: anyone with the code can call themselves anything. When two people share a name, Hopline adds a short tag to tell them apart.\n\nAnyone with the 3-word code can read the group, so treat it like a walkie-talkie, not a vault.</string>
+    <string name="how_it_works_body_v2">Phones in your group link to each other directly over Bluetooth and WiFi — no tower, no router, no internet.\n\nEvery message is signed with your group\'s code and passed from phone to phone, so it can travel down a line of hikers or across a crowd, far beyond one phone\'s range.\n\nEvery phone carries the group\'s messages for 48 hours and fills in anyone who was away. Walk off, come back — the chat catches up on its own. What reaches your phone stays on it — even after you leave a group — until you delete it.\n\nThe ticks never lie: ◷ waiting for a phone in range, ✓ on its way, ✓✓ phones confirmed. Tap your own message to see exactly who has it.\n\nDirect chats only show up on your screen and theirs — but they are not encrypted. Like everything else, they are passed along by the group\'s phones on the way, so someone with the group code and a modified app could read them.\n\nNames aren\'t checked: anyone with the code can call themselves anything. When two people share a name, Hopline adds a short tag to tell them apart.\n\nAnyone with the 3-word code can read the group, so treat it like a walkie-talkie, not a vault.</string>
 </resources>

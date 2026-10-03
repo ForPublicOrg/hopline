@@ -38,18 +38,24 @@ object Ui {
     private val timeFmt get() = SimpleDateFormat("HH:mm", Locale.getDefault())
     private val dayFmt get() = SimpleDateFormat("EEE", Locale.getDefault())
     private val dateFmt get() = SimpleDateFormat("d MMM", Locale.getDefault())
+    private val yearFmt get() = SimpleDateFormat("d MMM yyyy", Locale.getDefault())
 
-    /** Chat-list style timestamp: 14:23 today, Yesterday, Mon, then 12 Aug. */
-    fun listTime(ts: Long): String {
+    /**
+     * Chat-list style timestamp: 14:23 today, Yesterday, Mon, then 12 Aug — and 12 Aug 2025 once
+     * that was in another year. A group that was left stays on Home until it is deleted, and this
+     * is all its row says about when: two summers ago must not read like this summer.
+     */
+    fun listTime(ts: Long, nowMs: Long = System.currentTimeMillis()): String {
         if (ts <= 0) return ""
-        val now = Calendar.getInstance()
+        val now = Calendar.getInstance().apply { timeInMillis = nowMs }
         val then = Calendar.getInstance().apply { timeInMillis = ts }
         fun sameDay(a: Calendar, b: Calendar) = a.get(Calendar.YEAR) == b.get(Calendar.YEAR) && a.get(Calendar.DAY_OF_YEAR) == b.get(Calendar.DAY_OF_YEAR)
         val yesterday = (now.clone() as Calendar).also { it.add(Calendar.DAY_OF_YEAR, -1) }
         return when {
             sameDay(then, now) -> timeFmt.format(Date(ts))
             sameDay(then, yesterday) -> res.getString(R.string.chat_yesterday)
-            now.timeInMillis - ts < 6 * 86400_000L -> dayFmt.format(Date(ts))
+            nowMs - ts < 6 * 86400_000L -> dayFmt.format(Date(ts))
+            then.get(Calendar.YEAR) != now.get(Calendar.YEAR) -> yearFmt.format(Date(ts))
             else -> dateFmt.format(Date(ts))
         }
     }
@@ -144,23 +150,66 @@ object Ui {
      * True once a message of mine has stopped trying: nothing carries it after its 48 h, so a ◷
      * that never left, or a private message whose receiver never confirmed, will not get there on
      * its own. (A private message gets an hour's grace — a late confirmation may still be on its way.)
+     * A ◷ this phone no longer holds an envelope for has stopped trying whatever its age: it was
+     * still waiting when I left the group, and leaving let it go. It reads "Not sent" at once — in
+     * the kept chat and after a rejoin — and only "Send again" sends it.
      */
     fun gaveUp(r: Router, m: Message, now: Long = System.currentTimeMillis()): Boolean {
         if (m.from != r.me.id || !m.isPersonal) return false
         val age = now - m.ts
         return when {
-            m.status == Message.QUEUED -> age > Router.CARRY_MS
+            m.status == Message.QUEUED -> age > Router.CARRY_MS || !r.carries(m.id)
             m.to != null && m.status != Message.DELIVERED -> age > Router.CARRY_MS + 3_600_000L
             else -> false
         }
     }
 
-    /** The full truthful story of one of my messages, for the delivery-details sheet. */
-    fun statusDetail(ctx: Context, r: Router, m: Message): String {
+    /**
+     * A ◷ of mine that stopped trying because I left the group, not because its 48 h ran out: it
+     * is younger than that, yet this phone no longer holds its envelope — and leaving is what lets
+     * one go that early. "No phone came in range within 48 hours" would be untrue of it. (Past
+     * 48 h the two can't be told apart, and that sentence is then true of both.)
+     */
+    fun unsentByLeaving(r: Router, m: Message, now: Long = System.currentTimeMillis()): Boolean =
+        m.from == r.me.id && m.isPersonal && m.status == Message.QUEUED && !r.carries(m.id) && now - m.ts <= Router.CARRY_MS
+
+    /**
+     * Was a message of mine past its time when this phone left the group at [leftAt]? Nothing
+     * carries a message beyond its 48 h (a private one gets the same hour's grace as in [gaveUp]),
+     * so by then everything that could be learned about it had been: who got it, or that the
+     * person it was for never confirmed. Leaving changed nothing about such a message, and its
+     * tick and details must not say it did.
+     */
+    fun settledBeforeLeaving(m: Message, leftAt: Long): Boolean =
+        leftAt - m.ts > Router.CARRY_MS + (if (m.to != null) 3_600_000L else 0L)
+
+    /**
+     * The full truthful story of one of my messages, for the delivery-details sheet.
+     *
+     * [leftAt] above 0: the message is in the kept chat of a group this phone left then. Nothing
+     * is on its way any more and nothing can be sent again from there, so it says what was known
+     * at the leave and promises nothing: no "still waiting", no "Send again". And it blames the
+     * leaving only for what the leaving cut short — a message whose 48 h were over long before
+     * ([settledBeforeLeaving]) reads as it did then.
+     */
+    fun statusDetail(ctx: Context, r: Router, m: Message, leftAt: Long = 0): String {
         val now = System.currentTimeMillis()
+        if (leftAt > 0) {
+            if (m.status == Message.QUEUED) return ctx.getString(R.string.chat_status_left_unsent)
+            if (m.to != null && m.status == Message.DELIVERED) return ctx.getString(R.string.chat_status_delivered, nameOf(r, m.to))
+            val settled = settledBeforeLeaving(m, leftAt)
+            if (settled && m.to != null) return ctx.getString(R.string.chat_status_left_dm_not_delivered, nameOf(r, m.to))
+            val got = m.reached.map { nameOf(r, it, "") }.sorted()
+            return ctx.getString(if (settled) R.string.chat_status_sent else R.string.chat_status_left_sent) +
+                if (got.isEmpty()) "" else "\n\n" + ctx.getString(R.string.chat_status_got, got.joinToString(", "))
+        }
         if (gaveUp(r, m, now)) {
-            return if (m.status == Message.QUEUED) ctx.getString(R.string.chat_status_not_sent)
-            else ctx.getString(R.string.chat_status_dm_not_delivered, nameOf(r, m.to ?: ""))
+            return when {
+                m.status != Message.QUEUED -> ctx.getString(R.string.chat_status_dm_not_delivered, nameOf(r, m.to ?: ""))
+                // Back in the group after leaving it: the wait wasn't for a phone in range.
+                unsentByLeaving(r, m, now) -> ctx.getString(R.string.chat_status_left_unsent)
+                else -> ctx.getString(R.string.chat_status_not_sent)
+            }
         }
         if (m.status == Message.QUEUED) return ctx.getString(R.string.status_queued)
         if (m.to != null) {

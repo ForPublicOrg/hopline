@@ -34,9 +34,23 @@ object ChatDrafts {
             d.replyId?.let { put("re", it) }
             if (d.chosen.isNotEmpty()) put("mn", JSONObject(d.chosen))
         }.toString())
-        // A group that was left takes its drafts with it.
+        // Only groups this phone is in have a composer; a draft for any other is a leftover.
         val live = try { Core.store.groups().map { it.fingerprint }.toSet() } catch (e: Exception) { null }
         if (live != null) for (k in p.all.keys) if (k.substringBefore('|') !in live) edit.remove(k)
+        edit.apply()
+    }
+
+    /**
+     * A group was left or deleted: its half-typed messages go now. A left group's chat is still
+     * read, but it has no composer to bring a draft back to — and a draft kept would be waiting
+     * there, weeks stale, the day the group is joined again.
+     */
+    fun dropGroup(ctx: Context, fp: String) {
+        val p = prefs(ctx)
+        val keys = p.all.keys.filter { it.substringBefore('|') == fp }
+        if (keys.isEmpty()) return
+        val edit = p.edit()
+        for (k in keys) edit.remove(k)
         edit.apply()
     }
 }

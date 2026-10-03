@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One numbered step of what happens in the *99# box. The number is drawn in code, in the
+     phone's own digits; TalkBack hears "Step 1. …" from the row as a whole. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="horizontal" android:layout_marginTop="12dp" android:focusable="true">
+
+    <TextView android:id="@+id/num" android:layout_width="26dp" android:layout_height="26dp" android:gravity="center"
+        android:background="@drawable/bg_icon_circle" android:importantForAccessibility="no" android:maxLines="1"
+        android:textSize="13sp" android:textStyle="bold" android:textColor="@color/ember_deep" />
+
+    <TextView android:id="@+id/text" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+        android:layout_marginStart="12dp" android:layout_marginTop="2dp" android:importantForAccessibility="no"
+        android:textSize="14.5sp" android:textColor="@color/text" android:lineSpacingExtra="2dp" android:textAlignment="viewStart" />
+</LinearLayout>

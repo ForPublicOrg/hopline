@@ -17,6 +17,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.doAfterTextChanged
 import app.hopline.R
 import app.hopline.core.Names
+import app.hopline.core.Upi
 import app.hopline.core.Words
 import app.hopline.data.SavedGroup
 import app.hopline.databinding.ActivityGroupBinding
@@ -28,6 +29,10 @@ import com.journeyapps.barcodescanner.ScanOptions
  * Two big cards: start a group (you get a code) or join one (type / scan a code).
  * Also opened from Home's + button to add a group next to the ones you already have, and by a
  * hopline://join link (a friend's QR scanned with the normal camera app).
+ *
+ * A code this phone already has never joins twice. A group it is in is opened, or offered to be
+ * switched to; a group it LEFT is offered to be rejoined — the same question Home asks — whether
+ * the code was typed, scanned or came in a link. There is no silent way back into a left group.
  */
 class GroupActivity : AppCompatActivity() {
     private lateinit var b: ActivityGroupBinding
@@ -45,7 +50,8 @@ class GroupActivity : AppCompatActivity() {
             return@registerForActivityResult
         }
         val parsed = parseQr(text)
-        if (parsed == null) { notAnInvite(text); return@registerForActivityResult }
+        // A payment code is offered for paying only when the Pay screen could pay it; any other is just "not an invite".
+        if (parsed == null) { if (Upi.payable(text) && PayActivity.offered(this)) offerPay(text) else notAnInvite(text); return@registerForActivityResult }
         showPanel(JOIN, focus = false)
         b.code.setText(Words.pretty(parsed.first))
         tryJoin(parsed.first, parsed.second)
@@ -66,6 +72,7 @@ class GroupActivity : AppCompatActivity() {
         }
         b = ActivityGroupBinding.inflate(layoutInflater)
         setContentView(b.root)
+        Asks.listen(this)   // the rejoin question, for a code of a group this phone left
 
         adding = intent.getBooleanExtra("add", false)
         b.back.visibility = if (adding) View.VISIBLE else View.GONE
@@ -106,6 +113,9 @@ class GroupActivity : AppCompatActivity() {
             goHome()
         }
         ScreenDialog.listen(this, K_NOT_INVITE) { launchScan() }
+        ScreenDialog.listen(this, K_PAY_CODE) { r ->
+            r.getString(K_SCANNED)?.let { startActivity(Intent(this, PayActivity::class.java).putExtra(PayActivity.EXTRA_SCANNED, it)) }
+        }
 
         if (fresh) {
             // Opened from a QR link, or an invite that waited through onboarding?
@@ -146,6 +156,9 @@ class GroupActivity : AppCompatActivity() {
 
     private fun start(myName: String) {
         if (busy) return
+        // Asked before the group exists, not after: see Asks.radioAllowed. (Only a phone that has
+        // nothing but groups it left gets here without the permissions.)
+        if (!Asks.radioAllowed(this)) return
         busy = true
         val gname = Names.clean(b.groupName.text?.toString(), Names.MAX_GROUP).ifEmpty { getString(R.string.default_group_name, myName) }
         var code = Words.randomCode()
@@ -168,7 +181,7 @@ class GroupActivity : AppCompatActivity() {
     private fun tryJoin(raw: String, linkName: String) {
         if (busy) return
         val norm = Words.normalise(raw)
-        Core.store.groups().firstOrNull { it.code == norm }?.let { alreadyHave(it, linkName); return }
+        Core.store.allGroups().firstOrNull { it.code == norm }?.let { alreadyHave(it, linkName); return }
         val unknown = Words.unknownWords(raw)
         if (!Words.looksValid(raw) || unknown.isNotEmpty()) {
             val suggestion = Words.suggest(raw)
@@ -196,15 +209,24 @@ class GroupActivity : AppCompatActivity() {
         b.codeError.announceForAccessibility(b.codeError.text)
     }
 
-    /** The code is a group this phone already has: open it, or offer to wake it — never join twice. */
+    /**
+     * The code is a group this phone already has: open it, offer to wake it, or — for a group it
+     * left — offer to rejoin it. Never join twice, and never back into a left group without a yes.
+     */
     private fun alreadyHave(saved: SavedGroup, linkName: String) {
         val g = adoptLinkName(saved, linkName)
-        if (g.code == Core.store.activeCode) {
-            Toast.makeText(this, getString(R.string.already_in_group, Asks.groupLabel(g)), Toast.LENGTH_SHORT).show()
-            busy = true
-            goHome()
-        } else ScreenDialog.confirm(this, K_SWITCH, getString(R.string.switch_group_title, Asks.groupLabel(g)),
-            getString(R.string.switch_group_body), getString(R.string.switch_btn), data = bundleOf(K_CODE to g.code))
+        when (ScreenRules.codeEntered(g, Core.store.activeCode)) {
+            // Asks answers this one: the group goes back on the radio, and a fresh Home opens.
+            ScreenRules.Entered.REJOIN -> Asks.rejoin(this, g)
+            ScreenRules.Entered.OPEN -> {
+                Toast.makeText(this, getString(R.string.already_in_group, Asks.groupLabel(g)), Toast.LENGTH_SHORT).show()
+                busy = true
+                goHome()
+            }
+            ScreenRules.Entered.SWITCH -> ScreenDialog.confirm(this, K_SWITCH, getString(R.string.switch_group_title, Asks.groupLabel(g)),
+                getString(R.string.switch_group_body), getString(R.string.switch_btn), data = bundleOf(K_CODE to g.code))
+            ScreenRules.Entered.NEW -> { }   // can't be: a saved group was handed in
+        }
     }
 
     /**
@@ -217,16 +239,19 @@ class GroupActivity : AppCompatActivity() {
         val r = Core.router
         if (r != null && r.group.code == g.code && !r.adoptHintName(name)) return g
         Core.store.renameGroup(g.code, name, 0)
+        if (g.left) Core.dropArchive()   // its chat, if it is being read, is read again under the name
         Core.changed()
-        return Core.store.groups().firstOrNull { it.code == g.code } ?: g
+        return Core.store.allGroups().firstOrNull { it.code == g.code } ?: g
     }
 
     /** A link can come from anywhere — retargeting the radio away from a group needs a human yes. */
     private fun offerLink(code: String, linkName: String) {
         val norm = Words.normalise(code)
-        Core.store.groups().firstOrNull { it.code == norm }?.let { alreadyHave(it, linkName); return }
+        Core.store.allGroups().firstOrNull { it.code == norm }?.let { alreadyHave(it, linkName); return }
         val known = Words.isKnownCode(code)
-        val first = Core.store.groups().isEmpty()
+        // "First" is no group on the radio — also on a phone that only has groups it left: there is
+        // no current group for the link to take the radio away from, so nothing to warn about.
+        val first = Core.store.activeCode == null
         if (first && known) { join(norm, linkName); return }
         val label = linkName.ifEmpty { Words.pretty(code) }
         val title = if (first) getString(R.string.join_link_title, label) else getString(R.string.switch_group_title, label)
@@ -237,6 +262,12 @@ class GroupActivity : AppCompatActivity() {
 
     private fun join(norm: String, linkName: String) {
         if (busy) return
+        // Asked about a while ago (a "Join anyway?" that stood open): if the code is a left group's
+        // by now, joining is rejoining, and that has its own question and its own careful path.
+        Core.store.allGroups().firstOrNull { it.code == norm && it.left }?.let { Asks.rejoin(this, it); return }
+        // The radio's permissions before the group is saved, not after (Asks.radioAllowed). The
+        // code waits in the join field meanwhile — a link's code too — one tap from being joined.
+        if (!Asks.radioAllowed(this)) { showPanel(JOIN, focus = false, animate = false); b.code.setText(Words.pretty(norm)); return }
         busy = true
         // A link's name is only a hint: Store never lets it overwrite a name this phone already knows.
         Core.store.addGroup(norm, linkName)
@@ -260,6 +291,14 @@ class GroupActivity : AppCompatActivity() {
             getString(R.string.scan_again))
     }
 
+    /**
+     * A UPI payment code, scanned here for an invite: not something to join, but something Hopline
+     * can do — pay it with no internet. Asked first; the code goes along as it was scanned.
+     */
+    private fun offerPay(text: String) =
+        ScreenDialog.confirm(this, K_PAY_CODE, getString(R.string.pay_join_title), getString(R.string.pay_join_body),
+            getString(R.string.pay_join_ok), data = bundleOf(K_SCANNED to text))
+
     companion object {
         private const val NONE = 0
         private const val START = 1
@@ -273,6 +312,8 @@ class GroupActivity : AppCompatActivity() {
         private const val K_LINK = "group.link"
         private const val K_SWITCH = "group.switch"
         private const val K_NOT_INVITE = "group.notInvite"
+        private const val K_PAY_CODE = "group.payCode"
+        private const val K_SCANNED = "scanned"
 
         fun qrText(code: String, name: String): String = "hopline://join?code=${Words.normalise(code)}&name=${Uri.encode(name)}"
 

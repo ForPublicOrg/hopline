@@ -933,19 +933,26 @@ class InternetActivity : AppCompatActivity() {
     private fun renderFpBanner() {
         if (!fpMismatch()) { b.fpBanner.isVisible = false; return }
         val fp = intent.getStringExtra(Notifications.EXTRA_FP)
-        val g = Core.store.groups().firstOrNull { it.fingerprint == fp }
+        val g = fp?.let { Core.store.findGroup(it) }
+        // Only a group this phone is still in can take the radio. One it left is named and said to
+        // be left — rejoining is a decision made on Home, never a "Switch to it" button here.
+        val canSwitch = g != null && !g.left
         b.fpBanner.isVisible = true
         b.fpText.setIfChanged(when {
             g == null -> getString(R.string.net_other_group_gone)
+            g.left -> getString(R.string.net_other_group_left, Asks.groupLabel(g))
             g.name.isEmpty() -> getString(R.string.net_other_group_unnamed)
             else -> getString(R.string.net_other_group, g.name)
         })
-        b.fpSwitch.isVisible = g != null
+        b.fpSwitch.isVisible = canSwitch
         b.fpSwitch.setOnClickListener {
             fpHandled = true
-            g?.let { Core.switchGroup(it.code) }
+            // As the group is now, not as it was when the banner was drawn.
+            Core.store.groups().firstOrNull { it.fingerprint == fp }?.let { Core.switchGroup(it.code) }
             refresh()
         }
+        // "Not now" promises a later; with nothing to switch to there is none.
+        b.fpDismiss.setIfChanged(getString(if (canSwitch) R.string.net_not_now else R.string.dismiss))
         b.fpDismiss.setOnClickListener { fpHandled = true; highlightEid = null; refresh() }
     }
 

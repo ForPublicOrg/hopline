@@ -59,7 +59,10 @@ class MeshService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (!foreground) return START_NOT_STICKY
-        if (!Core.hasGroup()) { stopSelf(); return START_NOT_STICKY }
+        // No group for the radio — none joined, or every one of them left (their chats are only
+        // read, and reading needs no service). Also what a sticky restart finds after the last
+        // group was left: it must not sit in the shade, and START_NOT_STICKY ends the restarts.
+        if (!Core.hasGroup()) return quit()
         if (intent?.hasExtra(EXTRA_LOCATION) == true) {
             val want = intent.getBooleanExtra(EXTRA_LOCATION, false)
             if (want != locationType && !promote(want)) promote(false)
@@ -69,17 +72,20 @@ class MeshService : Service() {
             promote(false)
         }
         if (Core.router == null) Core.ensureRunning()
-        if (Core.router == null || !Permissions.allGranted(this)) {
-            // No radio is possible: don't sit in the shade saying "Starting…" with a wakelock.
-            try { if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE) else @Suppress("DEPRECATION") stopForeground(true) } catch (e: Exception) { }
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        // No radio is possible: don't sit in the shade saying "Starting…" with a wakelock.
+        if (Core.router == null || !Permissions.allGranted(this)) return quit()
         Core.startRadio()
         Core.handler.removeCallbacks(ticker)
         Core.handler.postDelayed(ticker, 3000)
         refreshWakeLock()
         return START_STICKY
+    }
+
+    /** Nothing for this service to do: take its notification away with it, and don't come back by itself. */
+    private fun quit(): Int {
+        try { if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE) else @Suppress("DEPRECATION") stopForeground(true) } catch (e: Exception) { }
+        stopSelf()
+        return START_NOT_STICKY
     }
 
     /** Keep the CPU awake only while there is something to relay, a position to share, or a request to run. */

@@ -26,14 +26,20 @@ object ReactionSheets {
      * row says "Tap to remove". It follows the mesh while open — a reaction hopping in shows up,
      * and the sheet closes itself if the message (or the group) goes away under it.
      * Returns the sheet so the screen can close it when it goes away; null if there was nothing to show.
+     *
+     * [stillShown] says whether the screen still shows [m] from [r] — the screen knows which chat
+     * it reads from (the one on the radio, or one that was left) and which messages it has on it.
+     * With no [onRemoveMine] the sheet is for looking only: a reaction can't be taken back in the
+     * kept chat of a group that was left, nor on a message that has moved into the history.
      */
-    fun showReactors(activity: AppCompatActivity, r: Router, m: Message, onRemoveMine: () -> Unit): BottomSheetDialog? {
+    fun showReactors(activity: AppCompatActivity, r: Router, m: Message, stillShown: () -> Boolean = { Core.router === r && r.message(m.id) != null },
+                     onRemoveMine: (() -> Unit)?): BottomSheetDialog? {
         if (m.reactions.isEmpty() || activity.isFinishing || activity.isDestroyed) return null
         val sheet = BottomSheetDialog(activity)
         val sb = SheetReactionsBinding.inflate(activity.layoutInflater)
         sheet.setContentView(sb.root)
-        val adapter = ReactorAdapter(r) { who ->
-            if (who == r.me.id) { sheet.dismiss(); onRemoveMine() }
+        val adapter = ReactorAdapter(r, canRemove = onRemoveMine != null) { who ->
+            if (who == r.me.id) { sheet.dismiss(); onRemoveMine?.invoke() }
         }
         sb.list.layoutManager = LinearLayoutManager(activity)
         sb.list.adapter = adapter
@@ -44,7 +50,7 @@ object ReactionSheets {
             else "$key ${counts.firstOrNull { it.first == key }?.second ?: 0}"
 
         fun render() {
-            if (Core.router !== r || r.message(m.id) == null || m.reactions.isEmpty()) { sheet.dismiss(); return }
+            if (!stillShown() || m.reactions.isEmpty()) { sheet.dismiss(); return }
             val counts = m.reactionCounts()
             // Rebuild tabs only when the set of emoji changed, keeping the selected one selected.
             val wanted = listOf<String?>(null) + counts.map { it.first }
@@ -86,7 +92,7 @@ object ReactionSheets {
         return sheet
     }
 
-    private class ReactorAdapter(private val r: Router, private val onTap: (String) -> Unit) : RecyclerView.Adapter<ReactorAdapter.VH>() {
+    private class ReactorAdapter(private val r: Router, private val canRemove: Boolean, private val onTap: (String) -> Unit) : RecyclerView.Adapter<ReactorAdapter.VH>() {
         class VH(val b: ItemReactorBinding) : RecyclerView.ViewHolder(b.root)
         private var rows: List<Pair<String, String>> = emptyList()
 
@@ -107,11 +113,13 @@ object ReactionSheets {
             h.b.avatar.text = Ui.initial(if (me) r.me.name else Ui.nameOf(r, who))
             h.b.avatar.background.mutate().setTint(MessageAdapter.avatarColor(who))
             h.b.emoji.text = emoji
-            h.b.sub.visibility = if (me) View.VISIBLE else View.GONE
-            h.b.root.isClickable = me
-            h.b.root.isFocusable = me
-            if (me) h.b.root.setOnClickListener { onTap(who) } else { h.b.root.setOnClickListener(null); h.b.root.isClickable = false }
-            h.b.root.contentDescription = if (me) ctx.getString(R.string.react_remove_desc, emoji) else "$name $emoji"
+            // My own row is the one with an action — where there is one to take.
+            val mine = me && canRemove
+            h.b.sub.visibility = if (mine) View.VISIBLE else View.GONE
+            h.b.root.isClickable = mine
+            h.b.root.isFocusable = mine
+            if (mine) h.b.root.setOnClickListener { onTap(who) } else { h.b.root.setOnClickListener(null); h.b.root.isClickable = false }
+            h.b.root.contentDescription = if (mine) ctx.getString(R.string.react_remove_desc, emoji) else "$name $emoji"
         }
     }
 

@@ -7,41 +7,43 @@ No internet. No mobile signal. No account. No server. No hotspot to set up.
 HOW IT WORKS
 - One person starts a group and gets a 3-word code, like "tiger river lamp".
 - Everyone else types the three words (or scans the QR). Done.
-- A familiar chat app: group chat, private chats, photos and small files.
 - Phones find each other on their own. Walk away and come back - the chat catches up by itself.
 
-PHOTOS AND FILES
-Tap the paperclip. Photos are shrunk hard (about 0.3 MB) so they hop in seconds; files up to 2 MB travel in pieces and are reassembled on every phone, even ones that were out of range when you sent them.
-
-VOICE NOTES
-Tap the mic, talk, send. Clips are tiny and hop the mesh like photos do - the play bar fills in as the pieces arrive.
+PHOTOS, FILES, VOICE NOTES
+Tap the paperclip. Photos are shrunk hard (about 0.3 MB) so they hop in seconds; files up to 2 MB travel in pieces and are reassembled on every phone, even ones that were out of range when you sent them. Or tap the mic for a voice note - clips are tiny and hop the same way.
 
 LOCATION - EVEN LIVE
-Send where you are (GPS works with no signal) or a meeting point from coordinates or a Google Maps link. Everyone sees how far the pin is and which way ("1.2 km away, north-east of you"); tapping opens the maps app. Or share live location for 15 minutes, an hour or 8 hours - it rides the beacons phones already send, and the People screen shows everyone who is sharing, updating as you walk.
+Send where you are (GPS works with no signal) or a meeting point from coordinates or a Google Maps link. Everyone sees how far the pin is and which way ("1.2 km away, north-east of you"). Or share live location for up to 8 hours - the People screen shows who is sharing, updating as you walk.
 
 REPLIES, REACTIONS, MENTIONS
-Swipe a message to reply with a quote. Long-press any message for a reaction bar right over it - or + for every emoji - and double-tap to send a heart. Tap the reactions under a message to see who reacted. Type @ to mention someone - being mentioned always buzzes, even when the message arrives late as backlog.
+Swipe a message to reply with a quote. Long-press any message for a reaction bar - or + for every emoji - and double-tap to send a heart. Type @ to mention someone - being mentioned always buzzes.
 
 NAMES, MUTE, TIDY CHATS
-Change your name any time and everyone sees it, on your old messages too. Rename the group for everyone from Group info. Mute a chat, delete a message for yourself, clear a chat, reply privately, and reply straight from the notification. Chats open at the first unread message.
+Change your name any time and everyone sees it, on your old messages too. Rename the group for everyone from Group info. Mute a chat, delete a message for yourself, clear a chat, reply privately, and reply straight from the notification. Chats open at the first unread message; scroll up and earlier messages load.
 
 MORE THAN ONE GROUP
 Keep a group for the trek, one for the family, one for the festival crew. Switching is one tap, and each group keeps its own history, unread counts and files.
 
-HONEST TICKS
-A clock while it waits for a phone in range, one tick when it is on its way, two ticks when phones confirm. A photo's tick only appears when the whole photo is on the other phone. Tap your own message to see exactly who has it, by name.
+LEAVING KEEPS THE CHAT
+Leave a group and its chat, photos and files stay on your phone to read, under "Groups you left". Rejoin with one tap. Nothing is deleted until you delete it yourself.
 
-BUILT FOR A FEW FRIENDS OR A CROWD
-In a small group every phone confirms every message. In a crowd of hundreds or thousands the phones automatically stop chattering about receipts, slow their "I am here" beacons, and switch photos off, so the radios carry your words instead of overhead.
+HONEST TICKS
+A clock while it waits for a phone in range, one tick when it is on its way, two ticks when phones confirm. Tap your own message to see exactly who has it, by name.
 
 SHARED INTERNET
-If anyone in the group gets signal, everyone can use a sliver of it: the weather for exactly where you are, a text home ("I'm OK", with your location) sent by any phone with even one bar of mobile service, a quick look-up, or a web page as clean readable text. Ask even when nobody has signal - the request travels with the group and runs the moment someone gets it; if that phone goes quiet, another takes over. Answers come back only to you. Your phone helps only while "Share my internet" is on, within a daily allowance you choose, and never while roaming unless you allow it.
+If anyone in the group gets signal, everyone can use a sliver of it: the weather where you are, a text home ("I'm OK", with your location) sent by any phone with even one bar of mobile service, a quick look-up, or a web page as readable text. Ask even when nobody has signal - the request travels with the group and runs when someone gets it. Answers come back only to you. Your phone helps only while "Share my internet" is on, within a daily allowance you choose, and never while roaming unless you allow it.
+
+PAY WITHOUT INTERNET (INDIA)
+No data, but a bar of phone signal? Scan a shop's UPI QR code and Hopline copies the UPI ID and opens your Phone app on *99#, the banks' own UPI service. You press call and type the amount and your PIN there - Hopline never sees them and can't tell if it went through. Not on Jio; up to Rs 5,000 at a time.
+
+UPDATES, NEVER FORCED
+With internet, Hopline asks GitHub whether a newer version is out - nothing about you or your group is sent - and fetches it on WiFi. It installs only when you tap Install; switch it off in Settings if you like.
 
 LIMITS, STATED PLAINLY
 - Each hop is Bluetooth range: about 20-40 m in the open.
 - Android only. iPhones cannot join.
 - No end-to-end encryption - anyone with the 3-word code is in the group, and every phone in it carries private chats to pass them along.
 - Bluetooth is flaky; links can take up to a minute to form.
-- Media is deliberately small: photos ~0.3 MB, files up to 2 MB.
+- Messages are passed along for 48 hours. Chats live only on your phone: no backup.
 
 Open source (MIT). Install it on every phone before you need it.

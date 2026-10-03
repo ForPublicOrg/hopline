@@ -139,6 +139,16 @@ class CoreTextTest {
         assertFalse(SafeUrl.allPublic(arrayOf(ip("8.8.8.8"), ip("10.0.0.1"))))
     }
 
+    @Test fun `a phone on an IPv6-only mobile network can still reach the public internet, and only that`() {
+        fun ip(s: String) = InetAddress.getByName(s)
+        // What such a network's DNS answers for an IPv4-only site: the site's address behind the carrier's 64:ff9b:: gateway.
+        for (good in listOf("64:ff9b::14cf:4955", "64:ff9b::808:808")) assertTrue(good, SafeUrl.isPublic(ip(good)))
+        assertTrue(SafeUrl.allPublic(arrayOf(ip("64:ff9b::14cf:4955"), ip("20.207.73.85"))))
+        // The same gateway must not become a way into a private network.
+        for (bad in listOf("64:ff9b::a00:1", "64:ff9b::c0a8:101", "64:ff9b::7f00:1", "64:ff9b::6440:1", "64:ff9b::a9fe:101", "64:ff9b::",
+                "64:ff9b:1::808:808", "64:ff9b:0:1::808:808", "64::808:808")) assertFalse(bad, SafeUrl.isPublic(ip(bad)))
+    }
+
     // ---------------------------------------------------------------- texts home
 
     @Test fun `texts are folded to plain SMS characters and counted honestly`() {

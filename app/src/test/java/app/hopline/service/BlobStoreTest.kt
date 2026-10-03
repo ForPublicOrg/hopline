@@ -430,4 +430,109 @@ class BlobStoreTest {
         assertEquals(0L, s.bytesUsed())
         assertEquals(listOf(Envelope.chunkId("abcdef", 0)), s.takeReleased())
     }
+
+    // ---------------------------------------------------------------- leaving and deleting a group
+
+    private val day = 24 * hour
+
+    /** A group's folder as the app lays it out: carried pieces, and the photos and files of its chat. */
+    private fun group(root: File, fp: String, pieceAge: Long = hour): File = File(root, fp).also { g ->
+        File(g, "chunks").mkdirs(); File(g, "files").mkdirs()
+        File(g, "chunks/f.abcdef.0.json").apply { writeText("{}"); assertTrue(setLastModified(now - pieceAge)) }
+        File(g, "files/abcdefgh-photo.jpg").apply { writeText("jpeg"); assertTrue(setLastModified(now - 400 * day)) }
+    }
+
+    @Test fun aHalfWrittenFileCanNeverBeTakenForAKeptOne() {
+        assertTrue(BlobRules.isTemp(BlobRules.tempPrefix("abcdefgh-photo.jpg") + "4711.part"))
+        assertTrue("a temp file's name needs three characters", BlobRules.tempPrefix("").length >= 3)
+        assertTrue(BlobRules.tempPrefix("x".repeat(200)).length <= 41)
+        // Whatever a sender calls their file, the name it is kept under is never a temp name.
+        for (name in listOf("backup.part", "notes.part", "~lock.part", "~", "a~b", "")) {
+            assertFalse("\"$name\" must be kept", BlobRules.isTemp("abcdefgh-" + BlobRules.safeName(name)))
+            assertFalse(BlobRules.isTemp("invalid-" + BlobRules.safeName(name)))
+        }
+    }
+
+    @Test fun tidyingKeepsAFileThatIsReallyNamedDotPart() {
+        val root = tmp.newFolder("blobs")
+        val files = File(group(root, "ab12cd34"), "files")
+        // 2.2 took any old "*.part" for its own leftovers — and deleted this one, a file someone sent.
+        val backup = File(files, "ijkmnpqr-backup.part").apply { writeText("someone's backup"); assertTrue(setLastModified(now - 30 * day)) }
+        val photo = File(files, "abcdefgh-photo.jpg")
+        val stale = File(files, BlobRules.tempPrefix("stuvwxyz-voice.m4a") + "1.part").apply { writeText("half"); assertTrue(setLastModified(now - 2 * hour)) }
+        val fresh = File(files, BlobRules.tempPrefix("stuvwxyz-voice.m4a") + "2.part").apply { writeText("being written"); assertTrue(setLastModified(now - 60_000)) }
+        // on the radio, paused, or left long ago: the same
+        for (active in listOf("ab12cd34", null, "ef56ab78")) {
+            BlobRules.sweep(root, now, active)
+            assertTrue(backup.exists()); assertEquals("someone's backup", backup.readText())
+            assertTrue(photo.exists())
+            assertFalse("a write cut short an hour ago is nobody's file", stale.exists())
+            assertTrue("one still being written is left to finish", fresh.exists())
+        }
+    }
+
+    @Test fun droppingPiecesKeepsTheChatsFilesAndEveryOtherGroup() {
+        val root = tmp.newFolder("blobs")
+        val left = group(root, "ab12cd34")
+        val other = group(root, "ef56ab78")
+        val dead = BlobRules.moveAside(File(left, "chunks"), BlobRules.deadChunksName(now))
+        assertNotNull(dead)
+        assertTrue(BlobRules.isDeadChunks(dead!!.name)); assertEquals(left, dead.parentFile)
+        assertFalse(File(left, "chunks").exists())
+        assertTrue("moved whole, to be deleted at leisure", File(dead, "f.abcdef.0.json").exists())
+        assertTrue(File(left, "files/abcdefgh-photo.jpg").exists())
+        assertTrue(File(other, "chunks/f.abcdef.0.json").exists()); assertTrue(File(other, "files/abcdefgh-photo.jpg").exists())
+        // Joined again a moment later: a fresh, empty folder under the old name, out of the slow delete's reach.
+        val again = store(File(left, "chunks"))
+        assertEquals(emptyList<String>(), again.ids())
+        assertTrue(again.put(piece("ghijkm", 0)))
+        assertTrue(dead.deleteRecursively())
+        assertNotNull(again.get(Envelope.chunkId("ghijkm", 0)))
+        assertTrue(File(left, "files/abcdefgh-photo.jpg").exists())
+        // nothing there: nothing to move, and nothing is created by asking
+        assertNull(BlobRules.moveAside(File(root, "aa11bb22/chunks"), BlobRules.deadChunksName(now)))
+        assertFalse(File(root, "aa11bb22").exists())
+    }
+
+    @Test fun deletingAGroupMovesItsWholeFolderAsideAtOnce() {
+        val root = tmp.newFolder("blobs")
+        val doomed = group(root, "ab12cd34")
+        val other = group(root, "ef56ab78")
+        val gone = BlobRules.moveAside(doomed, BlobRules.goneGroupName("ab12cd34", now))
+        assertNotNull(gone)
+        assertTrue(BlobRules.isGoneGroup(gone!!.name)); assertEquals(root, gone.parentFile)
+        assertFalse(doomed.exists())
+        assertTrue(File(gone, "files/abcdefgh-photo.jpg").exists())
+        // The same code joined again right away starts in a folder of its own.
+        val again = group(root, "ab12cd34")
+        // If the phone dies before the delete finishes, the next tidy finishes it — and only it.
+        BlobRules.sweep(root, now, activeFp = "ab12cd34")
+        assertFalse(gone.exists())
+        assertTrue(File(again, "files/abcdefgh-photo.jpg").exists()); assertTrue(File(again, "chunks/f.abcdef.0.json").exists())
+        assertTrue(File(other, "files/abcdefgh-photo.jpg").exists())
+        // Neither name can ever be a group's or a live piece folder's own.
+        assertFalse(BlobRules.isGoneGroup("ab12cd34")); assertFalse(BlobRules.isDeadChunks("chunks")); assertFalse(BlobRules.isDeadChunks("files"))
+    }
+
+    @Test fun aSweepFinishesWhatAKillCutShortAndTouchesNoKeptFile() {
+        val root = tmp.newFolder("blobs")
+        val active = group(root, "cc33dd44", pieceAge = 60 * hour)
+        val paused = group(root, "aa11bb22", pieceAge = 60 * hour)
+        File(paused, "chunks/f.abcdef.1.json").apply { writeText("{}"); assertTrue(setLastModified(now - 2 * hour)) }
+        // left, and killed after the pieces were moved aside but before they were deleted
+        val left = group(root, "ab12cd34")
+        assertNotNull(BlobRules.moveAside(File(left, "chunks"), BlobRules.deadChunksName(now - day)))
+        // being deleted by this very run of the app: not the sweep's business
+        val closing = group(root, "ef56ab78", pieceAge = 60 * hour)
+        BlobRules.sweep(root, now, activeFp = "cc33dd44") { it == "ef56ab78" }
+        // the group on the radio expires its own pieces; a paused one has nobody to do it
+        assertTrue(File(active, "chunks/f.abcdef.0.json").exists())
+        assertFalse(File(paused, "chunks/f.abcdef.0.json").exists())
+        assertTrue(File(paused, "chunks/f.abcdef.1.json").exists())
+        assertEquals(listOf("files"), left.list()!!.toList())
+        assertTrue(File(closing, "chunks/f.abcdef.0.json").exists())
+        for (g in listOf(active, paused, left, closing)) assertTrue(File(g, "files/abcdefgh-photo.jpg").exists())
+        // a folder that never existed is no trouble
+        BlobRules.sweep(File(root, "nowhere"), now, activeFp = null)
+    }
 }

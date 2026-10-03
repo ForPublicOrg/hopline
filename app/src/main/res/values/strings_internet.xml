@@ -24,6 +24,7 @@
     <string name="net_other_group">This is from “%1$s”, which isn\'t on the radio right now.</string>
     <string name="net_other_group_unnamed">This is from another of your groups, which isn\'t on the radio right now.</string>
     <string name="net_other_group_gone">That\'s from a group that isn\'t on this phone any more.</string>
+    <string name="net_other_group_left">That\'s from “%1$s”, a group you left.</string>
     <string name="net_switch_to_it">Switch to it</string>
     <string name="net_not_now">Not now</string>
 

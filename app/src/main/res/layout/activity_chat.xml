@@ -167,4 +167,19 @@
             android:layout_marginStart="8dp" android:background="@drawable/bg_send_fab" android:src="@drawable/ic_send"
             android:contentDescription="@string/send" android:elevation="1dp" android:padding="14dp" android:scaleType="fitCenter" />
     </LinearLayout>
+
+    <!-- The kept chat of a group this phone left: where the composer would be, one line saying
+         why there is none, and the way back in. -->
+    <LinearLayout android:id="@+id/left_bar" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical" android:visibility="gone"
+        android:background="@color/surface" android:elevation="2dp" android:minHeight="56dp"
+        android:paddingStart="16dp" android:paddingEnd="4dp" android:paddingTop="4dp" android:paddingBottom="4dp">
+        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:text="@string/left_bar" android:textSize="14sp" android:textColor="@color/text_muted" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/left_rejoin"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="4dp"
+            android:minHeight="48dp" android:text="@string/rejoin" android:textAllCaps="false"
+            android:textSize="15sp" android:textStyle="bold" android:textColor="@color/ember" />
+    </LinearLayout>
 </LinearLayout>
