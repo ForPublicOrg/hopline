@@ -17,7 +17,6 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.doAfterTextChanged
 import app.hopline.R
 import app.hopline.core.Names
-import app.hopline.core.Upi
 import app.hopline.core.Words
 import app.hopline.data.SavedGroup
 import app.hopline.databinding.ActivityGroupBinding
@@ -51,7 +50,7 @@ class GroupActivity : AppCompatActivity() {
         }
         val parsed = parseQr(text)
         // A payment code is offered for paying only when the Pay screen could pay it; any other is just "not an invite".
-        if (parsed == null) { if (Upi.payable(text) && PayActivity.offered(this)) offerPay(text) else notAnInvite(text); return@registerForActivityResult }
+        if (parsed == null) { notAnInvite(text); return@registerForActivityResult }
         showPanel(JOIN, focus = false)
         b.code.setText(Words.pretty(parsed.first))
         tryJoin(parsed.first, parsed.second)
@@ -113,9 +112,6 @@ class GroupActivity : AppCompatActivity() {
             goHome()
         }
         ScreenDialog.listen(this, K_NOT_INVITE) { launchScan() }
-        ScreenDialog.listen(this, K_PAY_CODE) { r ->
-            r.getString(K_SCANNED)?.let { startActivity(Intent(this, PayActivity::class.java).putExtra(PayActivity.EXTRA_SCANNED, it)) }
-        }
 
         if (fresh) {
             // Opened from a QR link, or an invite that waited through onboarding?
@@ -291,14 +287,6 @@ class GroupActivity : AppCompatActivity() {
             getString(R.string.scan_again))
     }
 
-    /**
-     * A UPI payment code, scanned here for an invite: not something to join, but something Hopline
-     * can do — pay it with no internet. Asked first; the code goes along as it was scanned.
-     */
-    private fun offerPay(text: String) =
-        ScreenDialog.confirm(this, K_PAY_CODE, getString(R.string.pay_join_title), getString(R.string.pay_join_body),
-            getString(R.string.pay_join_ok), data = bundleOf(K_SCANNED to text))
-
     companion object {
         private const val NONE = 0
         private const val START = 1
@@ -312,8 +300,6 @@ class GroupActivity : AppCompatActivity() {
         private const val K_LINK = "group.link"
         private const val K_SWITCH = "group.switch"
         private const val K_NOT_INVITE = "group.notInvite"
-        private const val K_PAY_CODE = "group.payCode"
-        private const val K_SCANNED = "scanned"
 
         fun qrText(code: String, name: String): String = "hopline://join?code=${Words.normalise(code)}&name=${Uri.encode(name)}"
 

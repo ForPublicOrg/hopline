@@ -149,23 +149,16 @@ a daily allowance you choose (5 MB by default — texts home cost no data and ca
 out), never while roaming unless you allow it, and you can see exactly what it fetched and for whom.
 
 **Pay without internet** — Home → *Pay without internet* (India). With a bar of ordinary phone
-signal — on Airtel, Vi, BSNL or MTNL, not Jio — you can pay by UPI: scan the shop's QR code (or
-type a UPI ID), check who and how much, and tap
-*Copy UPI ID and open \*99#*. Hopline hands over to **\*99#**, the banks' own UPI service, which
-runs on plain phone signal with no data at all:
+signal — on Airtel, Vi, BSNL or MTNL, not Jio — you can pay by UPI with **\*99#**, the banks' own
+UPI service, which runs on plain phone signal with no data at all. Tap *Pay with \*99#*:
 
-- **Hopline prepares, your bank pays.** The UPI ID goes on the clipboard and the Phone app opens
-  with `*99*1*3#` typed in. You press call, paste the ID, see the name your bank has for it, type
-  the amount, and enter your UPI PIN in your phone company's own box. Hopline never sees, asks for
-  or stores the PIN, and never puts anything in the Phone app but `*99#` or `*99*1*3#` — you press
-  call.
-- **Afterwards it asks "Did it go through?"** Your bank's message and SMS are the proof; if it
-  didn't work, Hopline says what each error means and how to check before paying twice.
-- **It reads the codes shops print** — UPI links and Bharat QR (the checksum must match) — and
-  turns away autopay, foreign-currency and damaged or altered codes. It cannot tell a real code
-  from a sticker pasted over it, so it leads with the UPI ID it will copy and shows a name in the
-  code only as the code's claim: the name your bank shows is the check. People you said you paid
-  are kept under *Recent*.
+- **Your bank asks, you answer.** The Phone app opens with `*99*1*3#` typed in. You press call,
+  type the UPI ID (a shop's QR sticker usually has it printed under the code), see the name your
+  bank has for it, type the amount, and enter your UPI PIN in your phone company's own box. Hopline
+  asks for none of it, never sees the PIN, and never puts anything in the Phone app but `*99#` or
+  `*99*1*3#`.
+- **The steps and the errors, on one page.** What each thing the \*99# box may say means, and how
+  to check before paying twice. Your bank's message and SMS are the proof it went through.
 - **First time?** *Set up \*99#* opens the Phone app with `*99#` typed in: you'll need your debit
   card, and no internet.
 
@@ -247,10 +240,10 @@ one, and more.
   browser say so. The person whose phone has signal can see what you asked for.
 - **Paying without internet rides on \*99#, with its limits.** Up to ₹5,000 at a time (your bank may
   allow less in a day). It works on Airtel, Vi, BSNL and MTNL — **not on Jio** — and only from the
-  SIM whose number your bank has. A code made for one bill (on a card machine or a website) may fail,
-  or reach the shop without saying which bill it paid. Android lets no app answer the \*99# menus, so
-  you type the amount and PIN yourself, and the PIN shows as you type it. Hopline can't see whether
-  the payment went through — your bank's message is the proof.
+  SIM whose number your bank has. Paying a bill shown on a card machine or a website this way may
+  fail, or reach the shop without saying which bill it paid. Android lets no app answer the \*99#
+  menus, so you type the UPI ID, amount and PIN yourself, and the PIN shows as you type it. Hopline
+  can't see whether the payment went through — your bank's message is the proof.
 - **Bluetooth stacks are flaky.** Links sometimes take 10–60 s to form, and some phones refuse
   to link until Bluetooth is toggled off and on. Hopline retries and restarts the radio on its
   own, but it is not instant.
@@ -295,7 +288,7 @@ app/src/main/java/app/hopline/
   core/      Crypto (group key, signing), Words (the 3-word codes), Names (cleaning names from the air),
              WebText / Weather / Search / SmsText / SafeUrl / HelperLimits (the shared-internet engines, pure Kotlin),
              Update (reading GitHub's release, which version is newer, is the download the published one),
-             Upi (reading UPI and Bharat QR codes, amounts, the only two codes Hopline may dial)
+             Upi (the only two codes Hopline may dial, and which phones *99# works on)
   mesh/      Model, Router (flooding, carry, receipts, files, errands, the live window), ChunkStore, NearbyTransport,
              Archive (what a group's saved state becomes when you leave it)
   data/      Store (name, saved groups, read marks, per-group state), GroupRules (the groups you're in, the ones
@@ -310,7 +303,7 @@ app/src/main/java/app/hopline/
 app/src/test/ RouterTest, ProtocolTest, ErrandTest, ArchiveTest, SpillTest — the simulated group;
               GroupRulesTest, HistoryTest, HistoryRulesTest, EarlierPagesTest — leaving, rejoining and long chats;
               CoreTextTest — the engines on saved pages; UpdateTest — the updater's rules on a saved GitHub answer;
-              UpiTest — real UPI and Bharat QR codes, tricks and junk
+              UpiTest — only *99# itself is ever dialled
 ```
 
 ## License

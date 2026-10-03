@@ -1,121 +1,56 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Pay without internet (2.3). Every name starts with pay_ so it can never collide with
-         another screen's strings file. Hopline only gets a payment ready and hands over to *99#,
-         the bank's own service: nothing here may sound as if Hopline moves the money, sees the
-         PIN, or knows how a payment went. Honest about the limits — the amount, the networks,
-         one-bill codes — before the person finds them out the hard way. -->
+    <!-- Pay without internet. Every name starts with pay_ so it can never collide with another
+         screen's strings file. Hopline only explains *99# and opens it — the bank's own service
+         asks for the UPI ID, the amount and the PIN itself: nothing here may sound as if Hopline
+         moves the money, sees the PIN, or knows how a payment went. Honest about the limits — the
+         amount, the networks, one-bill codes — before the person finds them out the hard way. -->
 
     <string name="pay_rupee" translatable="false">₹</string>
     <string name="pay_bullet" translatable="false">•</string>
-    <!-- The amount field's hint: a nought, nothing to translate -->
-    <string name="pay_amount_zero" translatable="false">0</string>
 
     <!-- Home row, and the screen's title -->
     <string name="pay_title">Pay without internet</string>
     <string name="pay_row_title">Pay without internet</string>
-    <string name="pay_row_sub">Scan a UPI QR code. Needs only phone signal.</string>
+    <string name="pay_row_sub">Pay any UPI ID with *99#. Needs only phone signal.</string>
 
-    <!-- Whom to pay -->
     <string name="pay_hero_title">Pay by UPI when there\'s no internet</string>
-    <string name="pay_hero_body">No internet, but a bar of phone signal? You can still pay by UPI on Airtel, Vi, BSNL and MTNL. Hopline reads the QR code, then hands over to *99# — your bank\'s own service, which runs on plain phone signal.</string>
-    <string name="pay_scan">Scan a QR code</string>
-    <string name="pay_scan_prompt">Point at the UPI QR code</string>
-    <string name="pay_scan_no_camera">Hopline needs the camera to scan a QR code. You can type the UPI ID instead.</string>
-    <!-- The camera was refused and Android won't ask again: Settings, or type the ID -->
-    <string name="pay_camera_title">Hopline can\'t use the camera</string>
-    <string name="pay_camera_body">To scan a QR code, allow the camera for Hopline in Settings. Or type the UPI ID instead — most shops print it under their code.</string>
-    <string name="pay_type">Type a UPI ID</string>
-    <string name="pay_id_hint">UPI ID, like name@bank</string>
-    <string name="pay_id_next">Next</string>
-    <string name="pay_id_bad">That doesn\'t look like a UPI ID. It should look like name@bank.</string>
-    <string name="pay_id_phone">That\'s a phone number. Ask for their UPI ID — it looks like name@bank.</string>
+    <string name="pay_hero_body">No internet, but a bar of phone signal? You can still pay by UPI. *99# is your bank\'s own service: it runs on plain phone signal and asks for everything itself.</string>
+    <string name="pay_go">Pay with *99#</string>
+    <string name="pay_no_phone_app">This phone has no Phone app, so it can\'t use *99#.</string>
+
     <string name="pay_note_online">You have internet right now, so your usual UPI app will be quicker. This way is for when you don\'t.</string>
     <string name="pay_note_no_signal">No phone signal right now. *99# needs ordinary signal — try again when you have a bar.</string>
     <string name="pay_note_jio">This phone\'s SIM looks like Jio, and *99# doesn\'t work on Jio. If your bank has the number of another SIM in this phone, choose that SIM when the Phone app opens.</string>
 
-    <!-- People paid before -->
-    <string name="pay_recent">Recent</string>
-    <string name="pay_recent_line">%1$s · %2$s</string>
-    <string name="pay_recent_remove">Remove</string>
-    <!-- What TalkBack says a tap and a long-press on a Recent row do -->
-    <string name="pay_recent_action_pay">start a payment to them</string>
-    <string name="pay_recent_action_remove">remove from Recent</string>
+    <!-- How to pay -->
+    <string name="pay_steps">How to pay</string>
+    <string name="pay_step_1">Tap Pay with *99#. The Phone app opens with *99*1*3# typed in. Press call — on the SIM your bank has.</string>
+    <string name="pay_step_2">Type the UPI ID you\'re paying, like name@bank. A shop\'s QR sticker usually has it printed under the code.</string>
+    <string name="pay_step_3">Your bank shows the name on that UPI ID. If it\'s who you mean to pay, type the amount.</string>
+    <string name="pay_step_4">When it asks for a remark, send 1 to skip it.</string>
+    <string name="pay_step_5">Type your UPI PIN and send. The PIN shows as you type, so keep the screen to yourself.</string>
+    <string name="pay_step_6">Your bank shows whether it went through, and sends you an SMS.</string>
+    <!-- What TalkBack reads for one step: its number, then the step -->
+    <string name="pay_step_desc">Step %1$s. %2$s</string>
 
     <!-- Good to know -->
     <string name="pay_know">Good to know</string>
     <string name="pay_know_limit">Up to ₹5,000 at a time. Your bank may allow less in a day.</string>
     <string name="pay_know_sims">Works on Airtel, Vi, BSNL and MTNL. Not on Jio.</string>
     <string name="pay_know_sim">Call from the SIM whose number your bank has.</string>
-    <string name="pay_know_codes">Works best with a shop\'s printed QR code or a person\'s UPI ID. A code made for one bill — on a card machine or a website — may not work.</string>
+    <string name="pay_know_codes">Paying a bill shown on a card machine or a website this way may fail, or the shop may not see which bill you paid. A shop\'s printed UPI ID works best.</string>
     <string name="pay_know_pin">Hopline never sees your UPI PIN. You type it into your phone company\'s own box.</string>
     <string name="pay_know_setup">Never used *99#? Set it up once. You\'ll need your debit card, and no internet.</string>
     <string name="pay_setup_btn">Set up *99#</string>
-    <string name="pay_no_phone_app">This phone has no Phone app, so it can\'t use *99#.</string>
 
-    <!-- Confirm: whom, how much, and what happens next -->
-    <string name="pay_paying">Paying this UPI ID</string>
-    <!-- What TalkBack says as the payee's stage opens: the UPI ID that will be copied -->
-    <string name="pay_paying_desc">Paying %1$s</string>
-    <!-- Under the UPI ID: the name the code gives, marked as only the code's claim -->
-    <string name="pay_name_claim">Name on the code: “%1$s”</string>
-    <string name="pay_name_note">This name comes from the code and isn\'t checked. Your bank shows the real name before you pay.</string>
-    <string name="pay_no_name_note">Your bank shows the name on this UPI ID before you pay.</string>
-    <string name="pay_one_bill">This code was made for one bill. Paying it this way may fail, or the shop may not see which bill you paid. If you can, ask for the shop\'s printed QR code or its UPI ID.</string>
-    <string name="pay_amount">Amount</string>
-    <string name="pay_amount_fixed">Set by the code</string>
-    <string name="pay_amount_empty">Enter an amount.</string>
-    <string name="pay_amount_small">Enter at least ₹1.</string>
-    <string name="pay_amount_big">*99# sends at most ₹5,000 at a time.</string>
-    <string name="pay_amount_floor">This code needs at least %1$s.</string>
-    <!-- Something pasted into the amount that isn't one: nothing went in, so say why -->
-    <string name="pay_amount_paste">Only an amount in figures can go here, like 250 or 1250.50.</string>
-    <string name="pay_steps">What happens next</string>
-    <string name="pay_step_1">Hopline copies the UPI ID and opens the Phone app with *99*1*3# typed in. Press call — on the SIM your bank has.</string>
-    <string name="pay_step_2">A box asks for the UPI ID. Press and hold inside it, then tap Paste.</string>
-    <string name="pay_step_3">Your bank shows a name. If it\'s who you mean to pay, type the amount: %1$s</string>
-    <string name="pay_step_3_blank">Your bank shows a name. If it\'s who you mean to pay, type the amount.</string>
-    <string name="pay_step_4">When it asks for a remark, send 1 to skip it.</string>
-    <string name="pay_step_5">Type your UPI PIN and send. The PIN shows as you type, so keep the screen to yourself.</string>
-    <!-- What TalkBack reads for one step: its number, then the step -->
-    <string name="pay_step_desc">Step %1$s. %2$s</string>
-    <string name="pay_pin_promise">Hopline never sees or asks for your PIN.</string>
-    <string name="pay_go">Copy UPI ID and open *99#</string>
-    <string name="pay_clip_label">UPI ID</string>
-    <string name="pay_copied">UPI ID copied</string>
-
-    <!-- Back from the Phone app -->
-    <string name="pay_after_title">Did it go through?</string>
-    <string name="pay_after_body">Hopline can\'t see inside the *99# box. The message your bank showed, and its SMS, are your proof.</string>
-    <string name="pay_after_line">%1$s to %2$s</string>
-    <string name="pay_after_yes">Yes, it\'s paid</string>
-    <string name="pay_after_no">No, or not sure</string>
-    <string name="pay_saved">Saved to Recent</string>
-    <string name="pay_help_title">What went wrong?</string>
+    <!-- If it doesn't work -->
+    <string name="pay_help_title">If it doesn\'t work</string>
     <string name="pay_help_mmi">“Connection problem or invalid MMI code” — that SIM can\'t reach *99#. It may be Jio, or have no signal. Try your other SIM.</string>
     <string name="pay_help_setup">It asked for your language or your bank — *99# isn\'t set up on that number yet. Set it up, then pay again.</string>
     <string name="pay_help_menu">It showed a menu instead of asking for the UPI ID — choose Send Money, then UPI ID.</string>
-    <string name="pay_help_id">It said the UPI ID is wrong — check it pasted in full; some networks cut it short at the @. You can type it by hand: %1$s</string>
-    <string name="pay_help_declined">It said declined or failed — a code made for one bill often can\'t be paid this way, and your bank may have reached its limit for the day.</string>
+    <string name="pay_help_id">It said the UPI ID is wrong — check every letter, and the part after the @. Some networks cut a UPI ID short at the @; if it keeps failing, try your other SIM.</string>
+    <string name="pay_help_declined">It said declined or failed — your bank may have reached its limit for the day, or the shop\'s UPI ID can\'t be paid this way.</string>
     <string name="pay_help_unsure">Not sure if the money left? Don\'t pay twice. Open *99#, choose Transactions, and look.</string>
-    <string name="pay_again">Try again</string>
     <string name="pay_open_menu">Open *99#</string>
-    <string name="pay_done">Done</string>
-
-    <!-- A code that can't be paid this way -->
-    <string name="pay_bad_title">Can\'t pay this code</string>
-    <string name="pay_bad_not_upi">That isn\'t a UPI payment code.</string>
-    <string name="pay_bad_not_pay">That code sets up something other than a one-time payment, such as autopay. It can\'t be used here.</string>
-    <string name="pay_bad_no_id">That code has no UPI ID in it that Hopline can read.</string>
-    <string name="pay_bad_foreign">That code isn\'t in rupees. *99# pays in rupees only.</string>
-    <string name="pay_bad_special">That code is for a special kind of payment that *99# can\'t make.</string>
-    <string name="pay_bad_broken">This code is damaged or has been changed, so Hopline won\'t use it. Ask the shop for its UPI ID and type it instead.</string>
-    <string name="pay_bad_too_big">This code asks for %1$s. *99# sends at most ₹5,000 at a time, so it can\'t be paid this way.</string>
-    <string name="pay_bad_too_small">This code asks for %1$s. *99# sends at least ₹1, so it can\'t be paid this way.</string>
-    <string name="pay_scan_again">Scan again</string>
-
-    <!-- A payment code scanned on the Join screen -->
-    <string name="pay_join_title">That\'s a UPI payment code</string>
-    <string name="pay_join_body">It isn\'t a group invite. Pay it without internet?</string>
-    <string name="pay_join_ok">Continue</string>
 </resources>

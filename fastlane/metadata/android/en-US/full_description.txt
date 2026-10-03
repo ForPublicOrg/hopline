@@ -34,7 +34,7 @@ SHARED INTERNET
 If anyone in the group gets signal, everyone can use a sliver of it: the weather where you are, a text home ("I'm OK", with your location) sent by any phone with even one bar of mobile service, a quick look-up, or a web page as readable text. Ask even when nobody has signal - the request travels with the group and runs when someone gets it. Answers come back only to you. Your phone helps only while "Share my internet" is on, within a daily allowance you choose, and never while roaming unless you allow it.
 
 PAY WITHOUT INTERNET (INDIA)
-No data, but a bar of phone signal? Scan a shop's UPI QR code and Hopline copies the UPI ID and opens your Phone app on *99#, the banks' own UPI service. You press call and type the amount and your PIN there - Hopline never sees them and can't tell if it went through. Not on Jio; up to Rs 5,000 at a time.
+No data, but a bar of phone signal? Hopline opens your Phone app on *99#, the banks' own UPI service, and explains each step. You press call and type the UPI ID, the amount and your PIN there - Hopline never sees them and can't tell if it went through. Not on Jio; up to Rs 5,000 at a time.
 
 UPDATES, NEVER FORCED
 With internet, Hopline asks GitHub whether a newer version is out - nothing about you or your group is sent - and fetches it on WiFi. It installs only when you tap Install; switch it off in Settings if you like.
