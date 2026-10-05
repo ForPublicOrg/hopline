@@ -1,5 +1,6 @@
 package app.hopline.data
 
+import app.hopline.core.Crypto
 import app.hopline.core.Words
 import app.hopline.mesh.Group
 import org.json.JSONArray
@@ -40,10 +41,101 @@ class GroupRulesTest {
         assertEquals(11L, g.joinedAt); assertEquals(22L, g.lastActive); assertEquals(33L, g.nameAt)
         assertEquals(0L, g.leftAt); assertFalse(g.left); assertFalse(g.sealed)
         assertEquals(listOf(g.code), GroupRules.members(listOf(g)).codes())
-        // …and a member is written back exactly as 2.2 wrote it: no new keys for an old build to trip on.
+        // its files are where 2.2/2.3 put them: named by the old fingerprint of the code
+        assertEquals(Crypto.legacyFingerprint(trek), g.sid)
+        assertEquals(g.sid, g.fingerprint)
+        assertEquals("", g.mk); assertNull(g.masterKey())
+        // …and it is written back with that storage id, and nothing else new until its key is worked out
         val back = JSONArray(GroupRules.encode(listOf(g))).getJSONObject(0)
-        assertEquals(setOf("code", "name", "joinedAt", "lastActive", "nameAt"), back.keySet())
+        assertEquals(setOf("code", "name", "joinedAt", "lastActive", "nameAt", "sid"), back.keySet())
+        assertEquals(Crypto.legacyFingerprint(trek), back.getString("sid"))
+        back.remove("sid")
         assertTrue(back.similar(JSONArray(raw).getJSONObject(0)))
+    }
+
+    @Test fun aGroupSavedBy23KeepsItsFilesThroughEveryChange() {
+        // 2.3 wrote what 2.2 wrote, plus the left marks: no storage id, no key
+        val raw = """[{"code":"tiger-river-lamp","name":"Trek","joinedAt":11,"lastActive":22,"nameAt":33},
+            {"code":"apple-moon-drum","name":"Family","joinedAt":1,"lastActive":2,"nameAt":0,"leftAt":5,"sealed":true}]"""
+        val list = GroupRules.parse(raw)
+        val trekFp = Crypto.legacyFingerprint(trek)
+        val familyFp = Crypto.legacyFingerprint(family)
+        assertEquals(trekFp, list.of(trek).fingerprint); assertEquals(familyFp, list.of(family).fingerprint)
+        val mk = Crypto.b64(ByteArray(32) { 7 })
+        // whatever happens to the list, the same group keeps the same files, and its key once it has one
+        fun check(what: String, groups: List<SavedGroup>) {
+            for (l in listOf(groups, saved(groups))) {
+                assertEquals(what, trekFp, l.of(trek).fingerprint)
+                l.firstOrNull { it.code == family }?.let { assertEquals(what, familyFp, it.fingerprint) }
+            }
+        }
+        val keyed = GroupRules.setKey(list, trek, mk)
+        assertEquals(mk, saved(keyed).of(trek).mk)
+        check("key", keyed)
+        check("rename", GroupRules.rename(keyed, trek, "Kedarkantha", now))
+        check("leave", GroupRules.leave(keyed, trek, trek, now).groups)
+        check("rejoin", GroupRules.rejoin(GroupRules.leave(keyed, trek, trek, now).groups, null, trek, now).groups)
+        check("rejoin a left one", GroupRules.rejoin(keyed, trek, family, now).groups)
+        check("seal", GroupRules.seal(keyed, family))
+        check("switch", GroupRules.setActive(keyed, trek, trek, now).groups)
+        check("add another", GroupRules.add(keyed, trek, fest, "Fest", 0, now).groups)
+        check("add a left one again", GroupRules.add(keyed, trek, family, "", 0, now).groups)
+        check("remove", GroupRules.remove(keyed, trek, family).groups)
+        // and the key stays through all of it
+        for (l in listOf(GroupRules.rename(keyed, trek, "K", now), GroupRules.leave(keyed, trek, trek, now).groups,
+                GroupRules.setActive(keyed, trek, trek, now).groups, GroupRules.add(keyed, trek, trek, "", 0, now).groups)) {
+            assertEquals(mk, l.of(trek).mk); assertEquals(mk, saved(l).of(trek).mk)
+            assertEquals(32, saved(l).of(trek).masterKey()!!.size)
+        }
+    }
+
+    @Test fun aNewGroupGetsAStorageIdOfItsOwn() {
+        val list = listOf(g(trek, "Trek"), g(family, leftAt = now - day))
+        val made = GroupRules.add(list, trek, fest, "Fest", 777, now)
+        val sid = made.groups.of(fest).sid
+        assertEquals(GroupRules.SID_LENGTH, sid.length); assertTrue(Crypto.isAlphabet(sid, GroupRules.SID_LENGTH))
+        assertTrue(sid != Crypto.legacyFingerprint(fest))
+        assertEquals(sid, saved(made.groups).of(fest).fingerprint)
+        // never one another saved group has — even when the dice say so
+        val taken = list.of(trek).sid
+        val ids = ArrayDeque(listOf(taken, list.of(family).sid, "freshone2345"))
+        val again = GroupRules.add(list, trek, fest, "", 0, now, newSid = { ids.removeFirst() })
+        assertEquals("freshone2345", again.groups.of(fest).sid)
+        // two groups made one after the other never share one
+        val second = GroupRules.add(made.groups, fest, old, "", 0, now)
+        assertEquals(4, second.groups.map { it.sid }.toSet().size)
+    }
+
+    @Test fun theKeyIsKeptOnceAndNeverReplaced() {
+        val mk = Crypto.b64(ByteArray(32) { 1 })
+        val other = Crypto.b64(ByteArray(32) { 2 })
+        val made = GroupRules.add(listOf(g(trek)), trek, fest, "Fest", 0, now, mk = mk)
+        assertEquals(mk, made.groups.of(fest).mk)
+        assertEquals(mk, saved(made.groups).of(fest).mk)
+        // a group from before 2.4 gets its key later; one that has it keeps it
+        val list = listOf(g(trek), g(family, leftAt = now))
+        val keyed = GroupRules.setKey(list, family, mk)
+        assertEquals(mk, keyed.of(family).mk); assertEquals("", list.of(family).mk)   // a copy, as always
+        assertTrue(keyed.of(family).left)
+        assertSame(keyed, GroupRules.setKey(keyed, family, other))
+        assertSame(list, GroupRules.setKey(list, "wizard pirate robot", mk))
+        assertSame(list, GroupRules.setKey(list, trek, ""))
+        // adding a code that has a key already doesn't swap it
+        assertEquals(mk, GroupRules.add(keyed, trek, family, "", 0, now, mk = other).groups.of(family).mk)
+        // a member without one takes it from the add
+        assertEquals(other, GroupRules.add(list, family, trek, "", 0, now, mk = other).groups.of(trek).mk)
+    }
+
+    @Test fun aBadStorageIdOrKeyNeverLosesTheGroup() {
+        val a = JSONArray()
+            .put(JSONObject().put("code", trek).put("name", "Trek").put("sid", "../../etc").put("mk", "not a key"))
+            .put(JSONObject().put("code", family).put("name", "Family").put("sid", 42).put("mk", Crypto.b64(ByteArray(16))))
+            .put(JSONObject().put("code", fest).put("name", "Fest").put("sid", "abcdefgh2345").put("mk", Crypto.b64(ByteArray(32) { 9 })))
+        val back = GroupRules.parse(a.toString())
+        assertEquals(listOf(trek, family, fest), back.codes())
+        assertEquals(Crypto.legacyFingerprint(trek), back.of(trek).sid); assertEquals("", back.of(trek).mk)
+        assertEquals(Crypto.legacyFingerprint(family), back.of(family).sid); assertNull(back.of(family).masterKey())
+        assertEquals("abcdefgh2345", back.of(fest).sid); assertEquals(32, back.of(fest).masterKey()!!.size)
     }
 
     @Test fun theLeftMarkAndTheSealSurviveARoundTrip() {
@@ -72,7 +164,7 @@ class GroupRulesTest {
 
     @Test fun theFingerprintIsTheGroupsOwn() {
         val saved = g(trek)
-        assertEquals(Group(trek, "").fingerprint, saved.fingerprint)
+        assertEquals(Group.derive(trek, "").fingerprint, saved.fingerprint)
         assertSame(saved.fingerprint, saved.fingerprint)          // worked out once
         assertEquals(saved.fingerprint, saved.copy().fingerprint)
     }
@@ -287,8 +379,8 @@ class GroupRulesTest {
         assertTrue(GroupRules.remove(last.groups, null, family).groups.isEmpty())
     }
 
-    @Test fun prefKeysForNamesAllThree() {
-        assertEquals(listOf("read-ab12cd34", "mute-ab12cd34", "unread-ab12cd34"), GroupRules.prefKeysFor("ab12cd34"))
+    @Test fun prefKeysForNamesThemAll() {
+        assertEquals(listOf("read-ab12cd34", "mute-ab12cd34", "unread-ab12cd34", "outbox-ab12cd34"), GroupRules.prefKeysFor("ab12cd34"))
     }
 
     @Test fun theCodeIsNormalisedHoweverItWasTyped() {

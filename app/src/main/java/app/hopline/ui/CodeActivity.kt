@@ -1,17 +1,12 @@
 package app.hopline.ui
 
 import android.content.ActivityNotFoundException
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.View
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import app.hopline.R
 import app.hopline.core.Words
@@ -22,11 +17,14 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 
-/** The three words, huge, plus a QR of the same thing. Keep the screen on so it can be held up for others. */
+/**
+ * The code's words, huge, one to a line (four; an older group's three), plus a QR of the same
+ * thing. Keep the screen on so it can be held up for others.
+ */
 class CodeActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val group = Core.store.group()
+        val group = Core.store.activeGroup()
         if (group == null) { startActivity(Intent(this, LaunchActivity::class.java)); finish(); return }
         val b = ActivityCodeBinding.inflate(layoutInflater)
         setContentView(b.root)
@@ -49,12 +47,7 @@ class CodeActivity : AppCompatActivity() {
                 startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), null))
             } catch (e: ActivityNotFoundException) { }
         }
-        b.copy.setOnClickListener {
-            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            cm.setPrimaryClip(ClipData.newPlainText(getString(R.string.code_clip_label), pretty))
-            // Android 13+ confirms a copy on its own; a toast on top would say it twice.
-            if (Build.VERSION.SDK_INT < 33) Toast.makeText(this, R.string.code_copied, Toast.LENGTH_SHORT).show()
-        }
+        b.copy.setOnClickListener { Ui.copyCode(this, pretty) }
 
         val first = intent.getBooleanExtra("first", false)
         b.done.setOnClickListener {

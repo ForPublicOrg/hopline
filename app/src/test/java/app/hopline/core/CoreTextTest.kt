@@ -61,6 +61,100 @@ class CoreTextTest {
         assertTrue(page.text.contains("Live train status"))
     }
 
+    @Test fun `a page built to stall the reader is read in one walk`() {
+        // A few KB gzipped: a tag opened 300 000 times and never closed. The patterns this replaced
+        // searched the rest of the page again for every one of them — hours of a helper's phone.
+        fun quick(what: String, html: String) {
+            val t0 = System.nanoTime()
+            val page = WebText.extract(html, "https://example.org/")
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            assertTrue("$what took $ms ms", ms < 1_000)
+            assertTrue(what, page.links.size <= WebText.MAX_LINKS)
+        }
+        quick("forms", "<form>".repeat(300_000))
+        // Under the size cap too, every other shape that made the patterns search again:
+        val n = WebText.MAX_HTML / 12
+        quick("tags that never end", "<a <li <p ".repeat(n / 3))
+        quick("quotes that never close", "<a href=\"x <form a='".repeat(n / 2))
+        quick("links that never close", "<a href=\"/x\">".repeat(n / 2) + "</a>")
+        quick("comments that never close", "<!--".repeat(n * 3))
+        quick("titles, articles, bodies", "<title><article><body><h1><sup><ul>".repeat(n / 3))
+        quick("meta tags", "<meta content=\"".repeat(n / 2) + "<meta name=\"description\" ".repeat(n / 4))
+        quick("role=main", "<div role=\"main\" ".repeat(n / 2) + "</div>")
+        quick("entities", "&amp;&#8217;&nbsp;".repeat(n / 2))
+    }
+
+    @Test fun `a page that still takes too long is given up on, as one that can't be read`() {
+        val page = "<form>".repeat(300_000)
+        try { WebText.extract(page, "https://example.org/", timeLimitMs = 0); fail("read anyway") } catch (e: WebText.TooComplex) { }
+        // and when the request is called off (its thread interrupted), the reading stops too
+        Thread.currentThread().interrupt()
+        try { WebText.extract(page, "https://example.org/"); fail("read anyway") } catch (e: WebText.TooComplex) {
+        } finally { Thread.interrupted() }
+        // an ordinary page is not affected
+        assertTrue(WebText.extract("<p>${"Plain words. ".repeat(40)}</p>", "https://example.org/").text.startsWith("Plain words."))
+    }
+
+    @Test fun `only the start of a huge page is read`() {
+        val html = "<html><body><p>The start of the page, which is read.</p>" + " ".repeat(WebText.MAX_HTML) +
+            "<p>The end of the page, which is never read.</p></body></html>"
+        val page = WebText.extract(html, "https://example.org/")
+        assertTrue(page.text.contains("The start of the page"))
+        assertFalse(page.text.contains("never read"))
+        // …and says so where its text stops: at the end of its last part
+        assertTrue(page.cut)
+        val parts = WebText.parts(page, 2_000)
+        assertTrue(parts.last().endsWith(WebText.CUT_NOTE))
+        assertEquals(1, parts.count { it.contains(WebText.CUT_NOTE) })
+        // a page read whole says nothing of the kind
+        val small = WebText.extract("<p>${"Plain words. ".repeat(40)}</p>", "https://example.org/")
+        assertFalse(small.cut)
+        assertFalse(WebText.parts(small, 2_000).last().contains(WebText.CUT_NOTE))
+    }
+
+    @Test fun `a script or a comment open where a huge page is cut is not read out as words`() {
+        val words = "<p>${"Words of the article, read as they should be. ".repeat(40)}</p>"
+        // a script whose end is past the cut
+        val script = "<html><body>$words" + " ".repeat(WebText.MAX_HTML - 30_000) +
+            "<script>var trackingCode = \"" + "x".repeat(60_000) + "\";</script><p>Past the cut.</p></body></html>"
+        WebText.extract(script, "https://example.org/").let { p ->
+            assertTrue(p.text.contains("Words of the article"))
+            assertFalse("the script's code", p.text.contains("trackingCode") || p.text.contains("xxxx"))
+        }
+        // the same with a style, and with a comment
+        val style = "<html><body>$words" + " ".repeat(WebText.MAX_HTML - 30_000) + "<style>.ad{color:red}" + ".b{}".repeat(20_000) + "</style></body></html>"
+        assertFalse(WebText.extract(style, "https://example.org/").text.contains("color:red"))
+        val comment = "<html><body>$words" + " ".repeat(WebText.MAX_HTML - 30_000) + "<!-- old menu, hidden" + " x".repeat(30_000) + " --></body></html>"
+        assertFalse(WebText.extract(comment, "https://example.org/").text.contains("old menu"))
+        // and a tag cut in half is not read as words either
+        val half = "<html><body>$words" + " ".repeat(WebText.MAX_HTML - words.length - 30) + "<a href=\"https://example.org/a-long-way-off\">far</a>"
+        assertFalse(WebText.extract(half, "https://example.org/").text.contains("href"))
+        // a page that fits is read as it always was: a script left open there is that page's own doing
+        val whole = "<p>${"Plain words. ".repeat(40)}</p><script>never closed"
+        assertTrue(WebText.extract(whole, "https://example.org/").text.contains("never closed"))
+    }
+
+    @Test fun `a page whose download stopped short is read as the start it is, however short`() {
+        val words = "<p>${"Words of the article, read as they should be. ".repeat(40)}</p>"
+        // A friend's data budget ran out inside a script: far under MAX_HTML, and the script's end never came
+        val script = "<html><body>$words" + " ".repeat(300_000) + "<script>var trackingCode = \"" + "x".repeat(20_000)
+        assertTrue(script.length < WebText.MAX_HTML)
+        WebText.extract(script, "https://example.org/", cutShort = true).let { p ->
+            assertTrue(p.text.contains("Words of the article"))
+            assertFalse("the script's code", p.text.contains("trackingCode") || p.text.contains("xxxx"))
+            assertTrue(p.cut)
+            assertTrue(WebText.parts(p, 2_000).last().endsWith(WebText.CUT_NOTE))
+        }
+        // stopped mid-sentence: the words up to there, and then the note that the page goes on
+        WebText.extract("<html><body>$words<p>The pass is open until", "https://example.org/", cutShort = true).let { p ->
+            assertTrue(p.text, p.text.endsWith("The pass is open until"))
+            assertTrue(WebText.parts(p, 2_000).last().endsWith("The pass is open until\n\n" + WebText.CUT_NOTE))
+        }
+        // stopped inside a tag, or inside a comment: neither is read as words
+        assertFalse(WebText.extract("<html><body>$words<a href=\"https://example.org/a-long", "https://example.org/", cutShort = true).text.contains("href"))
+        assertFalse(WebText.extract("<html><body>$words<!-- old menu, hidden", "https://example.org/", cutShort = true).text.contains("old menu"))
+    }
+
     @Test fun `the charset comes from the header, then the page, then a sensible guess`() {
         val cyr = "Привет".toByteArray(charset("windows-1251"))
         assertEquals("Привет", WebText.decode(cyr, "text/html; charset=windows-1251"))

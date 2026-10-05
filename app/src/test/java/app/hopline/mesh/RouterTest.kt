@@ -1,7 +1,9 @@
 package app.hopline.mesh
 
 import app.hopline.core.Crypto
+import app.hopline.core.IdentityKeys
 import app.hopline.core.Words
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -9,6 +11,10 @@ import org.junit.Test
 /**
  * A fake radio: phones are connected by explicit links, frames are delivered in order, and
  * delivery acks fire after each frame. Lets us simulate a whole trekking group on a laptop.
+ *
+ * Phones are named ("A", "B", …) for the test's sake; each name has one key pair for the whole
+ * run, so a phone built again under the same name is the same phone, with the same node id. The
+ * node id is the real one, made from the key: tests ask [id] for it, never assume the name.
  */
 class FakeNet {
     var now = 1_700_000_000_000L
@@ -17,6 +23,8 @@ class FakeNet {
     var dropEnvFrames = 0
     /** If set, only drop env frames SENT BY this node (lets a test lose one specific relay hop). */
     var dropEnvFrom: String? = null
+    /** When set, every frame any phone sends is kept here as text, for tests that look for what must never be on the air. */
+    var frames: ArrayList<String>? = null
     val nodes = LinkedHashMap<String, Node>()
     private val pending = ArrayDeque<Delivery>()
     private var payloadSeq = 0L
@@ -39,7 +47,9 @@ class FakeNet {
         override fun onLog(text: String) { log.add(text) }
     }
 
-    inner class Node(val id: String, val name: String, code: String) {
+    /** [label] is the test's name for the phone (and its links: "A>B"); [name] its display name. */
+    inner class Node(val label: String, val name: String, code: String) {
+        val id: String = idOf(label)
         val peers = HashMap<String, Pair<String, String>>()  // my linkId -> (peer node, peer's linkId)
         val rec = Recorder()
         val transport = object : Transport {
@@ -47,27 +57,39 @@ class FakeNet {
                 val (peer, peerLink) = peers[linkId] ?: return -1
                 val pid = ++payloadSeq
                 if (bytes.size > maxFrameBytes) maxFrameBytes = bytes.size
-                val isEnv = dropEnvFrames > 0 && (dropEnvFrom == null || dropEnvFrom == id) &&
+                frames?.add(String(bytes, Charsets.UTF_8))
+                val isEnv = dropEnvFrames > 0 && (dropEnvFrom == null || dropEnvFrom == label) &&
                     (try { JSONObject(String(bytes, Charsets.UTF_8)).optString("t") } catch (e: Exception) { "" }) == "env"
-                if (isEnv) { dropEnvFrames--; pending.addLast(Delivery(id, pid, peer, peerLink, bytes, failed = true)); return pid }
-                pending.addLast(Delivery(id, pid, peer, peerLink, bytes))
+                if (isEnv) { dropEnvFrames--; pending.addLast(Delivery(label, pid, peer, peerLink, bytes, failed = true)); return pid }
+                pending.addLast(Delivery(label, pid, peer, peerLink, bytes))
                 return pid
             }
-            override fun disconnect(linkId: String) { cut(id, linkId) }
+            override fun disconnect(linkId: String) { cut(label, linkId) }
         }
         /** How far this phone's clock runs ahead of the others'. */
         var skew = 0L
-        val router = Router(Identity(id, name), Group(code, "Trek"), transport, rec) { now + skew }
+        val router = Router(identity(label, name), group(code), transport, rec) { now + skew }
     }
 
-    fun node(id: String, name: String = id, code: String = CODE): Node = Node(id, name, code).also { nodes[id] = it }
+    fun node(label: String, name: String = label, code: String = CODE): Node = Node(label, name, code).also { nodes[label] = it }
+
+    /** The node id of the phone this test calls [label]. */
+    fun id(label: String): String = idOf(label)
+    fun ids(vararg labels: String): Set<String> = labels.map { idOf(it) }.toSet()
+    /** The phone whose node id is [id]. */
+    fun byId(id: String): Node = nodes.values.first { it.id == id }
+
+    /** [at] has seen [who] before (and so has their key), without a link between them now. */
+    fun know(at: String, vararg who: String) {
+        for (w in who) nodes[at]!!.router.people.getOrPut(idOf(w)) { Person(idOf(w)).also { it.name = w } }.pk = keysOf(w).pubB64
+    }
 
     /** Like a Nearby connection: both ends get the same authentication token, unique to this link. */
     fun connect(a: String, b: String, token: String = Crypto.randomId(32)) {
         val la = "$a>$b"; val lb = "$b>$a"
         nodes[a]!!.peers[la] = b to lb; nodes[b]!!.peers[lb] = a to la
-        nodes[a]!!.router.onLinkUp(la, b, nodes[b]!!.name, token)
-        nodes[b]!!.router.onLinkUp(lb, a, nodes[a]!!.name, token)
+        nodes[a]!!.router.onLinkUp(la, nodes[b]!!.id, nodes[b]!!.name, token)
+        nodes[b]!!.router.onLinkUp(lb, nodes[a]!!.id, nodes[a]!!.name, token)
         pump()
     }
 
@@ -100,10 +122,91 @@ class FakeNet {
     }
 
     fun tickAll() { for (n in nodes.values) n.router.tick(); pump() }
-    fun line(vararg ids: String) { ids.forEach { node(it) }; for (i in 0 until ids.size - 1) connect(ids[i], ids[i + 1]) }
-    fun texts(id: String) = nodes[id]!!.router.messages.map { it.text }
+    fun line(vararg labels: String) { labels.forEach { node(it) }; for (i in 0 until labels.size - 1) connect(labels[i], labels[i + 1]) }
+    fun texts(label: String) = nodes[label]!!.router.messages.map { it.text }
 
-    companion object { const val CODE = "tiger river lamp" }
+    companion object {
+        const val CODE = "tiger river lamp hat"
+        /** A code from before 2.4: three words, and groups started with one still work. */
+        const val OLD_CODE = "tiger river lamp"
+
+        private val ring = HashMap<String, IdentityKeys>()
+        private val byNodeId = HashMap<String, IdentityKeys>()
+
+        /** One key pair per name for the whole test run: the same name is always the same phone. */
+        fun keysOf(label: String): IdentityKeys = synchronized(ring) {
+            ring.getOrPut(label) { IdentityKeys.generate().also { byNodeId[it.nodeId] = it } }
+        }
+
+        fun idOf(label: String): String = keysOf(label).nodeId
+        fun identity(label: String, name: String = label): Identity = Identity(idOf(label), name, keysOf(label))
+        /** The group as a phone in it has it (the slow stretch is remembered per code, so this is quick after the first). */
+        fun group(code: String = CODE, name: String = "Trek", nameAt: Long = 0): Group = Group.derive(code, name, nameAt)
+
+        /** A new message id of [label]'s, as its router would make it. */
+        fun newId(label: String): String = "${idOf(label)}.${Crypto.randomId(10)}"
+
+        /**
+         * An envelope exactly as [from]'s phone would seal and sign it in the group of [code] —
+         * for tests that hand a phone something crafted. A private kind is sealed for [to] (a
+         * node id), whose key must be one of the test's phones.
+         */
+        fun envelope(from: String, kind: String, p: JSONObject, ts: Long, id: String = newId(from), to: String? = null,
+                     name: String = from, h: Int = 0, code: String = CODE, er: JSONObject? = null, piece: String? = null): Envelope {
+            val toKey = if (to != null && Envelope.privateKind(kind, to)) synchronized(ring) { byNodeId[to] }?.pub else null
+            return Envelope.seal(group(code), identity(from, name), kind, p, id, ts, to, toKey, er, piece)!!.also {
+                it.payload = null
+                if (h != 0) it.hops = h
+            }
+        }
+
+        /** Sign [env] again as [as] (after a test changed its fields), with that phone's key in it. */
+        fun resign(env: Envelope, `as`: String, code: String = CODE): Envelope {
+            env.json.put("pk", keysOf(`as`).pubB64)
+            env.json.put("s", Crypto.sign(keysOf(`as`).priv, env.signed(group(code).airTag)))
+            return env
+        }
+
+        /** A file of [r]'s, cut and sealed the way the app does it: its attachment, and the sealed pieces. */
+        fun makeFile(r: Router, bytes: ByteArray, name: String = "photo.jpg", mime: String = "image/jpeg", thumb: String = "tb"): Pair<Attachment, List<String>> {
+            val key = Crypto.randomBytes(32)
+            val pieces = ArrayList<String>()
+            var i = 0
+            while (i < bytes.size) {
+                val end = minOf(bytes.size, i + Router.CHUNK_RAW)
+                pieces.add(Crypto.sealPiece(key, pieces.size, bytes.copyOfRange(i, end)))
+                i = end
+            }
+            val att = Attachment.make(r.newFid(), name, mime, bytes.size.toLong(), pieces.size, 100, 75, thumb, key = key, sha = Crypto.sha256Hex(bytes))
+            return att to pieces
+        }
+
+        /** The file of [att] put together from [r]'s pieces with the key its message brought: only what really opens. */
+        fun reassemble(r: Router, att: Attachment): ByteArray {
+            val mine = r.fileMessage(att.fid)?.att ?: att
+            val out = java.io.ByteArrayOutputStream()
+            for (i in 0 until mine.chunks) {
+                val env = r.chunks.get(Envelope.chunkId(mine.fid, i))!!
+                out.write(Crypto.openPiece(mine.key!!, i, env.sealed)!!)
+            }
+            return out.toByteArray()
+        }
+
+        /**
+         * Complete the link handshake on [r]'s link [linkId] as phone [peer] would: hello, then a
+         * proof of the group [code] and of [peer]'s key, bound to [token] (the link's token).
+         */
+        fun prove(r: Router, linkId: String, peer: String, token: String, code: String = CODE) {
+            r.onBytes(linkId, JSONObject().put("t", "hello").put("id", idOf(peer)).put("nonce", Crypto.randomId(16)).put("v", Router.VERSION).toString().toByteArray())
+            val t = Crypto.lp("hopline/v5/proof", token, r.links[linkId]!!.myNonce, idOf(peer), r.me.id)
+            r.onBytes(linkId, JSONObject().put("t", "proof").put("mac", Crypto.b64(Crypto.hmac(group(code).keys.link, t)))
+                .put("pk", keysOf(peer).pubB64).put("sig", Crypto.sign(keysOf(peer).priv, t)).toString().toByteArray())
+        }
+
+        fun frame(env: Envelope): ByteArray = JSONObject().put("t", "env").put("e", JSONObject(env.json.toString())).toString().toByteArray()
+        fun fill(vararg envs: Envelope): ByteArray =
+            JSONObject().put("t", "fill").put("envs", JSONArray(envs.map { JSONObject(it.json.toString()) })).toString().toByteArray()
+    }
 }
 
 class RouterTest {
@@ -127,15 +230,16 @@ class RouterTest {
         val m = net.nodes["A"]!!.router.sendChat("hi everyone"); net.pump()
         for (id in listOf("B", "C", "D", "E")) assertEquals(listOf("hi everyone"), net.texts(id))
         assertEquals(1, net.nodes["E"]!!.rec.shown.size)
-        assertEquals(setOf("B", "C", "D", "E"), m.reached)
+        assertEquals(net.ids("B", "C", "D", "E"), m.reached)
         assertEquals(Message.SENT, m.status)
     }
 
     @Test fun `forged message is dropped`() {
         val net = FakeNet(); net.line("A", "B", "C")
-        val fake = JSONObject().put("id", "zzzzzzzzzzzz").put("k", "chat").put("o", "A").put("on", "A").put("ts", net.now).put("h", 0)
-            .put("p", JSONObject().put("text", "fake")).put("s", "00")
-        net.nodes["B"]!!.router.onBytes("B>A", JSONObject().put("t", "env").put("e", fake).toString().toByteArray())
+        // A's own envelope, but with a signature that is over something else
+        val fake = FakeNet.envelope("A", Envelope.CHAT, JSONObject().put("text", "fake"), net.now)
+        fake.json.put("s", Crypto.sign(FakeNet.keysOf("A").priv, "something else".toByteArray()))
+        net.nodes["B"]!!.router.onBytes("B>A", FakeNet.frame(fake))
         net.pump()
         assertTrue(net.texts("B").isEmpty()); assertTrue(net.texts("C").isEmpty())
         assertTrue(net.nodes["B"]!!.rec.log.any { it.contains("forged") })
@@ -144,8 +248,8 @@ class RouterTest {
     @Test fun `phone with the wrong code cannot link and sees nothing`() {
         val net = FakeNet(); net.line("A", "B")
         net.nodes["A"]!!.router.sendChat("secret plan"); net.pump()
-        net.node("X", "Stranger", "wrong wrong wrong"); net.connect("B", "X")
-        assertTrue(net.nodes["B"]!!.router.links.values.none { it.nodeId == "X" && it.authed })
+        net.node("X", "Stranger", "wrong wrong wrong wrong"); net.connect("B", "X")
+        assertTrue(net.nodes["B"]!!.router.links.values.none { it.nodeId == net.id("X") && it.authed })
         assertFalse(net.nodes["B"]!!.peers.containsKey("B>X"))
         assertTrue(net.texts("X").isEmpty())
     }
@@ -156,12 +260,12 @@ class RouterTest {
         net.nodes["B"]!!.router.sendChat("second"); net.pump()
         net.node("F"); net.connect("C", "F")
         assertEquals(listOf("first", "second"), net.texts("F"))
-        assertEquals(setOf("B", "C", "F"), net.nodes["A"]!!.router.messages[0].reached)
+        assertEquals(net.ids("B", "C", "F"), net.nodes["A"]!!.router.messages[0].reached)
     }
 
     @Test fun `private message is only shown to its recipient and gets a double tick`() {
         val net = FakeNet(); net.line("A", "B", "C", "D", "E")
-        val m = net.nodes["A"]!!.router.sendDm("E", "meet at the bridge"); net.pump()
+        val m = net.nodes["A"]!!.router.sendDm(net.id("E"), "meet at the bridge")!!; net.pump()
         assertEquals(listOf("meet at the bridge"), net.texts("E"))
         for (id in listOf("B", "C", "D")) assertTrue(net.texts(id).isEmpty())
         assertEquals(Message.DELIVERED, m.status)
@@ -172,10 +276,10 @@ class RouterTest {
         net.disconnect("C", "D")
         val m = net.nodes["A"]!!.router.sendChat("where are you?"); net.pump()
         assertEquals(listOf("where are you?"), net.texts("C")); assertTrue(net.texts("D").isEmpty())
-        assertEquals(setOf("B", "C"), m.reached)
+        assertEquals(net.ids("B", "C"), m.reached)
         net.connect("C", "D")
         assertEquals(listOf("where are you?"), net.texts("D")); assertEquals(listOf("where are you?"), net.texts("E"))
-        assertEquals(setOf("B", "C", "D", "E"), m.reached)
+        assertEquals(net.ids("B", "C", "D", "E"), m.reached)
         assertEquals(1, net.nodes["E"]!!.rec.shown.size)
     }
 
@@ -200,9 +304,9 @@ class RouterTest {
         val net = FakeNet(); net.line("A", "B", "C", "D", "E")
         net.tickAll()
         val a = net.nodes["A"]!!.router
-        assertEquals(setOf("B", "C", "D", "E"), a.people.keys)
-        assertEquals(1, a.people["B"]!!.hops); assertEquals(4, a.people["E"]!!.hops)
-        assertTrue(a.people["B"]!!.direct); assertFalse(a.people["E"]!!.direct)
+        assertEquals(net.ids("B", "C", "D", "E"), a.people.keys)
+        assertEquals(1, a.people[net.id("B")]!!.hops); assertEquals(4, a.people[net.id("E")]!!.hops)
+        assertTrue(a.people[net.id("B")]!!.direct); assertFalse(a.people[net.id("E")]!!.direct)
         assertEquals(4, a.peopleInRange())
         net.now += 10 * 60_000
         assertEquals(0, a.peopleInRange())
@@ -219,16 +323,16 @@ class RouterTest {
         for (i in 1..20) assertEquals(listOf("crowd hello"), net.texts("N$i"))
         assertTrue("no receipts expected in a crowd", m.reached.isEmpty())
         // private messages still confirm person-to-person even in a crowd
-        val dm = net.nodes["A"]!!.router.sendDm("N7", "just you"); net.pump()
+        val dm = net.nodes["A"]!!.router.sendDm(net.id("N7"), "just you")!!; net.pump()
         assertEquals(Message.DELIVERED, dm.status)
     }
 
     @Test fun `presence slows down as the group grows`() {
         val net = FakeNet(); net.node("A")
         assertEquals(30_000L, net.nodes["A"]!!.router.presenceInterval())
-        repeat(200) { net.nodes["A"]!!.router.people["p$it"] = Person("p$it").also { p -> p.lastSeen = net.now } }
+        repeat(200) { Crypto.randomId(16).let { id -> net.nodes["A"]!!.router.people[id] = Person(id).also { p -> p.lastSeen = net.now } } }
         assertEquals(180_000L, net.nodes["A"]!!.router.presenceInterval())
-        repeat(400) { net.nodes["A"]!!.router.people["q$it"] = Person("q$it").also { p -> p.lastSeen = net.now } }
+        repeat(400) { Crypto.randomId(16).let { id -> net.nodes["A"]!!.router.people[id] = Person(id).also { p -> p.lastSeen = net.now } } }
         assertEquals(300_000L, net.nodes["A"]!!.router.presenceInterval())
         // people last heard from days ago are not "the group" any more
         net.now += Router.CARRY_MS + 1
@@ -243,7 +347,7 @@ class RouterTest {
         e.router.setCaps(Errand.CAP_READ); net.pump()           // E reaches the ridge
         net.advance(3_000)
         assertEquals(1, e.rec.errands.size); assertEquals("https://weather.example", e.rec.errands[0].args.getString("url"))
-        assertEquals(Errand.CLAIMED, errand.status); assertEquals("E", errand.helper)
+        assertEquals(Errand.CLAIMED, errand.status); assertEquals(net.id("E"), errand.helper)
         assertTrue(e.router.completeErrand(errand.id, true, "Web page", JSONObject().put("t", "Sunny, 18°C"))); net.pump()
         assertEquals(Errand.DONE, errand.status)
         assertEquals("Sunny, 18°C", errand.answer()!!.getString("t"))
@@ -259,7 +363,7 @@ class RouterTest {
         val net = FakeNet(); net.line("A", "B")
         val a = net.nodes["A"]!!
         val er = a.router.requestErrand(Errand.READ, JSONObject().put("url", "https://x.example"), selfCaps = Errand.CAP_READ); net.pump()
-        assertEquals("A", er.helper); assertEquals(1, a.rec.errands.size)
+        assertEquals(net.id("A"), er.helper); assertEquals(1, a.rec.errands.size)
         assertTrue(net.nodes["B"]!!.router.errands.isEmpty())   // nothing went on the air
         a.router.completeErrand(er.id, true, "x", JSONObject().put("t", "page"))
         assertEquals(Errand.DONE, er.status); assertEquals(1, a.rec.answers.size)
@@ -305,7 +409,7 @@ class RouterTest {
         // up the whole time. Periodic anti-entropy is what closes it.
         val net = FakeNet(); net.line("A", "B", "C")
         net.dropEnvFrom = "B"; net.dropEnvFrames = 1               // lose B's one relay hop to C
-        net.nodes["A"]!!.router.sendDm("C", "did you get this?"); net.pump()
+        net.nodes["A"]!!.router.sendDm(net.id("C"), "did you get this?")!!; net.pump()
         assertTrue("C's relay frame was dropped, links still up", net.texts("C").isEmpty())
         assertTrue("B is carrying it, it just couldn't relay", net.nodes["B"]!!.router.carrySize() > 0)
         net.now += Router.SYNC_MS + 1_000; net.tickAll()           // anti-entropy reconciles the gap
@@ -314,74 +418,55 @@ class RouterTest {
 
     // ---------------------------------------------------------------- photos & files
 
-    private fun makeFile(bytes: ByteArray): Pair<Attachment, List<String>> {
-        val pieces = ArrayList<String>()
-        var i = 0
-        while (i < bytes.size) {
-            val end = minOf(bytes.size, i + Router.CHUNK_RAW)
-            pieces.add(java.util.Base64.getEncoder().encodeToString(bytes.copyOfRange(i, end)))
-            i = end
-        }
-        val att = Attachment.make(Crypto.randomId(12), "photo.jpg", "image/jpeg", bytes.size.toLong(), pieces.size, 100, 75, "tb")
-        return att to pieces
-    }
-
-    private fun reassemble(r: Router, att: Attachment): ByteArray {
-        val out = java.io.ByteArrayOutputStream()
-        for (i in 0 until att.chunks) {
-            val env = r.chunks.get(Envelope.chunkId(att.fid, i))!!
-            out.write(java.util.Base64.getDecoder().decode(env.payload.getString("d")))
-        }
-        return out.toByteArray()
-    }
-
     @Test fun `photo hops down the line in pieces and arrives whole`() {
         val net = FakeNet(); net.line("A", "B", "C", "D", "E")
         val bytes = ByteArray(60_000) { (it % 251).toByte() }
-        val (att, pieces) = makeFile(bytes)
-        val m = net.nodes["A"]!!.router.sendFile(att, pieces, "sunset from the ridge"); net.pump()
+        val (att, pieces) = FakeNet.makeFile(net.nodes["A"]!!.router, bytes)
+        val m = net.nodes["A"]!!.router.sendFile(att, pieces, "sunset from the ridge")!!; net.pump()
         val e = net.nodes["E"]!!
         assertEquals(listOf("sunset from the ridge"), net.texts("E"))
         assertTrue(e.router.fileComplete(att))
-        assertArrayEquals(bytes, reassemble(e.router, att))
+        assertArrayEquals(bytes, FakeNet.reassemble(e.router, att))
         assertEquals(1, e.rec.files.size)                       // onFileReady fired exactly once
-        assertEquals(setOf("B", "C", "D", "E"), m.reached)      // the ✓ waited for the last piece
+        assertEquals(net.ids("B", "C", "D", "E"), m.reached)    // the ✓ waited for the last piece
         assertTrue("frame was ${net.maxFrameBytes} bytes", net.maxFrameBytes < 32_000)
     }
 
     @Test fun `late joiner gets the photo pieces through gap fill`() {
         val net = FakeNet(); net.line("A", "B")
         val bytes = ByteArray(40_000) { (it * 7 % 256).toByte() }
-        val (att, pieces) = makeFile(bytes)
-        net.nodes["A"]!!.router.sendFile(att, pieces, ""); net.pump()
+        val (att, pieces) = FakeNet.makeFile(net.nodes["A"]!!.router, bytes)
+        net.nodes["A"]!!.router.sendFile(att, pieces, "")!!; net.pump()
         net.node("F"); net.connect("B", "F")
         val f = net.nodes["F"]!!
         assertTrue(f.router.fileComplete(att))
-        assertArrayEquals(bytes, reassemble(f.router, att))
+        assertArrayEquals(bytes, FakeNet.reassemble(f.router, att))
         assertEquals(1, f.rec.files.size)
     }
 
     @Test fun `private photo is carried by middlemen but shown only to its recipient`() {
         val net = FakeNet(); net.line("A", "B", "C")
-        val (att, pieces) = makeFile(ByteArray(20_000) { it.toByte() })
-        val m = net.nodes["A"]!!.router.sendFile(att, pieces, "just for you", to = "C"); net.pump()
+        val bytes = ByteArray(20_000) { it.toByte() }
+        val (att, pieces) = FakeNet.makeFile(net.nodes["A"]!!.router, bytes)
+        val m = net.nodes["A"]!!.router.sendFile(att, pieces, "just for you", to = net.id("C"))!!; net.pump()
         assertTrue(net.texts("B").isEmpty())                    // B carries but never sees it
         assertEquals(listOf("just for you"), net.texts("C"))
         assertTrue(net.nodes["B"]!!.router.chunks.ids().isNotEmpty())
+        assertArrayEquals(bytes, FakeNet.reassemble(net.nodes["C"]!!.router, att))
         assertEquals(Message.DELIVERED, m.status)               // ✓✓ once C has every piece
     }
 
     @Test fun `file receipt waits for the last piece`() {
         // Feed B the meta by hand, without the pieces: no receipt, no onFileReady yet.
         val net = FakeNet(); net.line("A", "B")
-        val a = net.nodes["A"]!!.router; val b = net.nodes["B"]!!
-        val (att, pieces) = makeFile(ByteArray(30_000) { it.toByte() })
-        val m = a.sendFile(att, pieces, "slow photo"); net.pump()
+        val a = net.nodes["A"]!!.router
+        val (att, pieces) = FakeNet.makeFile(a, ByteArray(30_000) { it.toByte() })
+        val m = a.sendFile(att, pieces, "slow photo")!!; net.pump()
         // Everything arrives in one pump here, so instead check a fresh phone that has only the meta.
-        assertEquals(setOf("B"), m.reached)
+        assertEquals(net.ids("B"), m.reached)
         val loner = FakeNet(); val x = loner.node("X")
-        val metaOnly = JSONObject().put("messages", org.json.JSONArray(listOf(
-            Message(m.id, Envelope.FILE, "A", "A", null, "slow photo", loner.now, att).toJson())))
+        val metaOnly = JSONObject().put("messages", JSONArray(listOf(
+            Message(m.id, Envelope.FILE, net.id("A"), "A", null, "slow photo", loner.now, att).toJson())))
         x.router.restore(metaOnly)
         assertFalse(x.router.fileComplete(att))
         assertEquals(0, x.rec.files.size)
@@ -390,10 +475,8 @@ class RouterTest {
 
     @Test fun `unknown envelope kinds from newer versions are ignored without crashing`() {
         val net = FakeNet(); net.line("A", "B", "C")
-        val future = Envelope(JSONObject().put("id", Crypto.randomId(12)).put("k", "hologram").put("o", "A").put("on", "A")
-            .put("ts", net.now).put("h", 0).put("p", JSONObject().put("x", 1)))
-        future.sign(net.nodes["A"]!!.router.group.key)
-        net.nodes["B"]!!.router.onBytes("B>A", JSONObject().put("t", "env").put("e", future.json).toString().toByteArray())
+        val future = FakeNet.envelope("A", "hologram", JSONObject().put("x", 1), net.now)
+        net.nodes["B"]!!.router.onBytes("B>A", FakeNet.frame(future))
         net.pump()
         assertTrue(net.texts("B").isEmpty()); assertTrue(net.texts("C").isEmpty())
     }
@@ -401,7 +484,7 @@ class RouterTest {
     @Test fun `files switch off in a crowd`() {
         val net = FakeNet(); net.node("A")
         assertTrue(net.nodes["A"]!!.router.canSendFiles())
-        repeat(Router.FILE_GROUP_LIMIT) { net.nodes["A"]!!.router.people["p$it"] = Person("p$it").also { p -> p.lastSeen = net.now } }
+        repeat(Router.FILE_GROUP_LIMIT) { Crypto.randomId(16).let { id -> net.nodes["A"]!!.router.people[id] = Person(id).also { p -> p.lastSeen = net.now } } }
         assertFalse(net.nodes["A"]!!.router.canSendFiles())
     }
 
@@ -410,7 +493,7 @@ class RouterTest {
     @Test fun `location hops down the line with a maps link for old clients`() {
         val net = FakeNet(); net.line("A", "B", "C", "D", "E")
         val loc = Loc.of(12.9716, 77.5946, 8, "Base camp")!!
-        val m = net.nodes["A"]!!.router.sendLocation(loc); net.pump()
+        val m = net.nodes["A"]!!.router.sendLocation(loc)!!; net.pump()
         val got = net.nodes["E"]!!.router.messages.single()
         assertNotNull(got.loc)
         assertEquals(12.9716, got.loc!!.lat, 1e-6); assertEquals(77.5946, got.loc!!.lng, 1e-6)
@@ -418,12 +501,12 @@ class RouterTest {
         // The visible text is the 1.x fallback: a link Google Maps opens.
         assertTrue(got.text.contains("maps.google.com/?q=12.971600,77.594600"))
         assertTrue(got.text.contains("Base camp"))
-        assertEquals(setOf("B", "C", "D", "E"), m.reached)
+        assertEquals(net.ids("B", "C", "D", "E"), m.reached)
     }
 
     @Test fun `private location is only shown to its recipient`() {
         val net = FakeNet(); net.line("A", "B", "C")
-        val m = net.nodes["A"]!!.router.sendLocation(Loc.of(1.0, 2.0)!!, to = "C"); net.pump()
+        val m = net.nodes["A"]!!.router.sendLocation(Loc.of(1.0, 2.0)!!, to = net.id("C"))!!; net.pump()
         assertTrue(net.texts("B").isEmpty())
         assertNotNull(net.nodes["C"]!!.router.messages.single().loc)
         assertEquals(Message.DELIVERED, m.status)
@@ -431,12 +514,9 @@ class RouterTest {
 
     @Test fun `absurd coordinates from a crafted client fall back to plain text`() {
         val net = FakeNet(); net.line("A", "B")
-        val a = net.nodes["A"]!!.router
-        val forged = JSONObject().put("id", Crypto.randomId(12)).put("k", "chat").put("o", "A").put("on", "A")
-            .put("ts", net.now).put("h", 0)
-            .put("p", JSONObject().put("text", "meet here").put("loc", JSONObject().put("lat", 999_000_000L).put("lng", 0)))
-        val env = Envelope(forged).also { it.sign(a.group.key) }
-        net.nodes["B"]!!.router.onBytes("B>A", JSONObject().put("t", "env").put("e", env.json).toString().toByteArray())
+        val env = FakeNet.envelope("A", Envelope.CHAT,
+            JSONObject().put("text", "meet here").put("loc", JSONObject().put("lat", 999_000_000L).put("lng", 0)), net.now)
+        net.nodes["B"]!!.router.onBytes("B>A", FakeNet.frame(env))
         net.pump()
         val got = net.nodes["B"]!!.router.messages.single()
         assertNull(got.loc); assertEquals("meet here", got.text)
@@ -457,16 +537,9 @@ class RouterTest {
     @Test fun `a photo sent as a reply carries the quote too`() {
         val net = FakeNet(); net.line("A", "B")
         val original = net.nodes["B"]!!.router.sendChat("which peak is that?"); net.pump()
-        val bytes = ByteArray(20_000) { it.toByte() }
-        val pieces = ArrayList<String>()
-        var i = 0
-        while (i < bytes.size) {
-            val end = minOf(bytes.size, i + Router.CHUNK_RAW)
-            pieces.add(java.util.Base64.getEncoder().encodeToString(bytes.copyOfRange(i, end)))
-            i = end
-        }
-        val att = Attachment.make(Crypto.randomId(12), "p.jpg", "image/jpeg", bytes.size.toLong(), pieces.size, 10, 10, "tb")
-        net.nodes["A"]!!.router.sendFile(att, pieces, "this one", quote = Quote.of(net.nodes["A"]!!.router.message(original.id)!!))
+        val a = net.nodes["A"]!!.router
+        val (att, pieces) = FakeNet.makeFile(a, ByteArray(20_000) { it.toByte() }, name = "p.jpg")
+        a.sendFile(att, pieces, "this one", quote = Quote.of(a.message(original.id)!!))!!
         net.pump()
         val got = net.nodes["B"]!!.router.messages.first { it.att != null }
         assertEquals(original.id, got.quote!!.id)
@@ -477,12 +550,13 @@ class RouterTest {
         val net = FakeNet(); net.line("A", "B", "C")
         val m = net.nodes["A"]!!.router.sendChat("sunset!"); net.pump()
         val onB = net.nodes["B"]!!.router.message(m.id)!!
+        val b = net.id("B")
         net.nodes["B"]!!.router.sendReaction(onB, "👍"); net.pump()
-        assertEquals("👍", m.reactions["B"])
-        assertEquals("👍", net.nodes["C"]!!.router.message(m.id)!!.reactions["B"])
+        assertEquals("👍", m.reactions[b])
+        assertEquals("👍", net.nodes["C"]!!.router.message(m.id)!!.reactions[b])
         net.now += 1000
         net.nodes["B"]!!.router.sendReaction(onB, "❤️"); net.pump()   // changed their mind
-        assertEquals("❤️", m.reactions["B"]); assertEquals(1, m.reactions.size)
+        assertEquals("❤️", m.reactions[b]); assertEquals(1, m.reactions.size)
         net.now += 1000
         net.nodes["B"]!!.router.sendReaction(onB, ""); net.pump()     // took it back
         assertTrue(m.reactions.isEmpty())
@@ -494,29 +568,27 @@ class RouterTest {
         val m = net.nodes["A"]!!.router.sendChat("group photo"); net.pump()
         net.nodes["B"]!!.router.sendReaction(net.nodes["B"]!!.router.message(m.id)!!, "😂"); net.pump()
         net.node("C"); net.connect("B", "C")
-        assertEquals("😂", net.nodes["C"]!!.router.message(m.id)!!.reactions["B"])
+        assertEquals("😂", net.nodes["C"]!!.router.message(m.id)!!.reactions[net.id("B")])
     }
 
     @Test fun `a reaction that arrives before its message waits for it`() {
         val net = FakeNet(); net.line("A", "B")
-        val key = net.nodes["A"]!!.router.group.key
-        val chat = Envelope(JSONObject().put("id", "zmsgzmsgzmsg").put("k", "chat").put("o", "Z").put("on", "Zoe")
-            .put("ts", net.now).put("h", 0).put("p", JSONObject().put("text", "hello"))).also { it.sign(key) }
-        val react = Envelope(JSONObject().put("id", "zreactzreact").put("k", "reac").put("o", "Y").put("on", "Yan")
-            .put("ts", net.now + 1).put("h", 0).put("p", JSONObject().put("m", "zmsgzmsgzmsg").put("e", "🙏"))).also { it.sign(key) }
+        val chatId = FakeNet.newId("Z")
+        val chat = FakeNet.envelope("Z", Envelope.CHAT, JSONObject().put("text", "hello"), net.now, id = chatId, name = "Zoe")
+        val react = FakeNet.envelope("Y", Envelope.REACT, JSONObject().put("m", chatId).put("e", "🙏"), net.now + 1, name = "Yan")
         val b = net.nodes["B"]!!.router
-        b.onBytes("B>A", JSONObject().put("t", "env").put("e", react.json).toString().toByteArray())
-        assertNull(b.message("zmsgzmsgzmsg"))
-        b.onBytes("B>A", JSONObject().put("t", "env").put("e", chat.json).toString().toByteArray())
-        assertEquals("🙏", b.message("zmsgzmsgzmsg")!!.reactions["Y"])
+        b.onBytes("B>A", FakeNet.frame(react))
+        assertNull(b.message(chatId))
+        b.onBytes("B>A", FakeNet.frame(chat))
+        assertEquals("🙏", b.message(chatId)!!.reactions[net.id("Y")])
     }
 
     @Test fun `private chat reactions stay between its two people`() {
         val net = FakeNet(); net.line("A", "B", "C")
-        val dm = net.nodes["A"]!!.router.sendDm("C", "just us"); net.pump()
+        val dm = net.nodes["A"]!!.router.sendDm(net.id("C"), "just us")!!; net.pump()
         val onC = net.nodes["C"]!!.router.message(dm.id)!!
-        net.nodes["C"]!!.router.sendReaction(onC, "❤️"); net.pump()
-        assertEquals("❤️", dm.reactions["C"])              // the sender sees it
+        assertTrue(net.nodes["C"]!!.router.sendReaction(onC, "❤️")); net.pump()
+        assertEquals("❤️", dm.reactions[net.id("C")])      // the sender sees it
         assertNull(net.nodes["B"]!!.router.message(dm.id)) // the middleman never had the message
         assertTrue(net.nodes["B"]!!.router.carrySize() > 0)
     }
@@ -525,10 +597,10 @@ class RouterTest {
         val net = FakeNet(); net.line("A", "B")
         val m = net.nodes["A"]!!.router.sendChat("hi"); net.pump()
         net.nodes["B"]!!.router.sendReaction(net.nodes["B"]!!.router.message(m.id)!!, "x".repeat(500)); net.pump()
-        assertEquals(Message.MAX_EMOJI, m.reactions["B"]!!.length)
+        assertEquals(Message.MAX_EMOJI, m.reactions[net.id("B")]!!.length)
         val fresh = FakeNet(); val a2 = fresh.node("A")
         a2.router.restore(JSONObject(net.nodes["A"]!!.router.snapshot().toString()))
-        assertEquals(m.reactions["B"], a2.router.message(m.id)!!.reactions["B"])
+        assertEquals(m.reactions[net.id("B")], a2.router.message(m.id)!!.reactions[net.id("B")])
     }
 
     @Test fun `mentions travel and are capped`() {
@@ -541,18 +613,16 @@ class RouterTest {
 
     @Test fun `a stashed reaction survives a restart through the carry`() {
         val net = FakeNet(); net.line("A", "B")
-        val key = net.nodes["A"]!!.router.group.key
-        val react = Envelope(JSONObject().put("id", "rrrrrrrrrrrr").put("k", "reac").put("o", "Y").put("on", "Yan")
-            .put("ts", net.now).put("h", 0).put("p", JSONObject().put("m", "mmmmmmmmmmmm").put("e", "👍"))).also { it.sign(key) }
-        net.nodes["B"]!!.router.onBytes("B>A", JSONObject().put("t", "env").put("e", react.json).toString().toByteArray())
+        val chatId = FakeNet.newId("Z")
+        val react = FakeNet.envelope("Y", Envelope.REACT, JSONObject().put("m", chatId).put("e", "👍"), net.now, name = "Yan")
+        net.nodes["B"]!!.router.onBytes("B>A", FakeNet.frame(react))
         // B restarts before the message itself ever arrives
         val fresh = FakeNet(); val b2 = fresh.node("B")
         b2.router.restore(JSONObject(net.nodes["B"]!!.router.snapshot().toString()))
         fresh.node("A"); fresh.connect("A", "B")
-        val chat = Envelope(JSONObject().put("id", "mmmmmmmmmmmm").put("k", "chat").put("o", "Z").put("on", "Zoe")
-            .put("ts", fresh.now).put("h", 0).put("p", JSONObject().put("text", "late"))).also { it.sign(key) }
-        b2.router.onBytes("B>A", JSONObject().put("t", "env").put("e", chat.json).toString().toByteArray())
-        assertEquals("👍", b2.router.message("mmmmmmmmmmmm")!!.reactions["Y"])
+        val chat = FakeNet.envelope("Z", Envelope.CHAT, JSONObject().put("text", "late"), fresh.now, id = chatId, name = "Zoe")
+        b2.router.onBytes("B>A", FakeNet.frame(chat))
+        assertEquals("👍", b2.router.message(chatId)!!.reactions[net.id("Y")])
     }
 
     @Test fun `one message cannot be ballooned by invented reactors`() {
@@ -565,40 +635,13 @@ class RouterTest {
         assertEquals(Message.MAX_REACTORS - 1, m.reactions.size)
     }
 
-    @Test fun `reaction backlog is not re-sent to a v2 peer on link-up`() {
-        val frames = ArrayList<JSONObject>()
-        val silent = object : RouterListener {
-            override fun onChanged() {}
-            override fun onMessage(m: Message) {}
-            override fun onErrandRequest(e: Errand) {}
-        }
-        var now = 1_700_000_000_000L
-        val r = Router(Identity("aa", "Vet"), Group(FakeNet.CODE, "Trek"), object : Transport {
-            override fun send(linkId: String, bytes: ByteArray): Long {
-                frames.add(JSONObject(String(bytes, Charsets.UTF_8))); return frames.size.toLong()
-            }
-            override fun disconnect(linkId: String) {}
-        }, silent) { now }
-        val m = r.sendChat("hello")
-        r.sendReaction(m, "👍")
-        frames.clear()
-        r.onLinkUp("L", "zz", "OldV2Phone")
-        val myNonce = r.links["L"]!!.myNonce
-        r.onBytes("L", JSONObject().put("t", "hello").put("id", "zz").put("name", "OldV2Phone").put("nonce", "n1n1n1n1n1n1n1n1").put("v", 2).toString().toByteArray())
-        r.onBytes("L", JSONObject().put("t", "proof").put("proof", Crypto.hmacHex(r.group.key, "$myNonce|zz")).toString().toByteArray())
-        r.onBytes("L", JSONObject().put("t", "inv").put("n", 1).put("i", 0).put("ids", org.json.JSONArray()).toString().toByteArray())
-        val all = frames.joinToString("\n") { it.toString() }
-        assertTrue(all.contains("hello"))                 // the chat itself fills
-        assertFalse(all.contains("\"reac\""))             // the reaction backlog does not
-    }
-
     // ---------------------------------------------------------------- live location
 
     @Test fun `live location rides presence and clears when sharing stops`() {
         val net = FakeNet(); net.line("A", "B", "C")
         net.nodes["A"]!!.router.myLoc = Loc.of(12.9716, 77.5946, 10)
         net.tickAll()
-        val seenByC = net.nodes["C"]!!.router.people["A"]!!
+        val seenByC = net.nodes["C"]!!.router.people[net.id("A")]!!
         assertEquals(12.9716, seenByC.loc!!.lat, 1e-6)
         assertNotNull(net.nodes["C"]!!.router.liveLocOf(seenByC))
         net.nodes["A"]!!.router.myLoc = null                  // stopped sharing
@@ -628,42 +671,6 @@ class RouterTest {
         val got = b2.router.messages.single().loc!!
         assertEquals(-33.856789, got.lat, 1e-6); assertEquals(151.215256, got.lng, 1e-6)
         assertEquals(12, got.acc); assertEquals("Opera House", got.label)
-    }
-
-    @Test fun `a 1x peer is never flooded with the file backlog on link-up`() {
-        // A v2 phone with a photo backlog links to an old client (its hello carries no "v").
-        val frames = ArrayList<JSONObject>()
-        val silent = object : RouterListener {
-            override fun onChanged() {}
-            override fun onMessage(m: Message) {}
-            override fun onErrandRequest(e: Errand) {}
-        }
-        var now = 1_700_000_000_000L
-        val r = Router(Identity("aa", "Vet"), Group(FakeNet.CODE, "Trek"), object : Transport {
-            override fun send(linkId: String, bytes: ByteArray): Long {
-                frames.add(JSONObject(String(bytes, Charsets.UTF_8))); return frames.size.toLong()
-            }
-            override fun disconnect(linkId: String) {}
-        }, silent) { now }
-        val (att, pieces) = makeFile(ByteArray(40_000) { it.toByte() })
-        r.sendFile(att, pieces, "old sunset")
-        r.sendChat("plain text travels fine")
-        frames.clear()
-
-        r.onLinkUp("L", "zz", "OldPhone")
-        assertEquals(Router.VERSION, frames.first { it.optString("t") == "hello" }.optInt("v"))
-        val myNonce = r.links["L"]!!.myNonce
-        r.onBytes("L", JSONObject().put("t", "hello").put("id", "zz").put("name", "OldPhone").put("nonce", "n1n1n1n1n1n1n1n1").toString().toByteArray())
-        val proof = Crypto.hmacHex(r.group.key, "$myNonce|zz")
-        r.onBytes("L", JSONObject().put("t", "proof").put("proof", proof).toString().toByteArray())
-        r.onBytes("L", JSONObject().put("t", "inv").put("n", 1).put("i", 0).put("ids", org.json.JSONArray()).toString().toByteArray())
-
-        // The old phone gets the text, but no chunk ids in inventory and no file envelopes at all.
-        val all = frames.joinToString("\n") { it.toString() }
-        assertTrue(all.contains("plain text travels fine"))
-        assertFalse(all.contains("\"fchk\""))
-        assertFalse(all.contains("\"f.${att.fid}"))
-        assertFalse(all.contains("old sunset"))
     }
 }
 
@@ -700,24 +707,5 @@ class LocTest {
         assertEquals("42 m", Loc.prettyDistance(42.4))
         assertEquals("1.2 km", Loc.prettyDistance(1234.0))
         assertEquals("57 km", Loc.prettyDistance(56_789.0))
-    }
-}
-
-class PayloadSizeTest {
-    @Test fun `sync frames stay under the radio payload cap even with emoji`() {
-        val net = FakeNet(); net.line("A", "B")
-        val big = "🙂".repeat(1900)               // 1900 chars but 7600 bytes of UTF-8
-        repeat(30) { net.nodes["A"]!!.router.sendChat(big) }
-        net.pump()
-        net.node("C"); net.connect("B", "C")       // B fills C's 30-message gap in chunks
-        assertEquals(30, net.texts("C").size)
-        assertTrue("largest frame was ${net.maxFrameBytes} bytes", net.maxFrameBytes < 32_000)
-        assertTrue(net.maxFrameBytes > 8_000)      // and the chunks are not silly-small either
-    }
-
-    @Test fun `over-long text is trimmed so one envelope can never exceed the cap`() {
-        val net = FakeNet(); net.line("A", "B")
-        net.nodes["A"]!!.router.sendChat("x".repeat(50_000)); net.pump()
-        assertEquals(Router.MAX_TEXT, net.texts("B")[0].length)
     }
 }

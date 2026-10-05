@@ -142,6 +142,22 @@ class History(private val dir: File) {
         return Removed(removed, 0)
     }
 
+    /**
+     * Put every segment through [change], oldest first, and write back the ones it changes (null =
+     * leave the segment as it is) — through the same temp-and-rename. A segment that can't be read
+     * is left exactly as it is. False when a rewrite could not be written: the segments before it
+     * are done, it and the rest are as they were, and running it again finishes the job (a
+     * [change] that is done once changes nothing the second time).
+     */
+    fun rewrite(change: (JSONArray) -> JSONArray?): Boolean {
+        for (seq in segments()) {
+            val a = load(seq) ?: continue
+            val b = change(a) ?: continue
+            if (!write(seq, b)) return false
+        }
+        return true
+    }
+
     /** Delete the group's whole history: every segment and the directory itself. */
     fun deleteAll() { dir.deleteRecursively() }
 

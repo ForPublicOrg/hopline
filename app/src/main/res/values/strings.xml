@@ -21,19 +21,21 @@
 
     <!-- Start / join -->
     <string name="start_group">Start a new group</string>
-    <string name="start_group_sub">For a trek, a camp, a festival — you\'ll get a 3-word code your friends type in</string>
+    <string name="start_group_sub">For a trek, a camp, a festival — you\'ll get a 4-word code your friends type in</string>
     <string name="join_group">Join a group</string>
-    <string name="join_group_sub">Type the 3 words your friend shows you, or scan their QR</string>
+    <string name="join_group_sub">Type the 4 words your friend shows you, or scan their QR</string>
     <string name="group_name_hint">Group name</string>
-    <string name="code_hint">three words, like: tiger river lamp</string>
+    <string name="code_hint">four words, like: tiger river lamp hat</string>
     <string name="scan_qr">Scan their QR code</string>
     <string name="join">Join</string>
     <string name="start">Start</string>
-    <string name="bad_code">That doesn\'t look right — the code is three words.</string>
+    <string name="group_getting_ready">Getting the group ready…</string>
+    <string name="group_not_saved">Couldn\'t set up the group, so nothing was saved. Try again — if it keeps happening, your phone\'s storage may be full.</string>
+    <string name="bad_code">That doesn\'t look right — a code is four words, like tiger river lamp hat.</string>
 
     <!-- Invite / code -->
     <string name="your_group_code">Group code</string>
-    <string name="code_instructions">Friends: open Hopline → Join a group → type these three words, or scan this.</string>
+    <string name="code_instructions">Friends: open Hopline → Join a group → type these words, or scan this.</string>
     <string name="share_invite">Share invite</string>
     <string name="invite_text">Join my group “%1$s” on Hopline — offline group chat, no signal needed. Open Hopline → Join a group → type: %2$s</string>
     <string name="done">Done</string>
@@ -160,6 +162,8 @@
     <string name="search_people">Search people…</string>
     <string name="has_internet">Internet</string>
     <string name="person_empty">Nobody has joined yet. Show them the group code!</string>
+    <!-- People lists only phones on 2.4 or later: a group with friends in it, none heard on the new Hopline yet -->
+    <string name="people_none_lately">Nobody else has been in range lately. Friends show up here when their phones are near — once they have updated Hopline too.</string>
 
     <!-- Internet (was "The Outside World") -->
     <string name="internet_title">Shared internet</string>

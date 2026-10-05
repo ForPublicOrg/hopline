@@ -261,11 +261,13 @@ class ChatActivity : AppCompatActivity() {
             archive = Core.archive(want)
             if (archive == null) { toast(getString(cantOpen())); finishToHome(); return }
         } else {
-            if (Core.store.group() == null) { toLaunch(); return }
+            if (!Core.store.hasActive()) { toLaunch(); return }
             Core.ensureRunning()
             // No router right after a start means something is missing (a revoked permission):
-            // the launch screen works out what and asks for it.
-            if (Core.router == null) { toLaunch(); return }
+            // the launch screen works out what and asks for it. A group still starting — its saved
+            // chat or its key on the way, seconds after an update or a kill — is shown as it is:
+            // "Starting…", and the chat fills in when the router is up ([refresh]).
+            if (Core.router == null && !Core.buildPending) { toLaunch(); return }
         }
         b = ActivityChatBinding.inflate(layoutInflater)
         setContentView(b.root)
@@ -333,6 +335,8 @@ class ChatActivity : AppCompatActivity() {
         b.liveBanner.setOnClickListener { onLiveBannerTapped() }
         b.errandBanner.setOnClickListener { openPendingSends() }
         b.leftRejoin.setOnClickListener { leftGroup()?.let { Asks.rejoin(this, it) } }
+        b.cantWritePeople.setOnClickListener { startActivity(Intent(this, PeopleActivity::class.java)) }
+        b.cantWriteCopy.setOnClickListener { copyOldDraft() }
         b.newAbove.setOnClickListener { jumpToNewAbove() }
         b.jump.setOnClickListener { scrollToBottom(smooth = true) }
         b.input.filters = arrayOf(lengthGuard(Router.MAX_TEXT))
@@ -363,10 +367,10 @@ class ChatActivity : AppCompatActivity() {
         val left = readOnly
         b.leftBar.isVisible = left
         if (left) {
-            for (v in listOf(b.composerRow, b.recordBar, b.replyBar, b.mentionBar)) v.isVisible = false
+            for (v in listOf(b.composerRow, b.recordBar, b.replyBar, b.mentionBar, b.cantWriteBar)) v.isVisible = false
             b.input.clearFocus()
             Ui.hideKeyboard(this, b.input)
-        } else if (!b.recordBar.isVisible) b.composerRow.isVisible = true
+        } else if (!b.recordBar.isVisible && !b.cantWriteBar.isVisible) b.composerRow.isVisible = true
         // Coming back to a left group's chat (from a photo, from another app) must not bring a keyboard up either.
         // (Only the "state" half of the window's setting changes; how it resizes stays as the manifest says.)
         val now = window.attributes.softInputMode
@@ -680,8 +684,9 @@ class ChatActivity : AppCompatActivity() {
             leaveChat()
             backStack.clear()
             Core.switchGroup(code)
-            // The same goes for a switch that failed: the old chat's draft is already put away.
-            if (Core.router == null || Core.fingerprint() != fp) { chatFp = null; finishToHome(); return }
+            // The same goes for a switch that failed: the old chat's draft is already put away. (One
+            // still starting is not a failure: the chat shows "Starting…" and fills in when it's up.)
+            if ((Core.router == null && !Core.buildPending) || Core.fingerprint() != fp) { chatFp = null; finishToHome(); return }
             archive = null   // asked from a left group's chat: the screen is on the radio's group now
             peer = newPeer
             chatFp = fp
@@ -783,9 +788,9 @@ class ChatActivity : AppCompatActivity() {
      * stays as it is, or — when only a permission is missing — hands over to the launch screen.
      */
     private fun leaveArchive(): Boolean {
-        if (Core.store.group() == null) return false
+        if (!Core.store.hasActive()) return false
         Core.ensureRunning()
-        if (Core.router == null) { toLaunch(); return false }
+        if (Core.router == null && !Core.buildPending) { toLaunch(); return false }
         switching = true
         try {
             leaveChat()
@@ -800,15 +805,37 @@ class ChatActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------------ drafts
 
-    /** Only a chat with a composer has a draft: a left group's is never saved, and never looked for. */
+    /**
+     * Only a chat with a composer has a draft: a left group's is never saved, and never looked for.
+     * Nor is a private chat's from before the update: its composer never comes back, so words
+     * waiting in it (typed before the update, or a reply from a notification) are shown in its
+     * bar instead, to copy out ([renderBottom]) — and the empty composer must not save over them.
+     */
     private fun saveDraft() {
-        if (!::b.isInitialized || readOnly) return
+        if (!::b.isInitialized || readOnly || fromBefore()) return
         val fp = chatFp ?: return
         ChatDrafts.put(this, fp, chatKey, ChatDrafts.Draft(b.input.text?.toString().orEmpty(), replyTo?.id ?: pendingReplyId, HashMap(chosenMentions)))
     }
 
+    /** A private chat from before the update (an 8-letter id): nothing can be written in it, ever. */
+    private fun fromBefore(): Boolean = peer?.let { !ChatRules.listed(it) } == true
+
+    /** [fromBefore]'s words that were waiting to be sent: copied, and then gone from the chat. */
+    private fun copyOldDraft() {
+        val fp = chatFp ?: return
+        val words = ChatDrafts.get(this, fp, chatKey)?.text?.trim().orEmpty()
+        if (words.isNotEmpty()) {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText(getString(R.string.chat_clip_label), words))
+            // Android 13+ shows its own "copied"; the toast says where the words can go.
+            toast(getString(R.string.chat_old_draft_copied))
+        }
+        ChatDrafts.put(this, fp, chatKey, null)
+        Core.router?.let { renderBottom(it) }
+    }
+
     private fun loadDraft() {
-        if (readOnly) return
+        if (readOnly || fromBefore()) return
         val fp = chatFp ?: return
         val d = ChatDrafts.get(this, fp, chatKey) ?: return
         b.input.setText(d.text)
@@ -821,19 +848,27 @@ class ChatActivity : AppCompatActivity() {
 
     private fun sendText() {
         if (readOnly) return
-        val r = Core.router ?: return
         val text = b.input.text?.toString()?.trim().orEmpty()
         if (text.isEmpty()) return
+        // Still starting: the words stay where they are, for a tap in a moment.
+        val r = Core.router ?: run { toast(getString(R.string.starting_try_again)); return }
         val quote = replyTo?.let { quoteOf(r, it) }
         val to = peer
-        if (to == null) r.sendChat(text, quote, Ui.mentionsIn(r, text, chosenMentions)) else r.sendDm(to, text, quote)
+        // Nothing goes to a private chat nothing can be sealed for (its composer is hidden, see
+        // renderBottom); should a tap get here all the same, the typed words stay.
+        val mine = if (to == null) r.sendChat(text, quote, Ui.mentionsIn(r, text, chosenMentions)) else r.sendDm(to, text, quote)
+        if (mine == null) return
         b.input.setText("")
         clearReply()
         sent()
     }
 
-    /** After anything I send: show it, drop the unread divider (I've caught up), keep the draft honest. */
+    /**
+     * After anything I send: on disk at once — a phone killed a moment later must not lose it —
+     * then show it, drop the unread divider (I've caught up), keep the draft honest.
+     */
     private fun sent() {
+        Core.saveNow()
         if (!::b.isInitialized || isDestroyed) return
         pinToBottom = true
         unreadSince = UNREAD_NONE
@@ -912,7 +947,8 @@ class ChatActivity : AppCompatActivity() {
 
             override fun getMovementFlags(rv: RecyclerView, vh: RecyclerView.ViewHolder): Int {
                 val m = adapter?.messageAt(vh.bindingAdapterPosition) ?: return 0   // chips don't swipe
-                if (!m.isPersonal || menu?.isShowing == true || readOnly) return 0   // nothing to reply into in a left group
+                // Nothing to reply into in a left group, or in a private chat that can't be written in.
+                if (!m.isPersonal || menu?.isShowing == true || !writable()) return 0
                 return makeMovementFlags(0, ItemTouchHelper.END)
             }
 
@@ -1000,8 +1036,9 @@ class ChatActivity : AppCompatActivity() {
     private fun updateMentionBar() {
         val r = Core.router
         val open = if (r == null || chatFp == null || readOnly) null else openMention()
+        // People on 2.4 or later only: an old id's entry is kept for its old messages' names, nobody to call out.
         val matches = if (r == null || open == null) emptyList()
-        else r.people.values.filter { it.name.isNotEmpty() && it.name.startsWith(open.second, ignoreCase = true) }
+        else r.people.values.filter { ChatRules.listed(it.id) && it.name.isNotEmpty() && it.name.startsWith(open.second, ignoreCase = true) }
             .sortedWith(compareBy<Person>({ !r.isInRange(it) }, { it.name.lowercase(Locale.ROOT) })).take(6)
         if (r == null || matches.isEmpty()) { b.mentionBar.isVisible = false; mentionKey = ""; return }
         b.mentionBar.isVisible = true
@@ -1148,8 +1185,12 @@ class ChatActivity : AppCompatActivity() {
         val file = Blobs.fileFor(this, r.group.fingerprint, att)
         if (!file.exists()) {
             toast(when {
+                // Every piece came, but it didn't check out: it never will.
+                att.failed -> getString(R.string.chat_file_bad)
                 // Its pieces went when the group was left: no more of it will ever arrive.
                 readOnly -> getString(R.string.chat_file_left)
+                // Still arriving when Hopline was updated: its pieces went with the old format.
+                ChatRules.lostInUpdate(att) -> getString(if (m.from == r.me.id) R.string.chat_file_expired else R.string.chat_file_before_update)
                 MessageAdapter.neverArrives(m, System.currentTimeMillis()) -> getString(R.string.chat_file_expired)
                 else -> getString(R.string.receiving_file, r.fileProgress(att), att.chunks)
             })
@@ -1164,7 +1205,8 @@ class ChatActivity : AppCompatActivity() {
                 .putExtra(ViewerActivity.EXTRA_AT, m.ts).putExtra(ViewerActivity.EXTRA_CAPTION, m.text))
             return
         }
-        // Under its real name, so the other app shows "report.pdf", not a piece id.
+        // Under its real name, so the other app shows "report.pdf", not a piece id — and as the kind
+        // its name says, never what its sender said; an app installer is not opened at all (MediaRules).
         media.openWith(file, att.name, att.mime)
     }
 
@@ -1174,7 +1216,7 @@ class ChatActivity : AppCompatActivity() {
     private fun saveToPhone(m: Message) {
         val r = router() ?: return
         val att = m.att ?: return
-        media.save(Blobs.fileFor(this, r.group.fingerprint, att), att.name, att.mime)
+        media.save(Blobs.fileFor(this, r.group.fingerprint, att), att.name)
     }
 
     private fun shareFile(m: Message) {
@@ -1191,11 +1233,13 @@ class ChatActivity : AppCompatActivity() {
         if (readOnly) return   // nothing is sent from a group this phone left
         val r = Core.router ?: return
         val old = find(r, m.id) ?: return
-        if (!Ui.gaveUp(r, old)) return
+        // A private message goes again only to a phone whose key is known here (Router.canWriteTo):
+        // "Send again" isn't offered otherwise (canSendAgain), and the old one stays "not sent".
+        if (!canSendAgain(r, old)) return
         val att = old.att
         val loc = old.loc
         when {
-            loc != null -> { r.sendLocation(loc, old.to); forget(old.id); sent() }
+            loc != null -> if (r.sendLocation(loc, old.to) != null) { forget(old.id); sent() }
             att != null -> {
                 if (!r.canSendFiles()) { toast(getString(R.string.files_crowd_off)); return }
                 if (!Blobs.fileFor(this, r.group.fingerprint, att).exists()) { toast(getString(R.string.chat_resend_gone)); return }
@@ -1209,12 +1253,17 @@ class ChatActivity : AppCompatActivity() {
             }
             else -> {
                 val to = old.to
-                if (to == null) r.sendChat(old.text, old.quote, old.mentions) else r.sendDm(to, old.text, old.quote)
+                val again = if (to == null) r.sendChat(old.text, old.quote, old.mentions) else r.sendDm(to, old.text, old.quote)
+                if (again == null) return
                 forget(old.id)
                 sent()
             }
         }
     }
+
+    /** "Send again" for [m]: one of mine that stopped trying, in a chat of the radio's group that can still be written to. */
+    private fun canSendAgain(r: Router, m: Message): Boolean =
+        !readOnly && ChatRules.sendAgain(Ui.gaveUp(r, m), m.to, m.to?.let { r.canWriteTo(it) } ?: true)
 
     /** The stale copy of a message that was sent again goes — from the chat, and from the earlier ones on screen. */
     private fun forget(id: String) {
@@ -1226,7 +1275,7 @@ class ChatActivity : AppCompatActivity() {
 
     private fun onMicTapped() {
         val r = Core.router ?: return
-        if (chatFp == null || readOnly) return
+        if (chatFp == null || !writable()) return
         if (!r.canSendFiles()) { toast(getString(R.string.files_crowd_off)); return }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startRecording()
         else micPermission.launch(Manifest.permission.RECORD_AUDIO)
@@ -1263,7 +1312,7 @@ class ChatActivity : AppCompatActivity() {
         VoiceRecorder.onMaxReached = null
         b.recordTimer.stop()
         b.recordBar.isVisible = false
-        b.composerRow.isVisible = !readOnly
+        b.composerRow.isVisible = !readOnly && !b.cantWriteBar.isVisible
         b.recordDot.animate().cancel(); b.recordDot.alpha = 1f
         if (!send || readOnly) { VoiceRecorder.cancel(); return }
         val clip = VoiceRecorder.finish()
@@ -1282,7 +1331,7 @@ class ChatActivity : AppCompatActivity() {
 
     private fun showAttachSheet() {
         val r = Core.router ?: return
-        if (chatFp == null || readOnly) return
+        if (chatFp == null || !writable()) return
         val sheet = BottomSheetDialog(this)
         val sb = SheetAttachBinding.inflate(layoutInflater)
         sheet.setContentView(sb.root)
@@ -1314,7 +1363,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun showLocationSheet() {
-        if (readOnly) return
+        if (!writable()) return
         val r = Core.router ?: return
         val sheet = BottomSheetDialog(this)
         val sb = SheetLocationBinding.inflate(layoutInflater)
@@ -1505,8 +1554,7 @@ class ChatActivity : AppCompatActivity() {
             if (!checkTarget(p.getString(P_TARGET))) return@askFields
             val r = Core.router ?: return@askFields
             val loc = Loc.parse(v[0])?.let { Loc.of(it.lat, it.lng, 0, v[1]) } ?: return@askFields
-            r.sendLocation(loc, peer)
-            sent()
+            if (r.sendLocation(loc, peer) != null) sent()
         }
         promptFields = asked.fields
         return asked.dialog
@@ -1626,7 +1674,7 @@ class ChatActivity : AppCompatActivity() {
             .setPositiveButton(R.string.send) { _, _ ->
                 val l = best ?: return@setPositiveButton
                 if (Core.router !== r || !checkTarget(target)) return@setPositiveButton   // switched groups or chats mid-fix
-                Loc.of(l.latitude, l.longitude, l.accuracy.toInt())?.let { r.sendLocation(it, peer); sent() }
+                Loc.of(l.latitude, l.longitude, l.accuracy.toInt())?.let { if (r.sendLocation(it, peer) != null) sent() }
             }
             .setNegativeButton(R.string.cancel, null)
             .create()
@@ -1673,7 +1721,14 @@ class ChatActivity : AppCompatActivity() {
     private fun refresh() {
         if (!::b.isInitialized || isDestroyed || switching || isFinishing) return
         val r = router()
-        if (r == null) { b.subtitle.text = getString(R.string.chat_starting); return }
+        if (r == null) {
+            // A group that can't start after all (a permission taken back, its key pair unreadable):
+            // the launch screen works out what is missing, as for a fresh open.
+            if (!readOnly && !Core.buildPending && Core.store.hasActive() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                toLaunch(); return
+            }
+            renderStarting(); return
+        }
         if (chatFp == null) { renderAwaiting(); return }
         // Back after the process died, and the radio is on another group now: following it this
         // early would save an empty composer over the real draft, then the restored words would
@@ -1697,6 +1752,7 @@ class ChatActivity : AppCompatActivity() {
             if (earlierReload != null && Core.hasEarlier(fp)) {
                 if (!earlierBusy) fetchEarlier()
                 renderHeader(r)
+                renderBottom(r)
                 renderBanners(r, live)
                 return
             }
@@ -1719,6 +1775,7 @@ class ChatActivity : AppCompatActivity() {
         // The chat as it is shown: its earlier messages, read back from the history, then the live ones.
         val shown = earlier.shown(live, r)
         renderHeader(r)
+        renderBottom(r)
         renderBanners(r, shown)
 
         // Only follow the conversation if the user is already at the bottom — never yank them
@@ -1740,7 +1797,21 @@ class ChatActivity : AppCompatActivity() {
         restoring = false
         val unread = if (unreadSince >= 0 && unreadSince != UNREAD_NONE) MessageAdapter.Unread(unreadSince, unreadUntil) else null
         val list = a
-        a.submit(shown, unread) { committed(list, ids, anchorTop, anchorBottom, restored) }
+        a.submit(shown, unread, topLine(fp)) { committed(list, ids, anchorTop, anchorBottom, restored) }
+    }
+
+    /**
+     * The line above a chat's first message — how it is sealed (ChatRules.chip) — once its first
+     * message is on screen: with earlier ones still on disk, it waits above them, where the chat starts.
+     */
+    private fun topLine(fp: String): String? {
+        val atStart = !Core.hasEarlier(fp) || earlier.exhausted || noEarlier[targetKey()] == Core.historyStamp(fp)
+        if (!atStart) return null
+        return when (ChatRules.chip(readOnly, peer)) {
+            ChatRules.Chip.GROUP -> getString(R.string.chat_secure_group)
+            ChatRules.Chip.PRIVATE -> getString(R.string.chat_secure_private)
+            ChatRules.Chip.NONE -> null
+        }
     }
 
     /** The diff landed: pills for arrivals out of sight, then the one scroll this refresh earned. */
@@ -1881,9 +1952,72 @@ class ChatActivity : AppCompatActivity() {
         b.hint.isVisible = false; b.awayBanner.isVisible = false; b.errandBanner.isVisible = false
     }
 
+    /**
+     * The group on the radio has no router yet: its saved chat or its key is still on the way
+     * (Core.buildPending). The header says so — the group chat by its saved name — and the chat
+     * fills in by itself the moment the router is up.
+     */
+    private fun renderStarting() {
+        b.subtitle.text = getString(R.string.chat_starting)
+        if (peer != null || readOnly) return
+        val name = Core.store.activeGroup()?.name?.ifEmpty { null } ?: getString(R.string.chat_your_group)
+        b.title.text = name
+        b.avatar.text = Ui.initial(name)
+    }
+
+    /**
+     * Can the chat on screen be written in? Not a left group's, and not a private chat nothing can be
+     * sealed for (ChatRules.bottom). While the group is still starting there is nothing to ask yet:
+     * the composer stays, and a send waits for it.
+     */
+    private fun writable(): Boolean {
+        if (readOnly) return false
+        val to = peer ?: return true
+        val r = Core.router ?: return true
+        return r.canWriteTo(to)
+    }
+
+    /**
+     * In a private chat nothing can be sealed for, one line takes the composer's place, saying why —
+     * and nothing else is offered to write, attach, record or react with. Looked at on every redraw:
+     * the person's key can arrive at any moment, and the composer comes back then, with whatever
+     * words were waiting in it (a reply typed into a notification, say).
+     */
+    private fun renderBottom(r: Router) {
+        if (readOnly) { b.cantWriteBar.isVisible = false; return }
+        val to = peer
+        val bottom = ChatRules.bottom(readOnly = false, peer = to, canWrite = to == null || r.canWriteTo(to))
+        val shut = bottom != ChatRules.Bottom.COMPOSER
+        if (shut && to != null) {
+            b.cantWriteText.text = Ui.cantWriteLine(r, to).orEmpty()
+            b.cantWritePeople.isVisible = bottom == ChatRules.Bottom.FROM_BEFORE
+        }
+        // A chat from before the update keeps no composer to bring words back to: any that were
+        // waiting in it are shown here, to copy into the person's new chat.
+        val waiting = if (bottom == ChatRules.Bottom.FROM_BEFORE) chatFp?.let { fp ->
+            ChatDrafts.get(this, fp, chatKey)?.text?.replace('\n', ' ')?.trim()?.ifEmpty { null }
+        } else null
+        b.cantWriteDraftRow.isVisible = waiting != null
+        if (waiting != null) b.cantWriteDraft.text = getString(R.string.chat_old_draft, waiting)
+        if (shut) {
+            if (!b.cantWriteBar.isVisible) {
+                // Just shut: a recording, or the keyboard, has nowhere to go.
+                if (VoiceRecorder.recording) finishRecording(send = false)
+                b.input.clearFocus()
+                Ui.hideKeyboard(this, b.input)
+            }
+            // Every time: a draft's reply, brought back with the chat, waits out of sight too.
+            for (v in listOf(b.composerRow, b.recordBar, b.replyBar, b.mentionBar)) v.isVisible = false
+        } else if (b.cantWriteBar.isVisible) {
+            b.composerRow.isVisible = true
+            b.replyBar.isVisible = replyTo != null
+        }
+        b.cantWriteBar.isVisible = shut
+    }
+
     private fun renderHeader(r: Router) {
         val to = peer
-        // A left group goes by the name on its Home row (its three words when it never had one);
+        // A left group goes by the name on its Home row (its code's words when it never had one);
         // where the radio's status would be, the header says why this chat is only to be read.
         val left = leftGroup()
         val group = left?.let { Asks.groupLabel(it) } ?: groupName(r)
@@ -1912,13 +2046,16 @@ class ChatActivity : AppCompatActivity() {
         b.title.text = name
         b.subtitle.text = sub
         val muted = !readOnly && Core.isMuted(chatKey)
-        b.titleArea.contentDescription = listOf(name, sub, if (muted) getString(R.string.chat_muted_desc) else "")
-            .filter { it.isNotEmpty() }.joinToString(", ")
+        // The shield before a private chat's name: its security code was verified on this phone.
+        val verified = to != null && Core.store.isVerified(to)
+        b.titleArea.contentDescription = listOf(if (verified) getString(R.string.verified_desc, name) else name, sub,
+            if (muted) getString(R.string.chat_muted_desc) else "").filter { it.isNotEmpty() }.joinToString(", ")
         // Only on change: this runs on every redraw (twice a second while a voice note plays).
-        val headerKey = "$chatKey|$muted|$readOnly"
+        val headerKey = "$chatKey|$muted|$readOnly|$verified"
         if (headerKey != headerShown) {
             headerShown = headerKey
-            b.title.setCompoundDrawablesRelativeWithIntrinsicBounds(0, 0, if (muted) R.drawable.ic_chat_muted else 0, 0)
+            b.title.setCompoundDrawablesRelativeWithIntrinsicBounds(if (verified) R.drawable.ic_verified else 0, 0,
+                if (muted) R.drawable.ic_chat_muted else 0, 0)
             // In a left group every header leads to that group's info: its People screen is the radio's.
             ViewCompat.replaceAccessibilityAction(b.titleArea, AccessibilityActionCompat.ACTION_CLICK,
                 getString(if (to == null || readOnly) R.string.chat_group_info else R.string.people), null)
@@ -1943,7 +2080,7 @@ class ChatActivity : AppCompatActivity() {
         b.warn.text = warn; b.warn.isVisible = warn.isNotEmpty()
 
         // Live location: mine first (with the stop affordance), else whoever is sharing.
-        val sharers = if (peer == null) r.people.values.filter { r.liveLocOf(it) != null } else emptyList()
+        val sharers = if (peer == null) r.people.values.filter { ChatRules.listed(it.id) && r.liveLocOf(it) != null } else emptyList()
         val banner = when {
             Core.liveLocationActive() -> getString(if (peer == null) R.string.live_banner_me else R.string.chat_live_banner_me_group,
                 prettyLeft(Core.liveLocationLeftMs()))
@@ -1971,7 +2108,8 @@ class ChatActivity : AppCompatActivity() {
             val p = r.people[to]
             val away = p == null || !r.isInRange(p)
             val waiting = shown.any { it.from == r.me.id && it.isPersonal && it.status != Message.DELIVERED && !Ui.gaveUp(r, it) }
-            b.awayBanner.isVisible = away && (shown.isEmpty() || waiting)
+            // Not in a chat that can't be written in: the line in the composer's place says it all.
+            b.awayBanner.isVisible = away && (shown.isEmpty() || waiting) && r.canWriteTo(to)
             if (b.awayBanner.isVisible) b.awayBanner.text = getString(R.string.out_of_range_dm, Ui.nameOf(r, to))
         }
     }
@@ -2082,6 +2220,8 @@ class ChatActivity : AppCompatActivity() {
         }
         var order = 0
         if (peer == null) popup.menu.add(0, M_INFO, order++, R.string.chat_group_info)
+        // A private chat with someone on 2.4 or later: the number to compare with them.
+        if (peer?.let { ChatRules.listed(it) } == true) popup.menu.add(0, M_VERIFY, order++, R.string.chat_verify)
         popup.menu.add(0, M_MUTE, order++, if (Core.isMuted(chatKey)) R.string.chat_unmute else R.string.chat_mute_title)
         popup.menu.add(0, M_CLEAR, order++, R.string.chat_clear)
         popup.menu.add(0, M_PEOPLE, order++, R.string.people)
@@ -2091,6 +2231,7 @@ class ChatActivity : AppCompatActivity() {
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 M_INFO -> startActivity(Intent(this, GroupInfoActivity::class.java))
+                M_VERIFY -> verifyPeer()
                 M_MUTE -> toggleMute()
                 M_CLEAR -> showPrompt(bundleOf(P_KIND to P_CLEAR, P_TARGET to targetKey()))
                 M_PEOPLE -> startActivity(Intent(this, PeopleActivity::class.java))
@@ -2101,6 +2242,13 @@ class ChatActivity : AppCompatActivity() {
             true
         }
         popup.show()
+    }
+
+    /** "Verify security code" for the person this private chat is with. */
+    private fun verifyPeer() {
+        val to = peer ?: return
+        val r = Core.router ?: return
+        SecurityCodeDialog.show(this, to, Ui.nameOf(r, to, r.messages.lastOrNull { it.from == to }?.fromName.orEmpty()))
     }
 
     // ------------------------------------------------------------------ message gestures & actions
@@ -2120,8 +2268,9 @@ class ChatActivity : AppCompatActivity() {
         if (menu?.isShowing == true || isFinishing) return
         val live = find(r, m.id) ?: return
         // Reactions travel on the radio and land on the live message: none in a group this phone
-        // left, and none on a message that has moved into the history (it would not keep them).
-        val reactions = live.isPersonal && !readOnly && r.message(live.id) != null
+        // left, none in a private chat that can't be written in (a reaction there is sealed like a
+        // message), and none on a message that has moved into the history (it would not keep them).
+        val reactions = live.isPersonal && writable() && r.message(live.id) != null
         // Bring the whole message into view first, so its lifted copy isn't cut by the header or composer.
         val pad = (8 * resources.displayMetrics.density).toInt()
         val h = b.list.height
@@ -2148,21 +2297,27 @@ class ChatActivity : AppCompatActivity() {
         val out = ArrayList<MessageMenu.Action>()
         val mine = m.from == r.me.id
         // A left group's chat keeps what works without the radio: copy, save, share, details, delete.
-        if (m.isPersonal && !readOnly) out.add(MessageMenu.Action(R.drawable.ic_reply, getString(R.string.reply)) { startReply(m) })
-        if (m.isPersonal && m.isGroup && !mine && !readOnly) out.add(MessageMenu.Action(R.drawable.ic_chat_private, getString(R.string.chat_reply_privately)) { replyPrivately(m) })
+        // So does a private chat that can't be written in — nothing in it can be answered.
+        if (m.isPersonal && writable()) out.add(MessageMenu.Action(R.drawable.ic_reply, getString(R.string.reply)) { startReply(m) })
+        // Privately only to someone on 2.4 or later: an old id's private chat could never be written in.
+        if (m.isPersonal && m.isGroup && !mine && !readOnly && ChatRules.replyPrivately(m.from))
+            out.add(MessageMenu.Action(R.drawable.ic_chat_private, getString(R.string.chat_reply_privately)) { replyPrivately(m) })
         if (m.text.isNotEmpty()) out.add(MessageMenu.Action(R.drawable.ic_copy, getString(R.string.copy)) { copy(m) })
         if (fileOnPhone(r, m)) {
             out.add(MessageMenu.Action(R.drawable.ic_chat_save, getString(R.string.chat_save_to_phone)) { saveToPhone(m) })
-            out.add(MessageMenu.Action(R.drawable.ic_share, getString(R.string.chat_share)) { shareFile(m) })
+            // An app installer is only ever saved (MediaRules).
+            val att = m.att
+            if (att != null && !MediaRules.saveOnly(att.name, att.mime))
+                out.add(MessageMenu.Action(R.drawable.ic_share, getString(R.string.chat_share)) { shareFile(m) })
         }
         if (mine && m.isPersonal) out.add(MessageMenu.Action(R.drawable.ic_info, getString(R.string.message_info)) { showDetails(m) })
-        if (!readOnly && Ui.gaveUp(r, m)) out.add(MessageMenu.Action(R.drawable.ic_chat_retry, getString(R.string.chat_send_again)) { sendAgain(m) })
+        if (canSendAgain(r, m)) out.add(MessageMenu.Action(R.drawable.ic_chat_retry, getString(R.string.chat_send_again)) { sendAgain(m) })
         out.add(MessageMenu.Action(R.drawable.ic_chat_delete, getString(R.string.chat_delete_for_me), danger = true) { confirmDelete(m) })
         return out
     }
 
     private fun react(m: Message, emoji: String) {
-        if (readOnly) return
+        if (!writable()) return
         val r = Core.router ?: return
         val live = r.message(m.id) ?: return
         if (!live.isPersonal) return
@@ -2170,21 +2325,22 @@ class ChatActivity : AppCompatActivity() {
         val mine = live.reactions[r.me.id]
         val next = if (emoji == mine) "" else emoji   // the same one again takes it back
         if (next.isEmpty() && mine == null) return
-        r.sendReaction(live, next)
+        if (r.sendReaction(live, next)) Core.saveNow()
         refresh()
     }
 
     /** Double-tap a bubble: ❤️ (or take my ❤️ back), with a little burst so it's clear what happened. */
     private fun doubleTapReact(m: Message, bubble: View) {
-        // Nothing to do in a left group — but the adapter keeps listening for the double tap all
-        // the same: the single tap that opens a link or the details is told apart by it.
-        if (readOnly) return
+        // Nothing to do in a left group, or a private chat that can't be written in — but the
+        // adapter keeps listening for the double tap all the same: the single tap that opens a
+        // link or the details is told apart by it.
+        if (!writable()) return
         val r = Core.router ?: return
         val live = r.message(m.id) ?: return
         if (!live.isPersonal || menu?.isShowing == true) return
         val heart = MessageMenu.DOUBLE_TAP_REACTION
         val adding = live.reactions[r.me.id] != heart
-        r.sendReaction(live, if (adding) heart else "")
+        if (r.sendReaction(live, if (adding) heart else "")) Core.saveNow()
         bubble.performHapticFeedback(if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.KEYBOARD_TAP)
         if (adding) burst(heart, bubble)
         refresh()
@@ -2217,7 +2373,7 @@ class ChatActivity : AppCompatActivity() {
         val r = router() ?: return
         val live = find(r, m.id) ?: return
         // Mine can be taken back only where a reaction can be sent: on a live message of the radio's group.
-        val canRemove = !readOnly && r.message(live.id) != null
+        val canRemove = writable() && r.message(live.id) != null
         ReactionSheets.showReactors(this, r, live, stillShown = { router() === r && find(r, live.id) != null },
             onRemoveMine = if (canRemove) ({ react(live, "") }) else null)?.let { trackSheet(it) }
     }
@@ -2244,7 +2400,8 @@ class ChatActivity : AppCompatActivity() {
             val live = if (router() === r) find(r, m.id) else null
             if (live == null) { sheet.dismiss(); return }
             sb.detailsBody.text = Ui.statusDetail(this, r, live, leftAt = leftAt())
-            sb.detailsRetry.isVisible = !readOnly && Ui.gaveUp(r, live)   // nothing is sent again from a left group
+            // Nothing is sent again from a left group, or to someone nothing can be sealed for.
+            sb.detailsRetry.isVisible = canSendAgain(r, live)
         }
         val obs = Observer<Int> { if (sheet.isShowing) render() }
         Core.version.observe(this, obs)
@@ -2301,6 +2458,7 @@ class ChatActivity : AppCompatActivity() {
         private const val M_SETTINGS = 7
         private const val M_REJOIN = 8
         private const val M_DELETE_GROUP = 9
+        private const val M_VERIFY = 10
 
         private const val S_CHAT = "chat"
         private const val S_FP = "chatFp"

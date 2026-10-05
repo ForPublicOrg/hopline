@@ -19,8 +19,8 @@ class ErrandTest {
         assertEquals(Errand.ASKED, e.status)
         val first = e.pick.first()
         net.advance(40_000)
-        assertEquals(1, net.nodes[first]!!.rec.errands.size)
-        val other = if (first == "B") "C" else "B"
+        assertEquals(1, net.byId(first).rec.errands.size)
+        val other = if (net.byId(first).label == "B") "C" else "B"
         assertTrue("the other helper never started", net.nodes[other]!!.rec.errands.isEmpty())
         assertEquals(Errand.CLAIMED, e.status); assertEquals(first, e.helper)
     }
@@ -32,13 +32,13 @@ class ErrandTest {
         net.pump()
         val e = net.nodes["A"]!!.router.requestErrand(Errand.READ, url()); net.pump()
         net.advance(3_000)
-        val first = e.helper!!
+        val first = net.byId(e.helper!!).label
         val second = if (first == "B") "C" else "B"
         net.disconnect("A", first)                              // walks off mid-fetch, never answers
         net.advance(Router.WORK_LEASE_MS + 45_000)
         assertEquals(1, net.nodes[second]!!.rec.errands.size)
-        assertEquals(second, e.helper)
-        assertTrue(first in e.tried)
+        assertEquals(net.id(second), e.helper)
+        assertTrue(net.id(first) in e.tried)
         net.nodes[second]!!.router.completeErrand(e.id, true, "Page", JSONObject().put("t", "from the second")); net.pump()
         assertEquals(Errand.DONE, e.status)
         // the first helper finishes late and comes back: its answer is not shown again
@@ -60,10 +60,11 @@ class ErrandTest {
         assertEquals(1, net.nodes["B"]!!.rec.errands.size); assertEquals(1, net.nodes["C"]!!.rec.errands.size)
         net.connect("B", "C")
         net.advance(31_000)                                     // heartbeats cross: the larger id lets go
-        assertEquals(1, net.nodes["C"]!!.rec.aborts.size)
-        assertTrue(net.nodes["B"]!!.rec.aborts.isEmpty())
-        net.connect("A", "B")
-        net.nodes["B"]!!.router.completeErrand(e.id, true, "Page", JSONObject().put("t", "one answer")); net.pump()
+        val (keeps, yields) = if (net.id("B") < net.id("C")) "B" to "C" else "C" to "B"
+        assertEquals(1, net.nodes[yields]!!.rec.aborts.size)
+        assertTrue(net.nodes[keeps]!!.rec.aborts.isEmpty())
+        net.connect("A", keeps)
+        net.nodes[keeps]!!.router.completeErrand(e.id, true, "Page", JSONObject().put("t", "one answer")); net.pump()
         assertEquals(Errand.DONE, e.status)
     }
 
@@ -111,11 +112,11 @@ class ErrandTest {
         net.pump()
         val e = net.nodes["A"]!!.router.requestErrand(Errand.READ, url()); net.pump()
         net.advance(3_000)
-        val first = e.helper!!; val second = if (first == "B") "C" else "B"
+        val first = net.byId(e.helper!!).label; val second = if (first == "B") "C" else "B"
         net.nodes[first]!!.router.declineErrand(e.id, "budget"); net.pump()
         net.advance(40_000)
         assertEquals(1, net.nodes[second]!!.rec.errands.size)
-        assertEquals(second, e.helper)
+        assertEquals(net.id(second), e.helper)
     }
 
     @Test fun `an old dispatch replayed by gap-fill does not restart a finished request`() {
@@ -149,55 +150,54 @@ class ErrandTest {
         val net = FakeNet(); net.line("A", "B", "C")
         val b = net.nodes["B"]!!.router
         b.setCaps(Errand.CAP_READ)
-        // exactly what 2.1 sends: directed, no "rv"
-        val p = JSONObject().put("eid", "legacyeid1").put("type", "read").put("args", url()).put("helper", "B").put("helperName", "B")
-        val env = Envelope(JSONObject().put("id", Crypto.randomId(12)).put("k", Envelope.ERRAND).put("o", "A").put("on", "A")
-            .put("ts", net.now).put("h", 0).put("p", p)).also { it.sign(b.group.key) }
-        b.onBytes("B>A", JSONObject().put("t", "env").put("e", env.json).toString().toByteArray()); net.pump()
+        // what 2.1 sent: directed, no "rv" (under an id of the asker's, as every request's is now)
+        val eid = FakeNet.newId("A")
+        val p = JSONObject().put("eid", eid).put("type", "read").put("args", url()).put("helper", net.id("B")).put("helperName", "B")
+        val env = FakeNet.envelope("A", Envelope.ERRAND, p, net.now)
+        b.onBytes("B>A", FakeNet.frame(env)); net.pump()
         net.advance(3_000)
-        assertEquals(listOf("legacyeid1"), net.nodes["B"]!!.rec.errands.map { it.id })
-        b.completeErrand("legacyeid1", true, "Web page: example", JSONObject().put("t", "Sunny, 18°C")); net.pump()
+        assertEquals(listOf(eid), net.nodes["B"]!!.rec.errands.map { it.id })
+        b.completeErrand(eid, true, "Web page: example", JSONObject().put("t", "Sunny, 18°C")); net.pump()
         for (id in listOf("A", "B", "C")) assertTrue(net.texts(id).any { it.contains("Sunny, 18°C") })
     }
 
     @Test fun `a 2_x asker whose request can't be done hears so instead of waiting forever`() {
         val net = FakeNet(); net.line("A", "B")
         val b = net.nodes["B"]!!.router   // no caps at all: no signal right now
-        val p = JSONObject().put("eid", "legacyeid2").put("type", "weather").put("args", JSONObject().put("place", "Manali")).put("helper", "B")
-        val env = Envelope(JSONObject().put("id", Crypto.randomId(12)).put("k", Envelope.ERRAND).put("o", "A").put("on", "A")
-            .put("ts", net.now).put("h", 0).put("p", p)).also { it.sign(b.group.key) }
-        b.onBytes("B>A", JSONObject().put("t", "env").put("e", env.json).toString().toByteArray()); net.pump()
+        val eid = FakeNet.newId("A")
+        val p = JSONObject().put("eid", eid).put("type", "weather").put("args", JSONObject().put("place", "Manali")).put("helper", net.id("B"))
+        val env = FakeNet.envelope("A", Envelope.ERRAND, p, net.now)
+        b.onBytes("B>A", FakeNet.frame(env)); net.pump()
         net.advance(3_000)
         // the app declines what it can't do; for a 2.x asker that becomes a plain public "couldn't"
-        b.declineErrand("legacyeid2", "unsupported"); net.pump()
+        b.declineErrand(eid, "unsupported"); net.pump()
         assertTrue(net.texts("A").any { it.contains("can't do this kind of request") })
     }
 
     @Test fun `an old helper is asked by name only after the asker agrees to a public answer`() {
         val net = FakeNet(); net.line("A", "B")
         // B announces internet the 2.1 way: net=true, no "ev"
-        val pres = Envelope(JSONObject().put("id", Crypto.randomId(12)).put("k", Envelope.PRESENCE).put("o", "B").put("on", "B")
-            .put("ts", net.now).put("h", 0).put("p", JSONObject().put("n", "B").put("net", true))).also { it.sign(net.nodes["A"]!!.router.group.key) }
-        net.nodes["A"]!!.router.onBytes("A>B", JSONObject().put("t", "env").put("e", pres.json).toString().toByteArray())
+        val pres = FakeNet.envelope("B", Envelope.PRESENCE, JSONObject().put("n", "B").put("net", true).put("q", net.now + 1), net.now)
+        net.nodes["A"]!!.router.onBytes("A>B", FakeNet.frame(pres))
         val a = net.nodes["A"]!!.router
-        assertEquals(listOf("B"), a.legacyHelpers().map { it.id })
+        assertEquals(listOf(net.id("B")), a.legacyHelpers().map { it.id })
         val e = a.requestErrand(Errand.READ, url()); net.pump()
         net.advance(70_000)
-        assertNotEquals("B", e.helper)                            // not without asking
+        assertNotEquals(net.id("B"), e.helper)                    // not without asking
         a.allowPublicAnswer(e.id); net.pump()
-        assertEquals("B", e.helper)
-        assertTrue("B" in e.legacyAsked)
+        assertEquals(net.id("B"), e.helper)
+        assertTrue(net.id("B") in e.legacyAsked)
     }
 
     @Test fun `a passing problem stays quiet for a 2_x asker so they can simply ask again`() {
         val net = FakeNet(); net.line("A", "B")
         val b = net.nodes["B"]!!.router
-        val p = JSONObject().put("eid", "legacyeid3").put("type", "read").put("args", url()).put("helper", "B")
-        val env = Envelope(JSONObject().put("id", Crypto.randomId(12)).put("k", Envelope.ERRAND).put("o", "A").put("on", "A")
-            .put("ts", net.now).put("h", 0).put("p", p)).also { it.sign(b.group.key) }
-        b.onBytes("B>A", JSONObject().put("t", "env").put("e", env.json).toString().toByteArray()); net.pump()
+        val eid = FakeNet.newId("A")
+        val p = JSONObject().put("eid", eid).put("type", "read").put("args", url()).put("helper", net.id("B"))
+        val env = FakeNet.envelope("A", Envelope.ERRAND, p, net.now)
+        b.onBytes("B>A", FakeNet.frame(env)); net.pump()
         net.advance(3_000)
-        b.declineErrand("legacyeid3", "no_signal"); net.pump()
+        b.declineErrand(eid, "no_signal"); net.pump()
         assertTrue(net.texts("A").isEmpty())
     }
 
@@ -208,7 +208,7 @@ class ErrandTest {
         net.pump()
         val e = net.nodes["A"]!!.router.requestErrand(Errand.SEND, JSONObject().put("to", "+919800000000").put("text", "OK")); net.pump()
         net.advance(3_000)
-        val first = e.helper!!; val second = if (first == "B") "C" else "B"
+        val first = net.byId(e.helper!!).label; val second = if (first == "B") "C" else "B"
         net.nodes[first]!!.router.markSendOpened(e.id)
         net.disconnect("A", first)                                 // their phone dies after they opened Messages
         net.advance(Router.HUMAN_LEASE_MS + 60_000, step = 5_000)
@@ -235,7 +235,7 @@ class ErrandTest {
         assertEquals(1, net.nodes["B"]!!.rec.errands.size)
         // a person has twenty minutes: no hand-off after a normal fetch lease
         net.advance(Router.WORK_LEASE_MS * 3)
-        assertEquals("B", e.helper); assertEquals(Errand.CLAIMED, e.status)
+        assertEquals(net.id("B"), e.helper); assertEquals(Errand.CLAIMED, e.status)
         net.nodes["B"]!!.router.completeErrand(e.id, true, "Text sent to +919800000000", JSONObject().put("t", "Sent at 14:02")); net.pump()
         assertEquals(Errand.DONE, e.status)
     }
@@ -247,9 +247,9 @@ class ErrandTest {
         net.pump()
         val e = net.nodes["A"]!!.router.requestErrand(Errand.SEND, JSONObject().put("to", "+919800000000").put("text", "OK")); net.pump()
         net.advance(3_000)
-        val first = e.helper!!; val second = if (first == "B") "C" else "B"
+        val first = net.byId(e.helper!!).label; val second = if (first == "B") "C" else "B"
         net.advance(Router.HUMAN_MAX_MS + 60_000, step = 5_000)
-        assertEquals(second, e.helper)
+        assertEquals(net.id(second), e.helper)
         assertEquals(1, net.nodes[second]!!.rec.errands.size)
     }
 
@@ -271,7 +271,7 @@ class ErrandTest {
         net.nodes["B"]!!.router.setCaps(Errand.CAP_SMS); net.pump()
         val e = net.nodes["A"]!!.router.requestErrand(Errand.SEND, JSONObject().put("to", "+919800000000").put("text", "OK")); net.pump()
         net.advance(3_000)
-        assertEquals("B", e.helper)
+        assertEquals(net.id("B"), e.helper)
         net.disconnect("A", "B"); net.disconnect("B", "C")             // B's phone dies with the text claimed
         net.advance(Router.HUMAN_LEASE_MS + 60_000, step = 5_000)
         assertEquals("quiet", e.why)
@@ -287,7 +287,7 @@ class ErrandTest {
         assertTrue(a.runOwnNow(e.id, Errand.CAP_READ))
         assertEquals(listOf(e.id), net.nodes["A"]!!.rec.errands.map { it.id })
         net.pump()
-        assertEquals("A", net.nodes["B"]!!.router.errands[e.id]!!.helper)   // the group knows it's taken
+        assertEquals(net.id("A"), net.nodes["B"]!!.router.errands[e.id]!!.helper)   // the group knows it's taken
         net.nodes["B"]!!.router.setCaps(Errand.CAP_READ)                 // B gets signal: nothing to do
         net.advance(60_000)
         assertTrue(net.nodes["B"]!!.rec.errands.isEmpty())
@@ -307,7 +307,7 @@ class ErrandTest {
         net.nodes["B"]!!.router.setCaps(Errand.CAP_READ); net.pump()
         net.advance(40_000)
         assertEquals(listOf(e.id), net.nodes["B"]!!.rec.errands.map { it.id })
-        assertEquals("B", e.helper)
+        assertEquals(net.id("B"), e.helper)
         assertFalse("a friend is on it", a.runOwnNow(e.id, Errand.CAP_READ, force = true))
     }
     @Test fun `read more goes to the phone that has the page first, and finished requests can be removed`() {
@@ -317,10 +317,10 @@ class ErrandTest {
         net.pump()
         val a = net.nodes["A"]!!.router
         for (who in listOf("B", "C")) {
-            val e = a.requestErrand(Errand.READ, url().put("part", 2), prefer = who); net.pump()
-            assertEquals(who, e.pick.first())
+            val e = a.requestErrand(Errand.READ, url().put("part", 2), prefer = net.id(who)); net.pump()
+            assertEquals(net.id(who), e.pick.first())
             net.advance(3_000)
-            assertEquals(who, e.helper)
+            assertEquals(net.id(who), e.helper)
             net.nodes[who]!!.router.completeErrand(e.id, true, "Page", JSONObject().put("t", "part 2")); net.pump()
             assertFalse("an open one stays", a.forgetErrand("nope"))
             assertTrue(a.forgetErrand(e.id))
@@ -335,7 +335,7 @@ class ErrandTest {
         net.nodes["B"]!!.router.setCaps(Errand.CAP_SMS); net.pump()
         val e = net.nodes["A"]!!.router.requestErrand(Errand.SEND, JSONObject().put("to", "+919800000000").put("text", "OK")); net.pump()
         net.advance(3_000)
-        assertEquals("B", e.helper)
+        assertEquals(net.id("B"), e.helper)
         net.nodes["B"]!!.router.markSendOpened(e.id)
         net.disconnect("A", "B"); net.disconnect("B", "C")             // B's phone dies after opening Messages
         net.advance(Router.HUMAN_LEASE_MS + 60_000, step = 5_000)
@@ -354,10 +354,10 @@ class ErrandTest {
         net.nodes["B"]!!.router.setCaps(Errand.CAP_READ); net.pump()
         val e = net.nodes["A"]!!.router.requestErrand(Errand.READ, url()); net.pump()
         net.advance(3_000)
-        assertEquals("B", e.helper)
+        assertEquals(net.id("B"), e.helper)
         // C restarts with signal while B's claim is live
         val snap = JSONObject(net.nodes["C"]!!.router.snapshot().toString())
-        val c2 = Router(Identity("C", "C"), Group(FakeNet.CODE, "Trek"), net.nodes["C"]!!.transport, net.nodes["C"]!!.rec) { net.now }
+        val c2 = Router(FakeNet.identity("C"), FakeNet.group(), net.nodes["C"]!!.transport, net.nodes["C"]!!.rec) { net.now }
         c2.restore(snap)
         assertEquals(Errand.CLAIMED, c2.errands[e.id]!!.status)
         assertTrue("the live claim survived the restart", c2.errands[e.id]!!.leaseUntil > net.now)
@@ -379,5 +379,113 @@ class ErrandTest {
         net.nodes["B"]!!.router.setCaps(Errand.CAP_READ)
         net.advance(Router.WORK_LEASE_MS + 60_000)
         assertTrue("B never fetches a cancelled request", net.nodes["B"]!!.rec.errands.isEmpty())
+    }
+
+    /** An answer body as a helper's phone packs it ([Gz.pack]), from any text at all. */
+    private fun gz(text: String): String {
+        val bos = java.io.ByteArrayOutputStream()
+        java.util.zip.GZIPOutputStream(bos).use { it.write(text.toByteArray(Charsets.UTF_8)) }
+        return Crypto.b64(bos.toByteArray())
+    }
+
+    @Test fun `an answer whose body nests deeper than any answer is never kept`() {
+        // a few hundred bytes on the air, and a parser-killer once inflated
+        fun deep(levels: Int) = gz("{\"t\":" + "[".repeat(levels) + "]".repeat(levels) + "}")
+        assertNull(Gz.unpackJson(deep(Crypto.MAX_DEPTH + 8)))
+        assertNull(Gz.unpackJson(deep(200_000)))          // and nothing is thrown, however deep
+        assertTrue(deep(200_000).length < 2_000)
+        assertEquals("ok", Gz.unpackJson(gz("{\"t\":\"ok\",\"l\":[[1]]}"))!!.getString("t"))
+        // sent as the answer to my request, by a member who saw it go by: my request stays open
+        val net = FakeNet(); net.line("A", "M")
+        val a = net.nodes["A"]!!
+        val e = a.router.requestErrand(Errand.READ, url()); net.pump()
+        val inner = JSONObject().put("eid", e.id).put("ok", true).put("ty", Errand.READ).put("title", "Page")
+            .put("z", deep(Crypto.MAX_DEPTH + 8)).put("by", "M")
+        val answer = FakeNet.envelope("M", Envelope.DM, JSONObject().put("text", "Page").put("er", inner), net.now,
+            to = net.id("A"), er = JSONObject().put("eid", e.id).put("ok", true))
+        a.router.onBytes("A>M", FakeNet.frame(answer)); net.pump()
+        assertTrue(e.isOpen); assertEquals("", e.answerZ); assertNull(e.answer())
+        assertTrue(a.rec.answers.isEmpty())
+        // a state saved with such a body before this check reads back as no answer, not a crash
+        assertNull(Errand.fromJson(JSONObject(e.toJson().toString()).put("z", deep(200_000))).answer())
+    }
+
+    @Test fun `someone's request carried from before the update is let go, and their new one is taken`() {
+        val net = FakeNet(); val b = net.node("B")
+        val t0 = net.now - 60_000
+        fun request(id: String, from: String) = Errand(id, Errand.READ, url(), from, "Asha", t0).also {
+            it.rv = Errand.EV; it.exp = net.now + 3_600_000L; it.status = Errand.ASKED
+        }
+        val old = request("oldrequest01", "abcdefgh")        // Asha's id before 2.4
+        val keyless = request("keyless00001", net.id("Z"))   // a 2.4 phone this one has no key for
+        b.router.restore(JSONObject().put("fmt", Router.FMT).put("me", b.id)
+            .put("errands", JSONArray().put(old.toJson()).put(keyless.toJson()))
+            .put("running", JSONArray().put(old.id).put(keyless.id)))
+        assertNull(b.router.errands[old.id])
+        // no answer could ever be sealed for either asker: nothing is fetched, then or when signal comes
+        b.router.resumeErrands()
+        b.router.setCaps(Errand.CAP_READ)
+        net.advance(60_000)
+        assertTrue(b.rec.errands.isEmpty())
+        assertFalse(b.router.isRunning(keyless.id))
+        // Asha's phone, updated, sends it again under her new id (and, as every request now, an id of hers): taken in, and done
+        net.node("A"); net.connect("A", "B")
+        val eid = FakeNet.newId("A")
+        val again = FakeNet.envelope("A", Envelope.ERRAND, JSONObject().put("eid", eid).put("type", Errand.READ).put("args", url())
+            .put("helper", "").put("rv", Errand.EV).put("exp", net.now + 3_600_000L).put("at", t0), net.now)
+        b.router.onBytes("B>A", FakeNet.frame(again)); net.pump()
+        assertEquals(net.id("A"), b.router.errands[eid]!!.from)
+        net.advance(60_000)
+        assertEquals(listOf(eid), b.rec.errands.map { it.id })
+        assertTrue(b.router.completeErrand(eid, true, "Page", JSONObject().put("t", "the page"))); net.pump()
+    }
+
+    @Test fun `a request's id is its asker's, and nobody can send it first as their own`() {
+        val net = FakeNet(); net.node("A"); net.node("H"); net.node("M")
+        val h = net.nodes["H"]!!
+        h.router.setCaps(Errand.CAP_READ)
+        val e = net.nodes["A"]!!.router.requestErrand(Errand.READ, url())
+        assertTrue(e.id.startsWith("${net.id("A")}."))
+        // M saw it go by and sends the same request as M's own, reaching H first
+        net.connect("H", "M")
+        val squat = FakeNet.envelope("M", Envelope.ERRAND, JSONObject().put("eid", e.id).put("type", Errand.READ).put("args", url("https://evil.example/"))
+            .put("helper", "").put("rv", Errand.EV).put("exp", net.now + 3_600_000L).put("at", net.now), net.now)
+        h.router.onBytes("H>M", FakeNet.frame(squat)); net.pump()
+        assertNull(h.router.errands[e.id])
+        assertTrue(h.router.carries(squat.id))                          // still passed round like any genuine envelope
+        // A's own request still gets through, and is done
+        net.connect("A", "H")
+        assertEquals(net.id("A"), h.router.errands[e.id]!!.from)
+        net.advance(40_000)
+        assertEquals(listOf(e.id), h.rec.errands.map { it.id })
+        assertEquals("https://example.org/page", h.rec.errands.single().args.getString("url"))
+        assertTrue(h.router.completeErrand(e.id, true, "Page", JSONObject().put("t", "the page"))); net.pump()
+        assertEquals(Errand.DONE, e.status)
+    }
+
+    @Test fun `a request of mine still open from before goes on under an id of mine`() {
+        val net = FakeNet(); val a = net.node("A"); val b = net.node("B")
+        val hour = 3_600_000L
+        val old = Errand("oldrequest01", Errand.READ, url(), a.id, "A", net.now - 60_000).also {
+            it.rv = Errand.EV; it.exp = net.now + hour; it.status = Errand.ASKED; it.lastDispatchAt = net.now - 60_000; it.dispatchTs = net.now - 60_000
+        }
+        val done = Errand("oldrequest02", Errand.FIND, JSONObject().put("q", "pass"), a.id, "A", net.now - hour).also {
+            it.rv = Errand.EV; it.exp = net.now; it.status = Errand.DONE; it.result = "open till 6"
+        }
+        // the state an upgrade leaves: my requests under ids from before, and the list of what to send again
+        a.router.restore(JSONObject().put("fmt", Router.FMT).put("me", a.id).put("errands", JSONArray().put(old.toJson()).put(done.toJson()))
+            .put("doneAt", JSONObject().put(done.id, net.now - hour)).put("reissue", JSONArray()))
+        assertNull(a.router.errands[old.id])
+        val mine = a.router.errands.values.single { it.isOpen }
+        assertTrue(mine.id.startsWith("${a.id}."))
+        assertEquals("https://example.org/page", mine.args.getString("url")); assertEquals(Errand.ASKED, mine.status)
+        assertEquals("finished ones keep their id", "open till 6", a.router.errands[done.id]!!.result)
+        a.router.reissueQueued()
+        b.router.setCaps(Errand.CAP_READ)
+        net.connect("A", "B")
+        net.advance(40_000)
+        assertEquals(listOf(mine.id), b.rec.errands.map { it.id })
+        assertTrue(b.router.completeErrand(mine.id, true, "Page", JSONObject().put("t", "the page"))); net.pump()
+        assertEquals(Errand.DONE, mine.status)
     }
 }

@@ -1,6 +1,5 @@
 package app.hopline.mesh
 
-import app.hopline.core.Crypto
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -17,6 +16,8 @@ import org.junit.Test
 class SpillTest {
     private val window = Router.MAX_MESSAGES
     private val line = Router.MAX_MESSAGES + Router.SPILL_BATCH     // where the oldest start to move out
+    /** This phone ("A") as the mesh knows it. */
+    private val me = FakeNet.idOf("A")
 
     /** A group message from B, [i] seconds into the story — so a higher [i] is a newer message. */
     private fun group(net: FakeNet, i: Int, from: String = "B"): JSONObject =
@@ -24,7 +25,7 @@ class SpillTest {
 
     /** A private message between me (A) and [peer]. */
     private fun private(net: FakeNet, i: Int, peer: String, mine: Boolean = false): JSONObject =
-        Message("p%05d.$peer".format(i), Envelope.DM, if (mine) "A" else peer, if (mine) "A" else peer, if (mine) peer else "A",
+        Message("p%05d.$peer".format(i), Envelope.DM, if (mine) me else peer, if (mine) "A" else peer, if (mine) peer else me,
             "private $i", net.now - 10_000_000L + i * 1000L).toJson()
 
     private fun state(messages: List<JSONObject>) = JSONObject().put("messages", JSONArray(messages))
@@ -160,14 +161,15 @@ class SpillTest {
     @Test fun whenNoChatHasAnyToSpareAMessageStillWaitingAndAFileStillArrivingStayAllTheSame() {
         // A private message of mine, typed with nobody around, long before: the oldest message of all.
         val lonely = FakeNet(); lonely.now -= 20_000_000L
-        val waiting = lonely.node("A").router.sendDm("zed", "still trying to reach you")
+        lonely.node("A"); lonely.know("A", "zed")
+        val waiting = lonely.nodes["A"]!!.router.sendDm(lonely.id("zed"), "still trying to reach you")!!
         val saved = lonely.nodes["A"]!!.router.snapshot()
         assertEquals(Message.QUEUED, waiting.status)
 
         val net = FakeNet()
         // A private photo whose message came an hour ago; its pieces are still on their way.
         val att = Attachment.make("abcdefghij", "photo.jpg", "image/jpeg", 30_000, 3, 10, 10, "tb")
-        val file = Message("file-0", Envelope.FILE, "yan", "yan", "A", "sunset", net.now - 15_000_000L, att).also { it.arrivedAt = net.now - 3_600_000L }.toJson()
+        val file = Message("file-0", Envelope.FILE, "yan", "yan", me, "sunset", net.now - 15_000_000L, att).also { it.arrivedAt = net.now - 3_600_000L }.toJson()
         // …and thousands of chats of one message each: none has any to spare, so the oldest go whatever their chat.
         val tiny = (0 until line + 10).map { private(net, it, "peer$it") }
         val all = JSONObject(saved.toString())
@@ -199,7 +201,7 @@ class SpillTest {
         val saved = lonely.nodes["A"]!!.router.snapshot()
         assertEquals(Message.QUEUED, waiting.status)
         // the same words, but with no envelope left to send (as after leaving and rejoining)
-        val given = Message("given-up", Envelope.CHAT, "A", "A", null, "gave up", lonely.now + 1).also { it.status = Message.QUEUED }.toJson()
+        val given = Message("given-up", Envelope.CHAT, me, "A", null, "gave up", lonely.now + 1).also { it.status = Message.QUEUED }.toJson()
 
         val net = FakeNet()
         val chatter = (0 until line + 5).map { group(net, it) }
@@ -304,23 +306,25 @@ class SpillTest {
         val a2 = phone(later, saved)
         a2.router.tick()
         assertEquals("two days on, a friend may still carry them", filed, a2.router.snapshot().getJSONObject("spilled").keySet())
-        later.now += 86_400_000L + 1_000
+        later.now = net.now + Router.REMEMBER_MS - 60_000
         a2.router.tick()
-        assertFalse("three days on, nobody does", a2.router.snapshot().has("spilled"))
+        assertEquals("nor can a late one, nearly two weeks on, bring them back", filed, a2.router.snapshot().getJSONObject("spilled").keySet())
+        later.now = net.now + Router.REMEMBER_MS + 1_000
+        a2.router.tick()
+        assertFalse("two weeks on, nobody does", a2.router.snapshot().has("spilled"))
         assertEquals(window, a2.router.messages.size)
     }
 
     @Test fun aReactionToAFiledMessageIsStillCarriedForTheOthers() {
         val net = FakeNet()
-        val a = phone(net, state((0 until line).map { group(net, it, from = "A") }))
+        val a = phone(net, state((0 until line).map { group(net, it, from = me) }))
         a.router.tick()
         val gone = a.router.takeOverflow().first()
         net.node("B"); net.node("C")
         net.connect("A", "B")
         // B reacts to a message of mine that this phone has filed away: nothing here to put it on…
-        val react = Envelope(JSONObject().put("id", Crypto.randomId(12)).put("k", Envelope.REACT).put("o", "B").put("on", "B")
-            .put("ts", net.now).put("h", 0).put("p", JSONObject().put("m", gone.id).put("e", "👍"))).also { it.sign(a.router.group.key) }
-        a.router.onBytes("A>B", JSONObject().put("t", "env").put("e", react.json).toString().toByteArray()); net.pump()
+        val react = FakeNet.envelope("B", Envelope.REACT, JSONObject().put("m", gone.id).put("e", "👍"), net.now)
+        a.router.onBytes("A>B", FakeNet.frame(react)); net.pump()
         assertNull(a.router.message(gone.id))
         assertTrue(a.rec.reactions.isEmpty())
         // …but the mesh still depends on this phone passing it on

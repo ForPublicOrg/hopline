@@ -3,8 +3,9 @@ package app.hopline.core
 import java.security.SecureRandom
 
 /**
- * The group code is three everyday words: "tiger river lamp". Easy to say across a campsite, easy to
+ * The group code is four everyday words: "tiger river lamp hat". Easy to say across a campsite, easy to
  * type with gloves on, and no look-alike letters or sound-alike words (no "key"/"quay", "red"/"read").
+ * Groups started before 2.4 have three words, and those codes still work everywhere.
  */
 object Words {
     val LIST: List<String> = """
@@ -29,7 +30,7 @@ object Words {
 
     private val rng = SecureRandom()
 
-    fun randomCode(n: Int = 3): String = (1..n).joinToString(" ") { LIST[rng.nextInt(LIST.size)] }
+    fun randomCode(n: Int = 4): String = (1..n).joinToString(" ") { LIST[rng.nextInt(LIST.size)] }
 
     /** "Tiger, River LAMP" -> "tiger-river-lamp". Anything non-alphabetic is a separator. */
     fun normalise(code: String): String =
@@ -37,7 +38,8 @@ object Words {
 
     fun pretty(code: String): String = normalise(code).replace('-', ' ')
 
-    fun looksValid(code: String): Boolean = normalise(code).split('-').let { it.size == 3 && it.all { w -> w.length >= 2 } }
+    /** Four words, or three for a group started before 2.4 (it must still open, join and rejoin). */
+    fun looksValid(code: String): Boolean = normalise(code).split('-').let { it.size in 3..4 && it.all { w -> w.length >= 2 } }
 
     // ------------------------------------------------------------------ checking what someone typed
 
@@ -57,7 +59,7 @@ object Words {
     /** Words in [code] that are not Hopline code words ("doughnut", "plumb"). Empty when every word is known. */
     fun unknownWords(code: String): List<String> = tokens(code).filter { it !in SET }
 
-    /** Three words, every one of them from the list: the only kind of code Hopline ever makes. */
+    /** Four words (or an older group's three), every one of them from the list: the only kind of code Hopline ever makes. */
     fun isKnownCode(code: String): Boolean = looksValid(code) && unknownWords(code).isEmpty()
 
     /**
@@ -65,7 +67,9 @@ object Words {
      * mistakes people really make with a code read out across a campsite: spelling variants
      * ("doughnut"), words run together ("tigerriver") or split ("yo yo"), and small typos
      * ("tigre", "rivr"). A typo is only fixed when exactly one list word is that close, so a
-     * suggestion is never a coin toss.
+     * suggestion is never a coin toss — and neither is its length: when joining split pieces
+     * gives a three-word code but the pieces as typed also make a four-word one, there is no
+     * telling which was meant, so nothing is offered.
      */
     fun suggest(code: String): String? {
         val start = tokens(code).map { ALIAS[it] ?: it }
@@ -78,29 +82,39 @@ object Words {
             val joined = b?.let { (a + it).let { j -> ALIAS[j] ?: j } }
             if (joined != null && joined in SET && (a !in SET || b !in SET)) { merged += joined; i += 2 } else { merged += a; i++ }
         }
-        // "tigerriver" → "tiger river": split a run-together word when there is exactly one way to.
-        val words = merged.flatMap { w -> if (w in SET) listOf(w) else split(w) ?: listOf(w) }
-        if (words.size != 3) return null
-        val fixed = words.map { w -> if (w in SET) w else nearest(w) ?: return null }
+        val fixed = fix(merged) ?: return null
+        // Joining made fewer words. If the pieces as typed make a code too, three words or four is a coin toss.
+        if (merged.size != start.size && fix(start) != null) return null
         val out = fixed.joinToString(" ")
         return if (out == tokens(code).joinToString(" ")) null else out
     }
 
-    /** The only way to cut [w] into two or three list words, or null (none, or more than one). */
+    /** [words] with run-together words cut apart and typos fixed, if that makes a three- or four-word code. */
+    private fun fix(words: List<String>): List<String>? {
+        // "tigerriver" → "tiger river": split a run-together word when there is exactly one way to.
+        val pieces = words.flatMap { w -> if (w in SET) listOf(w) else split(w) ?: listOf(w) }
+        if (pieces.size !in 3..4) return null
+        return pieces.map { w -> if (w in SET) w else nearest(w) ?: return null }
+    }
+
+    private val LONGEST = LIST.maxOf { it.length }
+
+    /** The only way to cut [w] into two, three or four list words, or null (none, or more than one). */
     private fun split(w: String): List<String>? {
         val found = ArrayList<List<String>>()
-        for (a in 2..w.length - 2) {
-            val head = w.substring(0, a)
-            if (head !in SET) continue
-            val tail = w.substring(a)
-            if (tail in SET) found += listOf(head, tail)
-            for (b in 2..tail.length - 2) {
-                val mid = tail.substring(0, b); val end = tail.substring(b)
-                if (mid in SET && end in SET) found += listOf(head, mid, end)
-            }
-            if (found.size > 1) return null
-        }
+        cut(w, emptyList(), found)
         return found.singleOrNull()
+    }
+
+    /** Adds to [found] each way to cut [rest] into list words after [head] (four in all at most); stops at the second. */
+    private fun cut(rest: String, head: List<String>, found: MutableList<List<String>>) {
+        if (head.isNotEmpty() && rest in SET) found += head + rest
+        if (head.size == 3) return
+        for (a in 2..minOf(rest.length - 2, LONGEST)) {
+            if (found.size > 1) return
+            val word = rest.substring(0, a)
+            if (word in SET) cut(rest.substring(a), head + word, found)
+        }
     }
 
     /** The one list word within a typo or two of [w] (one for short words), or null if none or a tie. */

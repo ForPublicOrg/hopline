@@ -23,6 +23,9 @@ class ArchiveTest {
     private fun kinds(carry: JSONArray?): Set<String> = objects(carry).map { it.optString("k") }.toSet()
     private fun count(hay: String, needle: String) = hay.split(needle).size - 1
 
+    /** The phones of the story as the mesh knows them. */
+    private val A = FakeNet.idOf("A"); private val B = FakeNet.idOf("B"); private val C = FakeNet.idOf("C")
+
     /**
      * A (this phone) in a line A—B—C, after a busy day: messages both ways, a private chat, a
      * reaction, a message deleted here, someone else's private message passing through, internet
@@ -31,13 +34,15 @@ class ArchiveTest {
     private class Day(val net: FakeNet) {
         lateinit var fromB: Message; lateinit var mine: Message; lateinit var dm: Message
         lateinit var oops: Message; lateinit var unsent: Message
+        /** C's private message to B, which A only carries (sealed for B: A can't read it). */
+        lateinit var theirDm: Message
         lateinit var answered: Errand; lateinit var open: Errand; lateinit var theirs: Errand
         /** A's full state the moment it left, and each of its messages as text — taken before anything strips it. */
         lateinit var before: JSONObject
         lateinit var beforeText: String
         lateinit var messagesBefore: List<String>
         var leftAt = 0L
-        fun archive(): JSONObject = Archive.strip(before, "A", "A", leftAt, leftAt)
+        fun archive(): JSONObject = Archive.strip(before, FakeNet.idOf("A"), "A", leftAt, leftAt)
     }
 
     private fun day(): Day {
@@ -49,8 +54,8 @@ class ArchiveTest {
         net.now += 1_000
         d.mine = a.sendChat("hi all"); net.pump()
         net.now += 1_000
-        c.sendDm("B", "private between C and B"); net.pump()            // A only carries this one
-        d.dm = a.sendDm("B", "just you"); net.pump()
+        d.theirDm = c.sendDm(B, "private between C and B")!!; net.pump()    // A only carries this one
+        d.dm = a.sendDm(B, "just you")!!; net.pump()
         b.sendReaction(b.message(d.mine.id)!!, "👍"); net.pump()
         net.now += 1_000
         d.oops = b.sendChat("oops"); net.pump()
@@ -90,14 +95,14 @@ class ArchiveTest {
         for (i in d.messagesBefore.indices) assertEquals(d.messagesBefore[i], kept.get(i).toString())
         // reactions, ticks and who it reached ride along untouched
         val mine = objects(kept).single { it.getString("id") == d.mine.id }
-        assertEquals("👍", mine.getJSONObject("reac").getJSONObject("B").getString("e"))
-        assertEquals(setOf("B", "C"), (0 until mine.getJSONArray("reached").length()).map { mine.getJSONArray("reached").getString(it) }.toSet())
+        assertEquals("👍", mine.getJSONObject("reac").getJSONObject(B).getString("e"))
+        assertEquals(setOf(B, C), (0 until mine.getJSONArray("reached").length()).map { mine.getJSONArray("reached").getString(it) }.toSet())
         assertEquals(Message.QUEUED, objects(kept).single { it.getString("id") == d.unsent.id }.getString("status"))
         // …plus exactly one line saying this phone left
         val note = kept.getJSONObject(kept.length() - 1)
         assertEquals("local.left.${d.leftAt}", note.getString("id"))
         assertEquals(Message.LEFT, note.getString("kind"))
-        assertEquals("A", note.getString("from")); assertEquals("A", note.getString("fromName"))
+        assertEquals(A, note.getString("from")); assertEquals("A", note.getString("fromName"))
         assertEquals(d.leftAt, note.getLong("ts")); assertFalse(note.has("to")); assertEquals("", note.getString("text"))
         assertEquals(1, objects(kept).count { it.getString("kind") == Message.LEFT })
         // the state it was made from is not touched
@@ -108,7 +113,7 @@ class ArchiveTest {
         val d = day()
         val archive = d.archive()
         assertEquals(d.before.getJSONArray("people").toString(), archive.getJSONArray("people").toString())
-        assertEquals(setOf("B", "C"), ids(archive.getJSONArray("people")).toSet())
+        assertEquals(setOf(B, C), ids(archive.getJSONArray("people")).toSet())
         assertEquals(d.before.getJSONObject("hidden").toString(), archive.getJSONObject("hidden").toString())
         assertTrue(archive.getJSONObject("hidden").has(d.oops.id))
         assertEquals(d.before.getJSONObject("doneAt").toString(), archive.getJSONObject("doneAt").toString())
@@ -123,7 +128,9 @@ class ArchiveTest {
         val d = day()
         // what was there to drop
         assertTrue(kinds(d.before.getJSONArray("carry")).containsAll(setOf(Envelope.CHAT, Envelope.DM, Envelope.RECEIPT, Envelope.REACT, Envelope.ERRAND)))
-        assertTrue(d.beforeText.contains("private between C and B"))
+        // C's private message to B is in there — sealed for B, so its words never were
+        assertTrue(ids(d.before.getJSONArray("carry")).contains(d.theirDm.id))
+        assertFalse(d.beforeText.contains("private between C and B"))
         assertEquals(listOf(d.theirs.id), (0 until d.before.getJSONArray("running").length()).map { d.before.getJSONArray("running").getString(it) })
         assertEquals(1, d.before.getJSONArray("sendOpened").length())
         assertEquals(setOf(d.answered.id, d.open.id, d.theirs.id), ids(d.before.getJSONArray("errands")).toSet())
@@ -138,10 +145,12 @@ class ArchiveTest {
         assertFalse("a deleted message's envelope goes too", ids(archive.getJSONArray("carry")).contains(d.oops.id))
         // other people's words and details are gone from the file
         val text = archive.toString()
+        assertFalse(ids(archive.getJSONArray("carry")).contains(d.theirDm.id))
         assertFalse(text.contains("private between C and B"))
+        assertTrue(d.beforeText.contains("+919800000000"))
         assertFalse(text.contains("+919800000000")); assertFalse(text.contains("tell mum"))
         assertFalse(text.contains(d.theirs.id))
-        assertEquals(2, count(d.beforeText, "never left my phone")); assertEquals(1, count(text, "never left my phone"))
+        assertEquals(1, count(text, "never left my phone"))
         // and nothing is left "in progress"
         assertFalse(archive.has("running")); assertFalse(archive.has("sendOpened"))
         // my own requests stay — the one still open too, exactly as it was: the group goes on
@@ -154,7 +163,7 @@ class ArchiveTest {
 
     @Test fun envelopesPastTheir48HoursAreNotKeptEither() {
         val d = day()
-        val late = Archive.strip(d.before, "A", "A", d.leftAt, d.leftAt + Router.CARRY_MS + 3_600_000L)
+        val late = Archive.strip(d.before, A, "A", d.leftAt, d.leftAt + Router.CARRY_MS + 3_600_000L)
         assertEquals(0, late.getJSONArray("carry").length())
         assertEquals(0, late.getJSONObject("born").length())
         assertEquals(d.messagesBefore.size + 1, late.getJSONArray("messages").length())
@@ -164,14 +173,14 @@ class ArchiveTest {
         val d = day()
         val once = d.archive()
         val text = once.toString()
-        assertEquals(text, Archive.strip(once, "A", "A", d.leftAt, d.leftAt).toString())
+        assertEquals(text, Archive.strip(once, A, "A", d.leftAt, d.leftAt).toString())
         assertEquals(text, once.toString())
         // the same holds for the archive as it comes back from its file
-        val fromFile = Archive.strip(JSONObject(text), "A", "A", d.leftAt, d.leftAt)
+        val fromFile = Archive.strip(JSONObject(text), A, "A", d.leftAt, d.leftAt)
         assertTrue(fromFile.similar(once))
         assertEquals(text, fromFile.toString())
         // and for a paused group, whose state is stripped straight from its file
-        assertTrue(Archive.strip(JSONObject(d.beforeText), "A", "A", d.leftAt, d.leftAt).similar(once))
+        assertTrue(Archive.strip(JSONObject(d.beforeText), A, "A", d.leftAt, d.leftAt).similar(once))
     }
 
     @Test fun anArchiveOpenedAndSavedAgainIsStillTheSameArchive() {
@@ -180,7 +189,7 @@ class ArchiveTest {
         val archive = d.archive()
         val net = FakeNet(); net.now = d.net.now + 30 * 86_400_000L
         val a = net.node("A"); a.router.restore(copy(archive))
-        val again = Archive.strip(a.router.snapshot(), "A", "A", d.leftAt, net.now)
+        val again = Archive.strip(a.router.snapshot(), A, "A", d.leftAt, net.now)
         assertEquals(ids(archive.getJSONArray("messages")), ids(again.getJSONArray("messages")))
         assertEquals(1, objects(again.getJSONArray("messages")).count { it.getString("kind") == Message.LEFT })
         for ((x, y) in objects(archive.getJSONArray("messages")).zip(objects(again.getJSONArray("messages")))) assertTrue(x.similar(y))
@@ -206,7 +215,7 @@ class ArchiveTest {
         assertEquals(1, restarted.router.messages.count { it.kind == Message.REJOINED })
         // left once more and joined once more: every leaving gets its own answer, in order
         net.now += 86_400_000L
-        val second = Archive.strip(a.router.snapshot(), "A", "A", net.now, net.now)
+        val second = Archive.strip(a.router.snapshot(), A, "A", net.now, net.now)
         val b = FakeNet().also { it.now = net.now + 5_000 }.node("A"); b.router.restore(copy(second))
         assertNotNull(Archive.rejoined(b.router))
         assertEquals(listOf(Message.LEFT, Message.REJOINED, Message.LEFT, Message.REJOINED),
@@ -231,14 +240,14 @@ class ArchiveTest {
         assertNotNull(back)
         net.now += 86_400_000L
         // …and out again: the chat tells the whole story, in order
-        val second = Archive.strip(a.router.snapshot(), "A", "A", net.now, net.now)
+        val second = Archive.strip(a.router.snapshot(), A, "A", net.now, net.now)
         val story = objects(second.getJSONArray("messages")).filter { it.getString("kind") != Envelope.CHAT && it.getString("kind") != Envelope.DM }
         assertEquals(listOf(Message.LEFT, Message.REJOINED, Message.LEFT), story.map { it.getString("kind") })
         assertEquals(listOf("local.left.${d.leftAt}", back!!.id, "local.left.${net.now}"), story.map { it.getString("id") })
         // a line the person deleted is not written back by a later tidy-up
         val b = FakeNet().also { it.now = net.now }.node("A"); b.router.restore(copy(second))
         assertEquals(1, b.router.hideMessages(listOf("local.left.${net.now}")).size)
-        val tidy = Archive.strip(b.router.snapshot(), "A", "A", net.now, net.now)
+        val tidy = Archive.strip(b.router.snapshot(), A, "A", net.now, net.now)
         assertFalse(ids(tidy.getJSONArray("messages")).contains("local.left.${net.now}"))
         assertTrue(ids(tidy.getJSONArray("messages")).contains("local.left.${d.leftAt}"))
     }
@@ -292,10 +301,10 @@ class ArchiveTest {
             override fun disconnect(linkId: String) { disconnects++ }
         }
         val rec = d.net.Recorder()
-        val r = Router(Identity("A", "A"), Group(FakeNet.CODE, "Trek"), spy, rec) { d.net.now + 86_400_000L }
+        val r = Router(FakeNet.identity("A"), FakeNet.group(), spy, rec) { d.net.now + 86_400_000L }
         r.restore(copy(d.archive()))
         assertEquals(listOf("hello from B", "hi all", "just you", "never left my phone", ""), r.messages.map { it.text })
-        assertEquals("👍", r.message(d.mine.id)!!.reactions["B"])
+        assertEquals("👍", r.message(d.mine.id)!!.reactions[B])
         assertTrue(r.isHidden(d.oops.id))
         // my request that was still open sits there with the finished one — a day on, and nothing has ticked it
         assertEquals(setOf(d.answered.id, d.open.id), r.errands.keys)
@@ -308,17 +317,15 @@ class ArchiveTest {
         assertTrue(frames.isEmpty()); assertEquals(0, disconnects); assertTrue(r.links.isEmpty())
         assertTrue(rec.shown.isEmpty()); assertTrue(rec.errands.isEmpty()); assertTrue(rec.answers.isEmpty())
         assertTrue(rec.aborts.isEmpty()); assertTrue(rec.reactions.isEmpty()); assertTrue(rec.files.isEmpty())
-        assertFalse("restoring is not a change worth saving", Router(Identity("A", "A"), Group(FakeNet.CODE, "Trek"), spy, rec) { d.net.now }
+        assertFalse("restoring is not a change worth saving", Router(FakeNet.identity("A"), FakeNet.group(), spy, rec) { d.net.now }
             .also { it.restore(copy(d.archive())) }.takeDirty())
 
         // With no link there was nothing it could have sent on. So give it one — the app never
         // does, a left group has no radio — and see what such a router has to offer a friend who
         // has nothing: only the envelopes of messages the chat shows that had already left this
         // phone. Not the message that never went out, no request, no receipt, no reaction.
-        r.onLinkUp("L", "zz", "Friend")
-        val myNonce = r.links["L"]!!.myNonce
-        r.onBytes("L", JSONObject().put("t", "hello").put("id", "zz").put("nonce", "n1n1n1n1n1n1n1n1").put("v", 3).toString().toByteArray())
-        r.onBytes("L", JSONObject().put("t", "proof").put("proof", Crypto.hmacHex(r.group.key, "$myNonce|zz")).toString().toByteArray())
+        r.onLinkUp("L", FakeNet.idOf("zz"), "Friend", "tok")
+        FakeNet.prove(r, "L", "zz", "tok")
         assertTrue(r.links["L"]!!.authed)
         r.onBytes("L", JSONObject().put("t", "inv").put("n", 1).put("i", 0).put("ids", JSONArray()).toString().toByteArray())
         val sent = frames.map { JSONObject(it) }
@@ -354,7 +361,7 @@ class ArchiveTest {
         assertEquals(listOf("said while A was away"), a2.rec.shown.map { it.text })
         assertTrue(a2.rec.reactions.isEmpty()); assertTrue(a2.rec.answers.isEmpty()); assertTrue(a2.rec.errands.isEmpty())
         assertNull(a2.router.message(d.oops.id))
-        assertEquals("👍", a2.router.message(d.mine.id)!!.reactions["B"])
+        assertEquals("👍", a2.router.message(d.mine.id)!!.reactions[B])
         // and the others don't see anything of A's twice either
         assertEquals(1, net.texts("B").count { it == "hi all" }); assertEquals(1, net.texts("C").count { it == "hi all" })
     }
@@ -393,7 +400,7 @@ class ArchiveTest {
             assertTrue(a.completeErrand(e.id, true, "Text sent to +919800000000", JSONObject().put("t", "Sent at 14:02"))); net.pump()
             assertEquals(Errand.DONE, e.status)
             net.disconnect("A", "B")
-            val archive = Archive.strip(a.snapshot(), "A", "A", net.now, net.now)
+            val archive = Archive.strip(a.snapshot(), A, "A", net.now, net.now)
             assertTrue(archive.getJSONObject("doneAt").has(e.id))
             assertEquals("their request — a phone number, a text — is not kept", 0, archive.getJSONArray("errands").length())
             assertFalse(archive.toString().contains("+919800000000"))
@@ -424,7 +431,7 @@ class ArchiveTest {
         val e = a.requestErrand(Errand.READ, url(), selfCaps = 0); net.pump()
         assertEquals(Errand.WAITING, e.status)
         net.disconnect("A", "B")
-        val archive = Archive.strip(a.snapshot(), "A", "A", net.now, net.now)
+        val archive = Archive.strip(a.snapshot(), A, "A", net.now, net.now)
         assertEquals(listOf(e.id), ids(archive.getJSONArray("errands")))
         // Leaving says nothing on the radio: B still carries the request. An hour later B gets
         // signal, picks it up and answers — to a phone that is no longer there.
@@ -459,7 +466,7 @@ class ArchiveTest {
         val a = net.nodes["A"]!!.router
         val e = a.requestErrand(Errand.READ, url(), ttlMs = 10 * 60_000L, selfCaps = 0); net.pump()
         net.disconnect("A", "B")
-        val archive = Archive.strip(a.snapshot(), "A", "A", net.now, net.now)
+        val archive = Archive.strip(a.snapshot(), A, "A", net.now, net.now)
         // in the kept chat nothing ticks: it sits there as it was, however long, and nobody is told anything
         val kept = FakeNet().also { it.now = net.now + 30 * 86_400_000L }.node("A"); kept.router.restore(copy(archive))
         assertEquals(Errand.WAITING, kept.router.errands[e.id]!!.status)
@@ -487,7 +494,7 @@ class ArchiveTest {
         assertEquals(listOf(Errand.FAILED), a.rec.answers.map { it.status })
         val answeredAt = e.answeredAt
         net.disconnect("A", "B")
-        val archive = Archive.strip(a.router.snapshot(), "A", "A", net.now, net.now)
+        val archive = Archive.strip(a.router.snapshot(), A, "A", net.now, net.now)
         assertEquals(listOf(e.id), ids(archive.getJSONArray("errands")))
         // Leaving let go of the envelope that brought the answer; B still carries it, and hands it back.
         net.now += 3 * 3_600_000L
@@ -502,9 +509,10 @@ class ArchiveTest {
         assertEquals("…nor does it look as if it had just been answered", answeredAt, mine.answeredAt)
         assertEquals("The weather service didn't answer.", mine.answer()!!.getString("t"))
         // A real answer, though, still gets through to a request that had failed.
-        val good = signed(a2.router, "lateanswer001", Envelope.DM, "B", net.now, JSONObject().put("text", "Weather near you")
+        val good = FakeNet.envelope("B", Envelope.DM, JSONObject().put("text", "Weather near you")
             .put("er", JSONObject().put("eid", e.id).put("ok", true).put("ty", Errand.WX).put("title", "Weather near you")
-                .put("z", Gz.pack(JSONObject().put("t", "Now: clear, 12°C"))).put("by", "B")), to = "A")
+                .put("z", Gz.pack(JSONObject().put("t", "Now: clear, 12°C"))).put("by", "B")), net.now, to = A, h = 2,
+            er = JSONObject().put("eid", e.id).put("ok", true))
         handOver(a2, "A>B", good); net.pump()
         assertEquals(listOf(Errand.DONE), a2.rec.answers.map { it.status })
         assertEquals(Errand.DONE, mine.status)
@@ -543,9 +551,9 @@ class ArchiveTest {
         // …which was then put back half an hour — and after that the group was left again.
         val leftAgain = net.now - 30 * 60_000L
         assertTrue(leftAgain < back.ts)
-        val second = Archive.strip(a.router.snapshot(), "A", "A", leftAgain, leftAgain)
+        val second = Archive.strip(a.router.snapshot(), A, "A", leftAgain, leftAgain)
         assertTrue("the leaving keeps its own name, so it is written once", ids(second.getJSONArray("messages")).contains("local.left.$leftAgain"))
-        assertEquals(second.toString(), Archive.strip(second, "A", "A", leftAgain, leftAgain).toString())
+        assertEquals(second.toString(), Archive.strip(second, A, "A", leftAgain, leftAgain).toString())
         val b = FakeNet().also { it.now = leftAgain + 60_000 }.node("A"); b.router.restore(copy(second))
         assertEquals("the story reads in the order it happened", listOf(Message.LEFT, Message.REJOINED, Message.LEFT), notes(b.router))
         // and the second leaving gets its answer, like the first
@@ -560,12 +568,9 @@ class ArchiveTest {
     private fun filled(n: FakeNet.Node, link: String): Int =
         n.rec.log.filter { it.startsWith("filling ") && it.endsWith(" for $link") }.sumOf { it.removePrefix("filling ").substringBefore(' ').toInt() }
 
-    /** An envelope as [origin] would have signed it at [ts] — handed to a phone the way a friend's backlog arrives. */
-    private fun signed(r: Router, id: String, kind: String, origin: String, ts: Long, payload: JSONObject, to: String? = null): Envelope {
-        val j = JSONObject().put("id", id).put("k", kind).put("o", origin).put("on", origin).put("ts", ts).put("h", 2).put("p", payload)
-        if (to != null) j.put("to", to)
-        return Envelope(j).also { it.sign(r.group.key) }
-    }
+    /** An envelope as [origin] would have sealed and signed it at [ts] — handed to a phone the way a friend's backlog arrives. */
+    private fun signed(id: String, kind: String, origin: String, ts: Long, payload: JSONObject, to: String? = null): Envelope =
+        FakeNet.envelope(origin, kind, payload, ts, id, to, h = 2)
 
     private fun handOver(n: FakeNet.Node, link: String, vararg envs: Envelope) {
         n.router.onBytes(link, JSONObject().put("t", "fill").put("envs", JSONArray(envs.map { copy(it.json) })).toString().toByteArray())
@@ -581,7 +586,7 @@ class ArchiveTest {
         assertNotNull(Archive.rejoined(a2.router))
         val before = a2.router.messages.map { it.id }
         // leaving let go of my own receipts and requests; the group still carries them
-        val myReceipt = "r.${d.fromB.id}.A"
+        val myReceipt = "r.${d.fromB.id}.$A"
         assertFalse(a2.router.carries(myReceipt))
         assertTrue(b.router.carries(myReceipt))
         assertEquals(3, a2.router.carrySize())
@@ -590,11 +595,11 @@ class ArchiveTest {
         assertTrue("B hands over what A's inventory doesn't list", filled(b, "B>A") > 0)
         // carried again — my receipts, my requests, other people's backlog, and the deleted message's envelope
         assertTrue(a2.router.carries(myReceipt))
-        assertTrue(a2.router.carries("r.${d.oops.id}.A"))
+        assertTrue(a2.router.carries("r.${d.oops.id}.$A"))
         assertEquals(b.router.carrySize(), a2.router.carrySize())
         val carried = a2.router.snapshot().getJSONArray("carry")
         assertTrue(kinds(carried).containsAll(setOf(Envelope.CHAT, Envelope.DM, Envelope.RECEIPT, Envelope.REACT, Envelope.ERRAND)))
-        assertEquals(2, objects(carried).count { it.getString("k") == Envelope.ERRAND && it.getString("o") == "A" })
+        assertEquals(2, objects(carried).count { it.getString("k") == Envelope.ERRAND && it.getString("o") == A })
 
         // from the second sync on there is nothing left to hand over, either way
         repeat(4) {
@@ -608,11 +613,11 @@ class ArchiveTest {
         assertEquals(before.toSet().size, before.size)
         assertTrue(a2.rec.shown.isEmpty()); assertTrue(a2.rec.reactions.isEmpty()); assertTrue(a2.rec.answers.isEmpty())
         assertTrue(a2.rec.errands.isEmpty()); assertTrue(a2.rec.files.isEmpty()); assertTrue(a2.rec.aborts.isEmpty())
-        assertEquals(setOf(d.answered.id, d.open.id), a2.router.errands.values.filter { it.from == "A" }.map { it.id }.toSet())
+        assertEquals(setOf(d.answered.id, d.open.id), a2.router.errands.values.filter { it.from == A }.map { it.id }.toSet())
         assertEquals(Errand.DONE, a2.router.errands[d.answered.id]!!.status)
         // the request that was open is still open and still waiting: its own envelope came back as backlog, not as news
         assertEquals(Errand.WAITING, a2.router.errands[d.open.id]!!.status)
-        assertEquals("👍", a2.router.message(d.mine.id)!!.reactions["B"])
+        assertEquals("👍", a2.router.message(d.mine.id)!!.reactions[B])
         // the message deleted here is carried for the others, and stays deleted — through a restart too
         assertTrue(a2.router.carries(d.oops.id))
         assertNull(a2.router.message(d.oops.id)); assertTrue(a2.router.isHidden(d.oops.id))
@@ -640,7 +645,7 @@ class ArchiveTest {
         assertEquals(1, a.hideMessages(listOf(regret.id)).size)
         assertTrue("deleted here, still carried for the others", a.carries(regret.id))
         net.disconnect("A", "B")
-        val archive = Archive.strip(a.snapshot(), "A", "A", net.now, net.now)
+        val archive = Archive.strip(a.snapshot(), A, "A", net.now, net.now)
         assertFalse(ids(archive.getJSONArray("carry")).contains(regret.id))
         net.now += 3_600_000L
         val a2 = net.node("A"); a2.router.restore(copy(archive))
@@ -667,7 +672,7 @@ class ArchiveTest {
         objects(state.getJSONArray("messages")).single { it.getString("id") == m.id }.put("status", Message.QUEUED).put("reached", JSONArray())
         val envelope = Envelope(objects(state.getJSONArray("carry")).single { it.getString("id") == m.id })
         net.disconnect("A", "B")
-        val archive = Archive.strip(state, "A", "A", net.now, net.now)
+        val archive = Archive.strip(state, A, "A", net.now, net.now)
         assertFalse(ids(archive.getJSONArray("carry")).contains(m.id))
         net.now += 3_600_000L
         val a2 = net.node("A"); a2.router.restore(copy(archive))
@@ -687,7 +692,7 @@ class ArchiveTest {
         net.connect("A", "B")
         repeat(3) { net.now += Router.SYNC_MS + 1_000; net.tickAll() }
         assertEquals(Message.SENT, mine.status)
-        assertEquals(setOf("B", "C"), mine.reached)                     // their receipts, still carried by B, count again
+        assertEquals(setOf(B, C), mine.reached)                         // their receipts, still carried by B, count again
         assertEquals(1, a2.router.messages.count { it.id == m.id })
         for (id in listOf("B", "C")) assertEquals(1, net.texts(id).count { it == "made it out after all" })
         assertEquals(shownOnB, net.nodes["B"]!!.rec.shown.size); assertEquals(shownOnC, net.nodes["C"]!!.rec.shown.size)
@@ -699,15 +704,16 @@ class ArchiveTest {
         val a = net.nodes["A"]!!; val c = net.nodes["C"]!!
         val r = a.router
         val hour = 3_600_000L
-        fun receipt(id: String, age: Long) = signed(r, id, Envelope.RECEIPT, "A", net.now - age, JSONObject().put("m", "m$id").put("by", "A"), to = "B")
-        fun reaction(id: String, age: Long) = signed(r, id, Envelope.REACT, "A", net.now - age, JSONObject().put("m", "nosuchmessage").put("e", "👍"))
-        val freshReceipt = receipt("r.one.A", 23 * hour); val staleReceipt = receipt("r.two.A", 25 * hour)
-        val freshReaction = reaction("reactfresh001", 47 * hour); val staleReaction = reaction("reactstale001", 49 * hour)
-        val fromTomorrow = reaction("reacttomorrow", -hour)
-        val forged = reaction("reactforged01", hour).also { it.json.put("s", "00") }
-        val request = signed(r, "errandmine001", Envelope.ERRAND, "A", net.now - hour,
+        fun receipt(m: String, age: Long) = signed("r.$m.$A", Envelope.RECEIPT, "A", net.now - age, JSONObject().put("m", m).put("by", A), to = B)
+        fun reaction(id: String, age: Long) = signed(id, Envelope.REACT, "A", net.now - age, JSONObject().put("m", "nosuchmessage").put("e", "👍"))
+        val freshReceipt = receipt("one", 23 * hour); val staleReceipt = receipt("two", 25 * hour)
+        val freshReaction = reaction(FakeNet.newId("A"), 47 * hour); val staleReaction = reaction(FakeNet.newId("A"), 49 * hour)
+        val fromTomorrow = reaction(FakeNet.newId("A"), -hour)
+        val forgedId = FakeNet.newId("A")
+        val forged = reaction(forgedId, hour).also { it.json.put("s", "00") }
+        val request = signed(FakeNet.newId("A"), Envelope.ERRAND, "A", net.now - hour,
             JSONObject().put("eid", "abcdef123456").put("type", Errand.READ).put("args", url()).put("helper", "").put("rv", Errand.EV).put("exp", net.now + hour).put("at", net.now - hour))
-        val beacon = signed(r, "presencemine1", Envelope.PRESENCE, "A", net.now - 1_000, JSONObject().put("n", "A"))
+        val beacon = signed(FakeNet.newId("A"), Envelope.PRESENCE, "A", net.now - 1_000, JSONObject().put("n", "A").put("q", net.now - 1_000))
         handOver(a, "A>B", freshReceipt, staleReceipt, freshReaction, staleReaction, fromTomorrow, forged, request, beacon)
         net.pump()
         assertTrue(r.carries(freshReceipt.id)); assertFalse("a receipt is carried for a day", r.carries(staleReceipt.id))
@@ -725,8 +731,8 @@ class ArchiveTest {
         // not passed on: the phone on my other link hears nothing of it until it asks for the backlog
         assertEquals(0, c.router.carrySize())
         // a garbled copy does not stand in the way of the real one
-        handOver(a, "A>B", reaction("reactforged01", hour))
-        assertTrue(r.carries("reactforged01"))
+        handOver(a, "A>B", reaction(forgedId, hour))
+        assertTrue(r.carries(forgedId))
         // a second copy changes nothing
         handOver(a, "A>B", freshReceipt, freshReaction); net.pump()
         assertEquals(4, r.carrySize()); assertEquals(0, c.router.carrySize())
@@ -738,16 +744,17 @@ class ArchiveTest {
 
     @Test fun aMessageFiledInTheHistoryOrDeletedIsCarriedAgainButNeverShownAgain() {
         val net = FakeNet()
+        val filedMine = FakeNet.newId("A"); val filedTheirs = FakeNet.newId("B"); val deletedTheirs = FakeNet.newId("B")
         val state = JSONObject()
-            .put("spilled", JSONObject().put("filedmine0001", net.now - 1_000).put("filedtheirs01", net.now - 1_000))
-            .put("hidden", JSONObject().put("deletedtheirs", net.now - 1_000))
+            .put("spilled", JSONObject().put(filedMine, net.now - 1_000).put(filedTheirs, net.now - 1_000))
+            .put("hidden", JSONObject().put(deletedTheirs, net.now - 1_000))
         val a2 = net.node("A"); a2.router.restore(state)
         net.node("B"); net.connect("A", "B")
         val r = a2.router
-        val mine = signed(r, "filedmine0001", Envelope.CHAT, "A", net.now - 5_000, JSONObject().put("text", "mine, filed away"))
-        val theirs = signed(r, "filedtheirs01", Envelope.CHAT, "B", net.now - 5_000, JSONObject().put("text", "theirs, filed away"))
-        val deleted = signed(r, "deletedtheirs", Envelope.DM, "B", net.now - 5_000, JSONObject().put("text", "theirs, deleted here"), to = "A")
-        val tooOld = signed(r, "deletedtheirs", Envelope.DM, "B", net.now - Router.CARRY_MS - 5_000, JSONObject().put("text", "theirs, deleted here"), to = "A")
+        val mine = signed(filedMine, Envelope.CHAT, "A", net.now - 5_000, JSONObject().put("text", "mine, filed away"))
+        val theirs = signed(filedTheirs, Envelope.CHAT, "B", net.now - 5_000, JSONObject().put("text", "theirs, filed away"))
+        val deleted = signed(deletedTheirs, Envelope.DM, "B", net.now - 5_000, JSONObject().put("text", "theirs, deleted here"), to = A)
+        val tooOld = signed(deletedTheirs, Envelope.DM, "B", net.now - Router.CARRY_MS - 5_000, JSONObject().put("text", "theirs, deleted here"), to = A)
         handOver(a2, "A>B", tooOld)
         assertEquals(0, r.carrySize())
         handOver(a2, "A>B", mine, theirs, deleted); net.pump()
@@ -765,12 +772,11 @@ class ArchiveTest {
     @Test fun thePiecesOfAPhotoISentAreKeptAgainInsteadOfBeingOfferedAtEverySync() {
         val net = FakeNet(); net.line("A", "B")
         val a = net.nodes["A"]!!.router; val b = net.nodes["B"]!!
-        val pieces = (0 until 3).map { i -> java.util.Base64.getEncoder().encodeToString(ByteArray(Router.CHUNK_RAW) { (it + i).toByte() }) }
-        val att = Attachment.make(Crypto.randomId(12), "photo.jpg", "image/jpeg", 3L * Router.CHUNK_RAW, pieces.size, 100, 75, "tb")
-        val m = a.sendFile(att, pieces, "the view"); net.pump()
+        val (att, pieces) = FakeNet.makeFile(a, ByteArray(3 * Router.CHUNK_RAW) { (it % 253).toByte() })
+        val m = a.sendFile(att, pieces, "the view")!!; net.pump()
         assertTrue(b.router.fileComplete(att)); assertEquals(1, b.rec.files.size)
         net.disconnect("A", "B")
-        val archive = Archive.strip(a.snapshot(), "A", "A", net.now, net.now)
+        val archive = Archive.strip(a.snapshot(), A, "A", net.now, net.now)
         net.now += 3_600_000L
         val a2 = net.node("A"); a2.router.restore(copy(archive))        // leaving dropped the pieces: a fresh, empty piece store
         assertEquals(0, a2.router.fileProgress(att))
@@ -787,12 +793,14 @@ class ArchiveTest {
         }
         assertEquals(1, a2.router.messages.count { it.id == m.id })
         assertEquals(1, b.rec.files.size); assertEquals(1, net.texts("B").count { it == "the view" })
-        // a piece that is not what its name says is not kept
+        // a piece that is not what its name says is not kept: named after my file, but not sent by me
         val a3 = FakeNet().also { it.now = net.now }
         a3.line("A", "B")
-        val bad = signed(a3.nodes["A"]!!.router, Envelope.chunkId(att.fid, 0), Envelope.CHUNK, "A", a3.now, JSONObject().put("fid", att.fid).put("i", 1).put("d", pieces[1]))
-        a3.nodes["A"]!!.router.onBytes("A>B", JSONObject().put("t", "env").put("e", bad.json).toString().toByteArray())
+        val bad = FakeNet.envelope("B", Envelope.CHUNK, JSONObject(), a3.now, id = Envelope.chunkId(att.fid, 0), piece = pieces[1], h = 2)
+        a3.nodes["A"]!!.router.onBytes("A>B", FakeNet.frame(bad))
         assertFalse(a3.nodes["A"]!!.router.chunks.has(bad.id))
+        // and a piece of mine under the wrong number never opens as that piece: its number is sealed into it
+        assertNull(Crypto.openPiece(att.key!!, 0, pieces[1]))
     }
 
     // ---------------------------------------------------------------- hardening for a rejoin
@@ -867,18 +875,19 @@ class ArchiveTest {
         val frames = ArrayList<JSONObject>()
         var now = 1_700_000_000_000L
         val rec = FakeNet().Recorder()
-        val r = Router(Identity("aa", "Asha"), Group(FakeNet.CODE, "Trek"), object : Transport {
+        val aa = FakeNet.idOf("aa")
+        val r = Router(FakeNet.identity("aa", "Asha"), FakeNet.group(), object : Transport {
             override fun send(linkId: String, bytes: ByteArray): Long { frames.add(JSONObject(String(bytes, Charsets.UTF_8))); return frames.size.toLong() }
             override fun disconnect(linkId: String) {}
         }, rec) { now }
-        r.sendChat("a real message")
+        val real = r.sendChat("a real message")
         val left = r.addLocalNotice(Message.LEFT)!!
         now += 1_000
         val back = r.addLocalNotice(Message.REJOINED)!!
         assertEquals("local.left.${now - 1_000}", left.id); assertEquals("local.rejoined.$now", back.id)
         for (n in listOf(left, back)) {
             assertTrue(n.isNotice); assertFalse(n.isRename); assertFalse(n.isPersonal); assertTrue(n.isGroup)
-            assertEquals("aa", n.from); assertEquals("", n.text); assertEquals(Message.GROUP_CHAT, n.chatKey("aa"))
+            assertEquals(aa, n.from); assertEquals("", n.text); assertEquals(Message.GROUP_CHAT, n.chatKey(aa))
             assertFalse(r.carries(n.id))
         }
         assertEquals(listOf(Envelope.CHAT, Message.LEFT, Message.REJOINED), r.messages.map { it.kind })
@@ -889,10 +898,8 @@ class ArchiveTest {
         assertEquals(3, r.messages.size)
 
         // a friend links up with nothing: everything this phone carries is offered and filled…
-        r.onLinkUp("L", "zz", "Friend")
-        val myNonce = r.links["L"]!!.myNonce
-        r.onBytes("L", JSONObject().put("t", "hello").put("id", "zz").put("nonce", "n1n1n1n1n1n1n1n1").put("v", 3).toString().toByteArray())
-        r.onBytes("L", JSONObject().put("t", "proof").put("proof", Crypto.hmacHex(r.group.key, "$myNonce|zz")).toString().toByteArray())
+        r.onLinkUp("L", FakeNet.idOf("zz"), "Friend", "tok")
+        FakeNet.prove(r, "L", "zz", "tok")
         assertTrue(r.links["L"]!!.authed)
         r.onBytes("L", JSONObject().put("t", "inv").put("n", 1).put("i", 0).put("ids", JSONArray()).toString().toByteArray())
         // …then ticks: presence, the inventory again, the retry of whatever is still unsent
@@ -901,7 +908,7 @@ class ArchiveTest {
             r.onBytes("L", JSONObject().put("t", "inv").put("n", 1).put("i", 0).put("ids", JSONArray()).toString().toByteArray())
         }
         val all = frames.joinToString("\n") { it.toString() }
-        assertTrue(all.contains("a real message"))
+        assertTrue(all.contains(real.id))                   // sealed: its id is all that shows
         assertTrue(frames.any { it.optString("t") == "inv" } && frames.any { it.optString("t") == "fill" })
         assertFalse(all.contains("local."))
         assertFalse(all.contains(Message.REJOINED)); assertFalse(all.contains("\"${Message.LEFT}\""))
@@ -918,7 +925,7 @@ class ArchiveTest {
         val net = FakeNet(); net.line("A", "B")
         val a = net.nodes["A"]!!.router
         net.nodes["B"]!!.router.sendChat("from B"); net.pump()
-        a.sendChat("from A"); a.sendDm("B", "just between us"); net.pump()
+        a.sendChat("from A"); a.sendDm(B, "just between us")!!; net.pump()
         val before = a.messages.map { it.id }
         assertEquals(3, before.size)
         assertTrue(a.carrySize() > 0)

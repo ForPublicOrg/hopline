@@ -56,9 +56,12 @@ There are only three things to know:
 
 | Step | What you do |
 |---|---|
-| **Start a group** | One person taps *Start a new group*. They get a **3-word code**, like `tiger river lamp`, and a QR. |
-| **Join** | Everyone else taps *Join a group* and types the three words (or scans the QR). That's it. |
+| **Start a group** | One person taps *Start a new group*. They get a **4-word code**, like `tiger river lamp hat`, and a QR. |
+| **Join** | Everyone else taps *Join a group* and types the four words (or scans the QR). That's it. |
 | **Chat** | A familiar chat app: group chat, private chats, photos and small files. |
+
+Groups started before 2.4 keep their three-word code, and it still works everywhere; typing one asks
+once, because a new group's code is four words and a word left off would find nobody.
 
 Phones find each other on their own. Walk away and come back — the chat catches up by itself.
 The ticks never lie: ◷ while it waits for a phone in range, ✓ when it's on its way, ✓✓ when
@@ -73,8 +76,7 @@ other phone.
 internet) or name a meeting point by typing coordinates or pasting a Google Maps link. Everyone
 sees the pin with **how far it is and which way** ("1.2 km away · north-east of you") right in
 the chat; tapping it opens Google Maps (or any maps app). A location is a hundred bytes, so it
-works even in crowds where photos switch off — and old Hopline versions just see a maps link
-that opens the same spot.
+works even in crowds where photos switch off.
 
 **Live location** — paperclip → *Location* → *Share live location* (15 min, 1 h or 8 h).
 Your position rides the group's regular presence beacons — no extra radio traffic — and the
@@ -99,6 +101,13 @@ group for everyone (a "Asha renamed the group" line appears in the chat, and pho
 of range pick it up when they come back), mute it, see who's in it, clear the chat, or leave the
 group.
 
+**Private chats, sealed for two** — tap someone in People (or *Reply privately* on their message).
+Only the two phones can read a private chat. To be sure who is on the other end, open the chat's
+menu → *Verify security code* (or press and hold the person in People) and compare the 30-digit
+number on both phones, in person or by reading it out; *Mark as verified* puts a small shield next
+to their name. A received app installer (`.apk`) is never opened from Hopline, only saved, and other
+apps are told a file's type from its name, never from what the sender said.
+
 **Tidy chats** — long-press for *Reply privately*, *Copy*, *Save to phone*, *Share*, *Info* and
 *Delete for me*. Mute a chat for 8 hours, a week or always (being @mentioned still gets through). A chat opens
 at the first message you haven't read, with an "unread messages" marker — so backlog that hopped in
@@ -120,8 +129,8 @@ photos, files and voice notes — under **Groups you left** on Home. You can rea
 save and share its photos and files, and delete messages for yourself; you can't write in it.
 Nobody is told that you left: to the group, your phone has simply walked away.
 
-- **Rejoin** is one tap and one confirm — the phone still knows the three words (typing or
-  scanning them again asks the same question). The chat carries on under a "You left" / "You
+- **Rejoin** is one tap and one confirm — the phone still knows the code (typing or
+  scanning it again asks the same question). The chat carries on under a "You left" / "You
   rejoined" line, and nearby phones fill in whatever the group is still carrying. A message of
   yours that hadn't gone out when you left is *not* sent behind your back: it reads "Not sent",
   with *Send again* if you still mean it.
@@ -183,11 +192,19 @@ the group grows, and every phone follows the same rules on its own:
 
 - Phones link with Google's **Nearby Connections** in cluster mode — a web of direct
   Bluetooth/WiFi links, no access point. Each phone keeps up to 6 links.
-- Every message is **signed with a key derived from the 3-word code** and **flooded** to every
-  link. A phone with the wrong code can't join, can't read, can't forge.
+- The group code is stretched into the group's key (PBKDF2, 600,000 rounds — a few seconds, once
+  per group). All a phone advertises about its group is a short tag made from that key, and a link
+  forms only after both phones prove they hold the key and their own key pair, bound to that exact
+  connection — so nobody can relay one member's proof to pose as them.
+- Every phone has its own key pair, made on the phone and never backed up; its id is made from its
+  public key. Every message is **signed by the phone that wrote it** and **encrypted** (AES-GCM):
+  group messages with the group's key, private ones for the one phone they're for. Then it is
+  **flooded** to every link. A phone without the code can't link, read or forge; a member can't
+  forge another member's messages or read their private chats.
 - Photos and files ride the same flood as **numbered ~19 KB chunks** (under the radio's 32 KB
-  payload cap). Chunks are carried on disk and gap-filled like everything else, so an image can
-  hop through phones whose owners never open it.
+  payload cap), each sealed with the file's own key, which travels only inside the sealed message.
+  Chunks are carried on disk and gap-filled like everything else, so an image can hop through
+  phones whose owners never open it — and that can't read it unless they could read the message.
 - Every phone **carries every message for 48 hours**. When two phones link up — and then again
   every minute or so while they stay linked — they swap inventories and fill each other's gaps.
   That periodic re-check is what heals a message a flaky (or jammed) radio dropped mid-flood
@@ -198,7 +215,7 @@ the group grows, and every phone follows the same rules on its own:
   it, but it stays in the chat on every phone that got it. A phone keeps a group's latest 2,000
   messages at hand and files older ones in plain numbered files on its own storage; the chat reads
   them back, a page at a time, as you scroll up.
-- Leaving a group puts nothing on the air — no goodbye, no new kind of message — so 2.1 and 2.2
+- Leaving a group puts nothing on the air — no goodbye, no new kind of message — so the other
   phones see a leaver exactly as a phone that walked away. The leaver's phone keeps the chat and
   lets go of what it only held for the others: the backlog, other people's requests, the pieces of
   files it was relaying. On a rejoin the group hands that backlog back, and the phone carries it
@@ -210,10 +227,7 @@ the group grows, and every phone follows the same rules on its own:
   rename made after another always wins — even against a phone whose clock is hours off.
 - Shared-internet requests ride the same carried envelopes: an open request every phone carries,
   a live "I'm on it" claim with a lease (so only one phone spends data, and a quiet one is replaced),
-  and a private, compressed answer that fits in one radio frame. 2.0/2.1 phones carry all of it
-  unchanged and are still served the old way.
-- Each link's handshake proof is bound to that exact Nearby connection, so nobody can relay one
-  member's proof to pose as them.
+  and a private, compressed answer, sealed for the one who asked, that fits in one radio frame.
 - A foreground service keeps relaying with the screen off.
 
 The mesh logic is plain Kotlin with no Android dependencies, so the whole thing is tested on a
@@ -232,10 +246,21 @@ one, and more.
   500 m apart with nobody between them are two separate groups until someone walks across.
 - **Android only.** iPhones can't join — Apple provides no equivalent of Nearby Connections to
   third-party apps, and iOS kills background radio work.
-- **No end-to-end encryption.** Anyone with the 3-word code is in the group. Private chats are
-  hidden from other people's screens, but every phone in the group carries them (unencrypted) to
-  pass them along. A determined person nearby with special tools could also guess a 3-word code from
-  the radio signal. Treat Hopline as a group walkie-talkie, not a secure channel.
+- **The group chat is only as private as its code.** It is encrypted with a key made from the
+  group code, so anyone who has the code can read it. A four-word code keeps out bystanders.
+  Someone who spends about a week of graphics-card time once can afterwards work out any four-word
+  code from the radio signal, and with it read the group chat — an older three-word code takes under
+  an hour. Treat the group chat as a group walkie-talkie, not a secure channel.
+- **Private chats are end-to-end encrypted, with limits.** Only the two phones can read one; the
+  phones that carry it see who wrote to whom and when, not what. Names aren't proof of who someone
+  is — the security code is, once you've compared it. There is no forward secrecy: someone who
+  records the radio and later gets the key out of a phone could read the private messages that were
+  sent to it.
+- **Encrypted on the air, not on the phone.** What reached your phone is kept in Hopline's own
+  storage as you see it.
+- **2.4 starts private chats fresh.** Phones on Hopline 2.3.1 or older can't join updated phones,
+  so everyone in a group needs 2.4. Older private chats stay on the phone to read; to keep talking,
+  open the person again from People. Groups and their chats carry over.
 - **Shared internet is honest, not magic.** Pages are text only; sites that only work in a full
   browser say so. The person whose phone has signal can see what you asked for.
 - **Paying without internet rides on \*99#, with its limits.** Up to ₹5,000 at a time (your bank may
@@ -262,7 +287,7 @@ one, and more.
   back only what the group is still carrying — the last 48 hours — so a longer absence leaves a
   gap, marked by the "You left" line.
 - **Leaving is silent.** There is no member list anywhere to take you off: the others aren't told,
-  what you sent stays on their phones, and anyone who has the three words can join again. Groups
+  what you sent stays on their phones, and anyone who has the code can join again. Groups
   you left on Hopline 2.2 or earlier were deleted at the time and can't be brought back.
 
 ## Build from source
@@ -285,7 +310,7 @@ only accepts updates signed with that key.
 
 ```
 app/src/main/java/app/hopline/
-  core/      Crypto (group key, signing), Words (the 3-word codes), Names (cleaning names from the air),
+  core/      Crypto (group keys, phone keys, signing, sealing), Words (the group codes), Names (cleaning names from the air),
              WebText / Weather / Search / SmsText / SafeUrl / HelperLimits (the shared-internet engines, pure Kotlin),
              Update (reading GitHub's release, which version is newer, is the download the published one),
              Upi (the only two codes Hopline may dial, and which phones *99# works on)
@@ -298,7 +323,7 @@ app/src/main/java/app/hopline/
              Errands + Fetch (run requests safely for the group), Cell (mobile service), Notifications,
              Updater (checks GitHub, downloads, verifies, installs on your tap)
   ui/        Home (all chats), Chat (group + private, and read-only for a group you left), EarlierPages,
-             MessageMenu + ReactionSheets, People, Group info, Internet + Reader, Pay (UPI over *99#),
+             MessageMenu + ReactionSheets, People + SecurityCode, Group info, Internet + Reader, Pay (UPI over *99#),
              Settings, onboarding
 app/src/test/ RouterTest, ProtocolTest, ErrandTest, ArchiveTest, SpillTest — the simulated group;
               GroupRulesTest, HistoryTest, HistoryRulesTest, EarlierPagesTest — leaving, rejoining and long chats;

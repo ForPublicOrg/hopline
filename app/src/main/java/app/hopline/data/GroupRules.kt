@@ -1,5 +1,6 @@
 package app.hopline.data
 
+import app.hopline.core.Crypto
 import app.hopline.core.Names
 import app.hopline.core.Words
 import org.json.JSONArray
@@ -53,18 +54,43 @@ object GroupRules {
      * overwrites a name this phone already knows. A code this phone already has is not added
      * twice: a paused group simply becomes active, and a left one is joined again exactly as
      * [rejoin] would — its name, its first-joined date and its chat are what they were.
+     *
+     * A new group gets a storage id of its own from [newSid], never one another saved group has:
+     * two codes can share their old 8-hex fingerprint, and must never share a chat file. [mk] is
+     * its master key (base64url), worked out beforehand; an entry that has none yet takes it.
      */
-    fun add(list: List<SavedGroup>, active: String?, code: String, name: String, nameAt: Long, now: Long): Result {
+    fun add(list: List<SavedGroup>, active: String?, code: String, name: String, nameAt: Long, now: Long, mk: String = "",
+            newSid: () -> String = { Crypto.randomId(SID_LENGTH) }): Result {
         val norm = Words.normalise(code)
         if (norm.isEmpty()) return Result(list, active)
         val clean = Names.clean(name, Names.MAX_GROUP)
         val existing = list.firstOrNull { it.code == norm }
         val groups = when {
-            existing == null -> list + SavedGroup(norm, clean, now, now, if (clean.isEmpty()) 0 else nameAt)
-            existing.left -> list.changing(norm) { it.leftAt = 0; it.sealed = false; it.lastActive = now }
-            else -> list.changing(norm) { if (it.name.isEmpty() && clean.isNotEmpty()) it.name = clean; it.lastActive = now }
+            existing == null -> {
+                val taken = list.map { it.sid }.toHashSet()
+                var sid = newSid()
+                while (sid in taken) sid = newSid()
+                list + SavedGroup(norm, clean, now, now, if (clean.isEmpty()) 0 else nameAt, sid, mk)
+            }
+            existing.left -> list.changing(norm) { it.leftAt = 0; it.sealed = false; it.lastActive = now; if (it.mk.isEmpty()) it.mk = mk }
+            else -> list.changing(norm) {
+                if (it.name.isEmpty() && clean.isNotEmpty()) it.name = clean
+                it.lastActive = now
+                if (it.mk.isEmpty()) it.mk = mk
+            }
         }
         return Result(groups, norm)
+    }
+
+    /**
+     * Keep a group's master key ([mk], base64url) once it has been worked out. A group that has
+     * one already, or a code this phone doesn't have, changes nothing: the very list comes back.
+     */
+    fun setKey(list: List<SavedGroup>, code: String, mk: String): List<SavedGroup> {
+        val norm = Words.normalise(code)
+        val g = list.firstOrNull { it.code == norm }
+        if (g == null || g.mk.isNotEmpty() || mk.isEmpty()) return list
+        return list.changing(norm) { it.mk = mk }
     }
 
     /** Point the radio at a group this phone is in. A code it doesn't have, or has left, changes nothing. */
@@ -128,11 +154,15 @@ object GroupRules {
     }
 
     /**
-     * The per-group preference keys: read marks, mutes, and the unread count kept while paused.
-     * Leaving keeps the first two (a rejoin must not count the whole chat as unread, or forget a
-     * mute); deleting the group removes all three.
+     * The per-group preference keys: read marks, mutes, the unread count kept while paused, and
+     * replies typed into a notification while the group was still starting. Leaving keeps the
+     * first two (a rejoin must not count the whole chat as unread, or forget a mute); deleting the
+     * group removes them all.
      */
-    fun prefKeysFor(fp: String): List<String> = listOf("read-$fp", "mute-$fp", "unread-$fp")
+    fun prefKeysFor(fp: String): List<String> = listOf("read-$fp", "mute-$fp", "unread-$fp", "outbox-$fp")
+
+    /** Letters in a new group's storage id: 60 random bits, so no two groups on a phone ever share one. */
+    const val SID_LENGTH = 12
 
     private fun List<SavedGroup>.changing(code: String, change: (SavedGroup) -> Unit): List<SavedGroup> =
         map { if (it.code == code) it.copy().also(change) else it }

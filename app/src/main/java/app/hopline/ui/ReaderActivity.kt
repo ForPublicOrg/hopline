@@ -59,7 +59,7 @@ class ReaderActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         eid = intent.getStringExtra(EXTRA_ERRAND).orEmpty()
         if (eid.isEmpty()) { finish(); return }
-        if (Core.store.group() == null || !Permissions.allGranted(this)) {
+        if (!Core.store.hasActive() || !Permissions.allGranted(this)) {
             startActivity(Intent(this, LaunchActivity::class.java)); finish(); return
         }
         b = ActivityReaderBinding.inflate(layoutInflater)
@@ -83,7 +83,7 @@ class ReaderActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (!ready) return
-        if (Core.store.group() == null || !Permissions.allGranted(this)) {
+        if (!Core.store.hasActive() || !Permissions.allGranted(this)) {
             startActivity(Intent(this, LaunchActivity::class.java)); finish(); return
         }
         Core.ensureRunning()
@@ -328,6 +328,7 @@ class ReaderActivity : AppCompatActivity() {
             .setPositiveButton(R.string.net_reader_share) { _, _ ->
                 if (Core.router !== r) return@setPositiveButton   // switched groups meanwhile
                 r.sendChat(message.take(Router.MAX_TEXT))
+                Core.saveNow()
                 Core.changed()
                 NetText.confirmHaptic(b.root)
                 Snackbar.make(b.root, R.string.net_reader_shared, Snackbar.LENGTH_LONG)

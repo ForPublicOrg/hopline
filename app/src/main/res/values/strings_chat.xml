@@ -79,6 +79,19 @@
     <string name="chat_notice_rejoined">You rejoined</string>
     <string name="chat_system_via">🌐 Shared internet — via %1$s\'s phone</string>
     <string name="chat_system_via_you">🌐 Shared internet — via your phone</string>
+    <!-- The one line at the top of a chat: never saved, never a message -->
+    <string name="chat_secure_group">Messages are encrypted. Only people with the group code can read them.</string>
+    <string name="chat_secure_private">Private chat, end-to-end encrypted. Only the two of you can read it.</string>
+
+    <!-- A private chat nothing can be sealed for: this line instead of the composer -->
+    <string name="chat_cant_write_old">This chat is from before the update. To keep talking, open %1$s from People.</string>
+    <string name="chat_cant_write_unseen">%1$s hasn\'t been seen for a while. You can write once their phone has been in range.</string>
+    <!-- Words that were waiting to be sent in a chat from before the update (its composer never comes back): copied out, they go -->
+    <string name="chat_name_before_update">%1$s · before the update</string>
+    <string name="chat_old_draft">Not sent: “%1$s”</string>
+    <string name="chat_old_draft_copy">Copy</string>
+    <string name="chat_old_draft_copied">Copied. Paste it into their new chat from People.</string>
+    <string name="chat_verify">Verify security code</string>
 
     <!-- Banners -->
     <string name="chat_sends_one_text">%1$s needs your signal to send a text · Open</string>
@@ -97,6 +110,8 @@
     <string name="chat_tick_queued_desc">Waiting for a phone in range</string>
     <string name="chat_tick_sent_desc">Sent</string>
     <string name="chat_tick_some_desc">Reached some phones</string>
+    <!-- A group message sent before the update: phones confirmed it then, under ids that are gone now -->
+    <string name="chat_tick_confirmed_desc">Reached phones before the update</string>
     <string name="chat_tick_all_desc">Reached everyone</string>
     <string name="chat_tick_delivered_desc">Delivered</string>
     <string name="chat_tick_not_sent">Not sent</string>
@@ -105,6 +120,9 @@
     <string name="chat_tick_not_delivered_desc">Not delivered — tap the message for details</string>
     <string name="chat_status_not_sent">Not sent — no phone came in range within 48 hours, so it stopped trying. Tap Send again to try once more.</string>
     <string name="chat_status_dm_not_delivered">Not delivered — %1$s\'s phone didn\'t confirm within 48 hours, and the phones carrying it have let it go. Tap Send again to try once more.</string>
+    <!-- The same two, in a private chat that can't be written in (from before the update): no "Send again" there -->
+    <string name="chat_status_not_sent_final">Not sent — no phone came in range within 48 hours, so it stopped trying.</string>
+    <string name="chat_status_dm_not_delivered_final">Not delivered — %1$s\'s phone didn\'t confirm within 48 hours, and the phones carrying it have let it go.</string>
     <string name="chat_status_delivered">Delivered — %1$s\'s phone has it. ✓✓</string>
     <string name="chat_status_on_way">On its way — handed to nearby phones, waiting for %1$s\'s phone to confirm.</string>
     <string name="chat_status_sent">Sent.</string>
@@ -117,6 +135,13 @@
     <string name="chat_status_waiting">Still waiting: %1$s</string>
     <string name="chat_status_missed">Didn\'t reach: %1$s</string>
     <string name="chat_status_left_unsent">Not sent. You left the group before it went out.</string>
+    <!-- Mine, written before the update, that hadn't gone out by then (the old format goes on no radio any more). Shown at any age, so it must be true of one whose 48 hours had already run out before the update too -->
+    <string name="chat_status_update_unsent">Not sent — it hadn\'t gone out when Hopline was updated. Tap Send again to try once more.</string>
+    <string name="chat_status_update_unsent_final">Not sent — it hadn\'t gone out when Hopline was updated.</string>
+    <string name="chat_status_update_unsent_dm">Not sent — it hadn\'t gone out when Hopline was updated. To keep talking, open %1$s from People.</string>
+    <!-- Mine, let go of before its 48 hours for no reason above (a very full phone) -->
+    <string name="chat_status_let_go">Not sent — this phone let it go before any phone in range took it. Tap Send again to try once more.</string>
+    <string name="chat_status_let_go_final">Not sent — this phone let it go before any phone in range took it.</string>
     <string name="chat_status_left_sent">Sent. You left before Hopline could confirm who got it.</string>
     <!-- In a left group's chat: it had already gone unconfirmed for 48 hours before the leaving. No "Send again" there. -->
     <string name="chat_status_left_dm_not_delivered">Not delivered — %1$s\'s phone didn\'t confirm within 48 hours.</string>
@@ -181,6 +206,8 @@
     <string name="chat_file_unreadable">Couldn\'t read that file. If it lives in the cloud, download it to the phone first.</string>
     <string name="chat_file_expired">Didn\'t arrive — no phone nearby carries it any more</string>
     <string name="chat_file_left">Not on this phone — it hadn\'t arrived when you left.</string>
+    <string name="chat_file_bad">Couldn\'t be opened — it arrived damaged</string>
+    <string name="chat_file_before_update">Didn\'t arrive before Hopline was updated — ask them to send it again</string>
     <string name="chat_no_app_for_link">No app on this phone can open that link.</string>
 
     <!-- Location from a private chat -->

@@ -18,6 +18,9 @@
     <string name="media_share_failed">Couldn\'t share it. Your phone\'s storage may be full.</string>
     <string name="media_no_app">No app on this phone can open %1$s.</string>
     <string name="media_missing">That file isn\'t on this phone any more.</string>
+    <!-- An app installer (.apk) someone sent: never opened or shared from Hopline, only saved -->
+    <string name="media_app_file">This is an app installer. Hopline won\'t open or share it — press and hold it to save it to your phone.</string>
+    <string name="media_app_file_hint">App installer · press and hold to save</string>
 
     <!-- Voice notes -->
     <string name="voice_cant_play">Can\'t play this voice note.</string>

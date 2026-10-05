@@ -28,6 +28,10 @@ import java.io.File
  *
  * Copying runs off the main thread. The person always hears how it went (a toast survives the
  * screen closing); [save]'s callback and any app launch happen only while the screen is alive.
+ *
+ * The name and type a file came with are its sender's words ([MediaRules]): other apps get the
+ * name without control or direction-changing characters, and a type worked out from its
+ * extension — never the sender's. An app installer is never opened or shared from here, only saved.
  */
 class MediaActions(private val activity: ComponentActivity) {
     // Read when used, not now: as an activity field this is built before the activity is attached.
@@ -52,13 +56,16 @@ class MediaActions(private val activity: ComponentActivity) {
     /**
      * Keep [file] on the phone: Pictures/Hopline or Download/Hopline on Android 10+, wherever the
      * person picks on 8–9. [done] (main thread, only while the screen lives) says whether it worked.
+     * Its type is worked out from [name] like everywhere else; an app installer can be saved too.
      */
-    fun save(file: File, name: String, mime: String, done: ((Boolean) -> Unit)? = null) {
+    fun save(file: File, name: String, done: ((Boolean) -> Unit)? = null) {
         if (!file.isFile) { toast(app.getString(R.string.media_missing)); done?.invoke(false); return }
+        val shown = MediaRules.shownName(name, fallback = file.name)
+        val type = MediaRules.typeFor(shown)
         if (Build.VERSION.SDK_INT >= 29) {
             val ctx = app
             Blobs.background {
-                val saved = Blobs.save(ctx, file, name, mime)
+                val saved = Blobs.save(ctx, file, shown, type)
                 main.post {
                     toast(if (saved != null) ctx.getString(R.string.media_saved_to, saved.folder) else ctx.getString(R.string.media_save_failed))
                     finished(saved != null, done)
@@ -69,7 +76,7 @@ class MediaActions(private val activity: ComponentActivity) {
         pendingSave = Bundle().apply { putString(PATH, file.absolutePath) }
         pendingDone = done
         try {
-            saveAs.launch(BlobRules.displayName(name, fallback = file.name) to mime)
+            saveAs.launch(BlobRules.displayName(shown, fallback = file.name) to type)
         } catch (e: ActivityNotFoundException) {
             pendingSave = null; pendingDone = null
             toast(app.getString(R.string.media_save_failed))
@@ -101,11 +108,12 @@ class MediaActions(private val activity: ComponentActivity) {
         done?.invoke(ok)
     }
 
-    /** Hand the file to another app (the system share sheet), under its real name. */
+    /** Hand the file to another app (the system share sheet), under its real name. [mime]: what its sender said it is. */
     fun share(file: File, name: String, mime: String) {
+        if (MediaRules.saveOnly(name, mime)) { toast(app.getString(R.string.media_app_file)); return }
         withCopy(file, name) { copy ->
             val uri = uriFor(copy) ?: return@withCopy toast(app.getString(R.string.media_share_failed))
-            val send = Intent(Intent.ACTION_SEND).setType(mime)
+            val send = Intent(Intent.ACTION_SEND).setType(MediaRules.typeFor(copy.name))
                 .putExtra(Intent.EXTRA_STREAM, uri)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             send.clipData = ClipData.newRawUri(copy.name, uri)   // carries the read grant through the chooser
@@ -116,15 +124,17 @@ class MediaActions(private val activity: ComponentActivity) {
 
     /**
      * Open the file in whichever app on the phone handles it — for a document, a song, or a
-     * picture this app can't draw. Falls back to the broad type ("any image app") before giving up.
+     * picture this app can't draw. Falls back to the broad kind ("any image app") before giving
+     * up — never to "any app at all", which would put the package installer on the list.
      */
     fun openWith(file: File, name: String, mime: String) {
+        if (MediaRules.saveOnly(name, mime)) { toast(app.getString(R.string.media_app_file)); return }
         withCopy(file, name) { copy ->
             val uri = uriFor(copy)
-            val broad = mime.substringBefore('/', "").let { if (it in BROAD_TYPES) "$it/*" else "*/*" }
-            if (uri != null) for (type in listOf(mime, broad).distinct()) {
+            val type = MediaRules.typeFor(copy.name)
+            if (uri != null) for (t in listOfNotNull(type, MediaRules.broadType(type)).distinct()) {
                 try {
-                    activity.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, type).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                    activity.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, t).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
                     return@withCopy
                 } catch (e: ActivityNotFoundException) { } catch (e: SecurityException) { }
             }
@@ -132,14 +142,25 @@ class MediaActions(private val activity: ComponentActivity) {
         }
     }
 
+    /**
+     * A copy of [file] named for another app, then [then] with it. The installer rule is checked
+     * once more on the name the copy really got — the name the other app sees — so no way of
+     * cutting or cleaning a name can turn one judged harmless into an ".apk" on the way.
+     */
     private fun withCopy(file: File, name: String, then: (File) -> Unit) {
         if (!file.isFile) { toast(app.getString(R.string.media_missing)); return }
         val ctx = app
+        val shown = MediaRules.shownName(name, fallback = file.name)
         Blobs.background {
-            val copy = Blobs.shareCopy(ctx, file, name)
+            val copy = Blobs.shareCopy(ctx, file, shown)
+            val installer = copy != null && MediaRules.saveOnly(copy.name, "")
+            if (installer) copy?.delete()
             main.post {
-                if (copy == null) toast(ctx.getString(R.string.media_share_failed))
-                else if (alive()) then(copy)
+                when {
+                    copy == null -> toast(ctx.getString(R.string.media_share_failed))
+                    installer -> toast(ctx.getString(R.string.media_app_file))
+                    alive() -> then(copy)
+                }
             }
         }
     }
@@ -162,7 +183,6 @@ class MediaActions(private val activity: ComponentActivity) {
     companion object {
         /** Same provider as the chat's attachments (see AndroidManifest and res/xml/file_paths.xml). */
         const val FILES_AUTHORITY = "app.hopline.files"
-        private val BROAD_TYPES = setOf("image", "audio", "video", "text")
         private const val STATE_KEY = "hopline.media.pendingSave"
         private const val PENDING = "pending"
         private const val PATH = "path"

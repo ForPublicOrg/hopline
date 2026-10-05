@@ -31,7 +31,8 @@ import org.json.JSONObject
  *    every sync. (The rest the group hands back on a rejoin, and the router carries it again —
  *    what is this phone's own, or of a message deleted here, without reading it a second time;)
  *  - the envelope of any message of mine that never left this phone. It reads "Not sent" from now
- *    on, and nothing sends it later without my say — not even a rejoin;
+ *    on, and nothing sends it later without my say — not even a rejoin (nor the list of messages
+ *    an upgrade would have sent again, see Router.reissueQueued);
  *  - every request that isn't mine (their details are phone numbers and other people's texts),
  *    and the work in progress.
  */
@@ -39,7 +40,7 @@ object Archive {
     /** Envelopes that became a line in this phone's chat: messages, private messages, files. */
     private val SHOWN_KINDS = setOf(Envelope.CHAT, Envelope.DM, Envelope.FILE)
     /** Rebuilt below, or left behind; every other key is handed through as it is. */
-    private val HANDLED = setOf("messages", "carry", "born", "errands", "running", "sendOpened")
+    private val HANDLED = setOf("messages", "carry", "born", "errands", "running", "sendOpened", "reissue")
 
     /**
      * [state] as an archive: see the class comment. Also notes "You left" in the chat, once per

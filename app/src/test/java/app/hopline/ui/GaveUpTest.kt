@@ -1,10 +1,12 @@
 package app.hopline.ui
 
+import app.hopline.data.Upgrade
 import app.hopline.mesh.Archive
 import app.hopline.mesh.Envelope
 import app.hopline.mesh.FakeNet
 import app.hopline.mesh.Message
 import app.hopline.mesh.Router
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -32,7 +34,7 @@ class GaveUpTest {
         val net = FakeNet(); val a = net.node("A")
         val m = a.router.sendChat("never left my phone")
         val whenILeft = net.now + hour
-        val archive = Archive.strip(a.router.snapshot(), "A", "A", whenILeft, whenILeft)
+        val archive = Archive.strip(a.router.snapshot(), a.id, "A", whenILeft, whenILeft)
         // in the kept chat, a minute after leaving…
         val kept = FakeNet().node("A"); kept.router.restore(JSONObject(archive.toString()))
         val there = kept.router.message(m.id)!!
@@ -61,13 +63,94 @@ class GaveUpTest {
         val waiting = a2.router.sendChat("never left my phone")
         val whenILeft = net2.now + hour
         val kept = FakeNet().also { it.now = whenILeft }.node("A")
-        kept.router.restore(JSONObject(Archive.strip(a2.router.snapshot(), "A", "A", whenILeft, whenILeft).toString()))
+        kept.router.restore(JSONObject(Archive.strip(a2.router.snapshot(), a2.id, "A", whenILeft, whenILeft).toString()))
         val there = kept.router.message(waiting.id)!!
         assertTrue(Ui.unsentByLeaving(kept.router, there, whenILeft + 60_000))
         assertTrue(Ui.unsentByLeaving(kept.router, there, waiting.ts + Router.CARRY_MS))
         // past its two days the two can't be told apart, and "no phone came in range in 48 hours" is true of both
         assertFalse(Ui.unsentByLeaving(kept.router, there, waiting.ts + Router.CARRY_MS + 1))
         assertTrue(Ui.gaveUp(kept.router, there, waiting.ts + Router.CARRY_MS + 1))
+    }
+
+    @Test fun whatTheUpdateLetGoOfIsNotBlamedOnLeaving() {
+        val net = FakeNet(); val a = net.node("A")
+        val old = "k7m2p9qa"; val bea = "b3a4b3a4"           // this phone, and a friend, before 2.4
+        fun queued(id: String, to: String?) = Message(id, if (to == null) Envelope.CHAT else Envelope.DM, old, "A", to, "written on 2.3", net.now - 3 * hour)
+            .also { it.status = Message.QUEUED }.toJson()
+        // 2.3 saved a private message and a group message, both still waiting (the group one's envelope already gone)
+        val saved = JSONObject().put("messages", JSONArray(listOf(queued("dm0000000001", bea), queued("gm0000000001", null))))
+        a.router.restore(JSONObject(Upgrade.state(saved, a.id, setOf(old), net.now, left = false)!!.toString()))
+        a.router.reissueQueued()
+        val dm = a.router.message("dm0000000001")!!; val gm = a.router.message("gm0000000001")!!
+        for (m in listOf(dm, gm)) {
+            assertTrue(m.id, Ui.gaveUp(a.router, m, net.now))
+            assertFalse("I never left: ${m.id}", Ui.unsentByLeaving(a.router, m, net.now))
+            assertTrue(m.id, Ui.unsentByUpdate(a.router, m, net.now))
+        }
+        assertEquals(Ui.NotSent.UPDATE_PRIVATE, Ui.notSent(a.router, dm, net.now))
+        assertEquals(Ui.NotSent.UPDATE, Ui.notSent(a.router, gm, net.now))
+        // one written since, waiting when I left: that one is the leaving's doing, and so are the old ones now
+        val m = a.router.sendChat("written on 2.4")
+        assertFalse(Ui.unsentByUpdate(a.router, m, net.now))
+        val whenILeft = net.now + hour
+        val back = FakeNet().also { it.now = whenILeft }.node("A")
+        back.router.restore(JSONObject(Archive.strip(a.router.snapshot(), a.id, "A", whenILeft, whenILeft).toString()))
+        for (id in listOf(m.id, dm.id, gm.id)) {
+            val there = back.router.message(id)!!
+            assertEquals(id, Ui.NotSent.LEFT, Ui.notSent(back.router, there, whenILeft + 60_000))
+            assertFalse(id, Ui.unsentByUpdate(back.router, there, whenILeft + 60_000))
+        }
+        // past its two days, "no phone came in range within 48 hours" is true of the one written since…
+        assertEquals(Ui.NotSent.TIMED_OUT, Ui.notSent(back.router, back.router.message(m.id)!!, m.ts + Router.CARRY_MS + 1))
+        // …while the old ones still hadn't gone out when Hopline was updated
+        assertEquals(Ui.NotSent.UPDATE, Ui.notSent(back.router, back.router.message(gm.id)!!, gm.ts + Router.CARRY_MS + 1))
+        assertEquals(Ui.NotSent.UPDATE_PRIVATE, Ui.notSent(back.router, back.router.message(dm.id)!!, dm.ts + Router.CARRY_MS + 1))
+    }
+
+    @Test fun whatTheUpdateLetGoOfIsTheUpdatesDoingAtAnyAge() {
+        val net = FakeNet(); val a = net.node("A")
+        val old = "k7m2p9qa"; val bea = "b3a4b3a4"
+        fun queued(id: String, to: String?, ago: Long) = Message(id, if (to == null) Envelope.CHAT else Envelope.DM, old, "A", to, "written on 2.3", net.now - ago)
+            .also { it.status = Message.QUEUED }.toJson()
+        // Written an hour before the update with nobody in range, and one whose two days had already run out by then
+        val saved = JSONObject().put("messages", JSONArray(listOf(queued("dm0000000003", bea, hour), queued("gm0000000003", null, hour),
+            queued("gm0000000004", null, 3 * 24 * hour))))
+        a.router.restore(JSONObject(Upgrade.state(saved, a.id, setOf(old), net.now, left = false)!!.toString()))
+        a.router.reissueQueued()
+        val dm = a.router.message("dm0000000003")!!; val gm = a.router.message("gm0000000003")!!; val older = a.router.message("gm0000000004")!!
+        // the update's doing at once, and still once 48 hours have passed since it was written, and a week on:
+        // "no phone came in range within 48 hours" would not be true of the first two
+        for (later in listOf(0L, Router.CARRY_MS - hour + 60_000, 7 * 24 * hour)) {
+            for (m in listOf(dm, gm, older)) assertTrue("${m.id} +$later", Ui.gaveUp(a.router, m, net.now + later))
+            assertEquals("+$later", Ui.NotSent.UPDATE_PRIVATE, Ui.notSent(a.router, dm, net.now + later))
+            assertEquals("+$later", Ui.NotSent.UPDATE, Ui.notSent(a.router, gm, net.now + later))
+            assertEquals("+$later", Ui.NotSent.UPDATE, Ui.notSent(a.router, older, net.now + later))
+        }
+    }
+
+    @Test fun aMessageOfMineLetGoOfForNoReasonAboveIsSaidToBeJustThat() {
+        val net = FakeNet(); val a = net.node("A")
+        val m = a.router.sendChat("still trying")
+        // no "You left" after it, written on this version, and no envelope any more (a phone too full to carry it)
+        val state = a.router.snapshot().put("carry", JSONArray()).put("born", JSONObject())
+        val again = FakeNet().also { it.now = net.now }.node("A"); again.router.restore(JSONObject(state.toString()))
+        val there = again.router.message(m.id)!!
+        assertFalse(Ui.unsentByLeaving(again.router, there, net.now + hour))
+        assertFalse(Ui.unsentByUpdate(again.router, there, net.now + hour))
+        assertEquals(Ui.NotSent.LET_GO, Ui.notSent(again.router, there, net.now + hour))
+    }
+
+    @Test fun aGroupMessageFromBeforeTheUpdateIsNotMeasuredAgainstTodaysGroup() {
+        val net = FakeNet(); val a = net.node("A")
+        val old = "k7m2p9qa"
+        val before = Message("gm0000000002", Envelope.CHAT, old, "A", null, "made it to camp", net.now - 3 * hour)
+        val saved = JSONObject().put("messages", JSONArray(listOf(before.toJson())))
+        a.router.restore(JSONObject(Upgrade.state(saved, a.id, setOf(old), net.now, left = false)!!.toString()))
+        assertTrue(Ui.beforeUpdate(a.router, a.router.message(before.id)!!))
+        assertFalse(Ui.beforeUpdate(a.router, a.router.sendChat("made it again")))
+        // someone else's message is never "mine from before"
+        net.node("B"); net.connect("A", "B"); net.nodes["B"]!!.router.sendChat("hi"); net.pump()
+        assertFalse(Ui.beforeUpdate(a.router, a.router.messages.first { it.from == net.id("B") }))
     }
 
     @Test fun onlyMyOwnUnsentMessagesAreEverCalledUnsentByLeaving() {
@@ -78,7 +161,7 @@ class GaveUpTest {
         assertEquals(Message.SENT, sent.status)
         val whenILeft = net.now + hour
         val kept = FakeNet().also { it.now = whenILeft }.node("A")
-        kept.router.restore(JSONObject(Archive.strip(a.snapshot(), "A", "A", whenILeft, whenILeft).toString()))
+        kept.router.restore(JSONObject(Archive.strip(a.snapshot(), a.me.id, "A", whenILeft, whenILeft).toString()))
         for (m in kept.router.messages) assertFalse(m.id, Ui.unsentByLeaving(kept.router, m, whenILeft + 60_000))
         assertTrue("…the \"You left\" line included", kept.router.messages.any { it.kind == Message.LEFT })
     }
@@ -86,7 +169,8 @@ class GaveUpTest {
     @Test fun aPrivateMessageNobodyConfirmedStillGetsItsHourOfGrace() {
         val net = FakeNet(); net.line("A", "B")
         val a = net.nodes["A"]!!.router
-        val m = a.sendDm("Z", "are you there?"); net.pump()          // B took it; Z never confirmed
+        net.know("A", "Z")
+        val m = a.sendDm(net.id("Z"), "are you there?")!!; net.pump()          // B took it; Z never confirmed
         assertEquals(Message.SENT, m.status)
         assertFalse(Ui.gaveUp(a, m, net.now + Router.CARRY_MS + hour - 1))
         assertTrue(Ui.gaveUp(a, m, net.now + Router.CARRY_MS + hour + 1))
@@ -112,7 +196,8 @@ class GaveUpTest {
         // The kept chat must not turn a "Not delivered" back into a tick: both go by the same 49 hours.
         val net = FakeNet(); net.line("A", "B")
         val a = net.nodes["A"]!!.router
-        val m = a.sendDm("Z", "are you there?"); net.pump()          // B took it; Z never confirmed
+        net.know("A", "Z")
+        val m = a.sendDm(net.id("Z"), "are you there?")!!; net.pump()          // B took it; Z never confirmed
         for (after in listOf(Router.CARRY_MS + hour - 1, Router.CARRY_MS + hour + 1, 7 * 24 * hour)) {
             val leftAt = m.ts + after
             assertEquals("left $after ms after sending", Ui.gaveUp(a, m, leftAt), Ui.settledBeforeLeaving(m, leftAt))

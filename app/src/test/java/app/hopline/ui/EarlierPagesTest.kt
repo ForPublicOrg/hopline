@@ -27,6 +27,8 @@ class EarlierPagesTest {
     @get:Rule val tmp = TemporaryFolder()
 
     private val t0 = 1_700_000_000_000L
+    /** This phone ("A") as the mesh knows it. */
+    private val me = FakeNet.idOf("A")
     private val line = Router.MAX_MESSAGES + Router.SPILL_BATCH
 
     private fun msg(id: String, ts: Long, to: String? = null, from: String = "ravi"): Message =
@@ -40,7 +42,7 @@ class EarlierPagesTest {
 
     /** One page as Core reads it for the chat screen: the messages, and where the page above starts. */
     private fun page(h: History, before: Int?, chat: String = Message.GROUP_CHAT): Pair<List<Message>, Int> {
-        val walk = HistoryRules.Walk(h, chat, "A", before)
+        val walk = HistoryRules.Walk(h, chat, me, before)
         while (!walk.step()) { /* a few segments at a time */ }
         return walk.messages() to walk.next
     }
@@ -112,7 +114,7 @@ class EarlierPagesTest {
 
     @Test fun aLateFiledMessageSortsIntoItsPlaceAmongTheLiveOnes() {
         // A message of mine still trying to go out stays in the live window while newer ones are filed.
-        val waiting = msg("mine", t0 + 5, from = "A")
+        val waiting = msg("mine", t0 + 5, from = me)
         val r = phone(listOf(waiting, msg("new1", t0 + 100), msg("new2", t0 + 200)))
         val pages = EarlierPages()
         pages.add(listOf(msg("old1", t0 + 1), msg("old2", t0 + 10), msg("old3", t0 + 50)), 0)
@@ -121,8 +123,8 @@ class EarlierPagesTest {
 
     @Test fun aPrivateChatReadsOnlyItsOwnEarlierMessages() {
         val h = history()
-        file(h, listOf(msg("g1", t0 + 1), msg("p1", t0 + 2, to = "A"), msg("q1", t0 + 3, to = "A", from = "meera"), msg("p2", t0 + 4, to = "ravi", from = "A")))
-        val r = phone(listOf(msg("p3", t0 + 10, to = "A"), msg("g2", t0 + 11)))
+        file(h, listOf(msg("g1", t0 + 1), msg("p1", t0 + 2, to = me), msg("q1", t0 + 3, to = me, from = "meera"), msg("p2", t0 + 4, to = "ravi", from = me)))
+        val r = phone(listOf(msg("p3", t0 + 10, to = me), msg("g2", t0 + 11)))
         val pages = EarlierPages()
         val (messages, next) = page(h, null, chat = "ravi")
         pages.add(messages, next)

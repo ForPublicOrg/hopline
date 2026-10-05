@@ -39,7 +39,7 @@
                     android:gravity="center" android:visibility="gone" />
             </LinearLayout>
 
-            <!-- The three words, and the two ways to hand them over -->
+            <!-- The code's words, and the two ways to hand them over -->
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:layout_marginStart="20dp" android:layout_marginEnd="20dp" android:layout_marginTop="20dp"
                 android:text="@string/your_group_code" android:textAppearance="@style/Text.Section" android:textSize="12sp" />
@@ -50,6 +50,10 @@
                     android:minHeight="48dp" android:gravity="center_vertical" android:textSize="20sp" android:textStyle="bold"
                     android:textColor="@color/text" android:fontFamily="monospace" android:textIsSelectable="false"
                     android:background="?attr/selectableItemBackground" />
+                <!-- Only for a group started before 2.4 (three words): one quiet line, nothing to do -->
+                <TextView android:id="@+id/code_note" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp" android:text="@string/code_older_note" android:textSize="13sp"
+                    android:textColor="@color/text_faint" android:visibility="gone" />
                 <LinearLayout android:id="@+id/code_actions" android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal" android:layout_marginTop="8dp">
                     <com.google.android.material.button.MaterialButton android:id="@+id/show_qr" android:layout_width="0dp"

@@ -23,7 +23,8 @@ import javax.net.ssl.HttpsURLConnection
  * caller names, on every hop. Blocking — call it off the main thread.
  */
 object Fetch {
-    class Response(val url: String, val contentType: String, val body: ByteArray, val wireBytes: Int)
+    /** [cut]: the page goes on past [body] — the data budget, the size cap or the clock stopped the reading ([readCapped]). */
+    class Response(val url: String, val contentType: String, val body: ByteArray, val wireBytes: Int, val cut: Boolean)
 
     /** A failure the asker should hear about in plain words. [permanent] = asking again won't help. */
     class Problem(message: String, val why: String, val permanent: Boolean) : IOException(message)
@@ -150,7 +151,7 @@ object Fetch {
                 val gz = (c.contentEncoding ?: "").contains("gzip", ignoreCase = true)
                 val cs = CountingStream(c.inputStream, maxWire, session).also { counted = it }
                 val body = readCapped(if (gz) GZIPInputStream(cs) else cs, cs, maxBody, session, start + deadlineMs)
-                return Response(url, type, body, wire + hop + cs.count)
+                return Response(url, type, body.bytes, wire + hop + cs.count, body.cut)
             } finally {
                 // (The session already counted these bytes as they crossed — a cancel reads the
                 // total mid-download, before this hop finishes.)
@@ -163,29 +164,35 @@ object Fetch {
         throw Problem("Too many redirects.", "redirect", true)
     }
 
+    /** A body as [readCapped] read it. [cut]: the page went on — it was the data budget, the size cap or the clock that stopped. */
+    internal class Body(val bytes: ByteArray, val cut: Boolean)
+
     /**
      * Read the body, never past [max] bytes, [wire]'s data budget or [deadlineAt]. The beginning
      * of a huge (or very slow) page is still useful; a site that trickles out almost nothing is
-     * a timeout, so another phone can try instead of this one waiting for hours.
+     * a timeout, so another phone can try instead of this one waiting for hours. A beginning says
+     * it is one ([Body.cut]), so whoever reads it can say where the page goes on.
      */
-    internal fun readCapped(ins: InputStream, wire: CountingStream, max: Int, session: Session, deadlineAt: Long): ByteArray {
+    internal fun readCapped(ins: InputStream, wire: CountingStream, max: Int, session: Session, deadlineAt: Long): Body {
         val out = ByteArrayOutputStream()
         val buf = ByteArray(8192)
+        var cut = false
         ins.use {
             while (true) {
                 if (session.cancelled) throw Problem("Stopped.", "cancelled", true)
                 if (System.currentTimeMillis() > deadlineAt) {
-                    if (out.size() >= MIN_USEFUL) break
+                    if (out.size() >= MIN_USEFUL) { cut = true; break }
                     throw Problem("The site took too long to answer.", "timeout", false)
                 }
                 // A gzip body cut off by the data budget ends mid-stream: that is the cap, not damage.
                 val n = try { it.read(buf) } catch (x: java.io.EOFException) { if (wire.atLimit) -1 else throw x }
-                if (n < 0) break
+                // At the budget the page may go on: nothing past it is read to find out, so it counts as cut.
+                if (n < 0) { cut = wire.atLimit; break }
                 out.write(buf, 0, minOf(n, max - out.size()))
-                if (out.size() >= max) break   // the beginning of a huge page is still useful
+                if (out.size() >= max) { cut = true; break }   // the beginning of a huge page is still useful
             }
         }
-        return out.toByteArray()
+        return Body(out.toByteArray(), cut)
     }
 
     /** Stops reading past the data budget for one request, and tells us how much was really used. */

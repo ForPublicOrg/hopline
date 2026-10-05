@@ -253,7 +253,7 @@ object Asks {
         }
     }
 
-    /** A saved group's name as people see it; its three words when it has no name yet. */
+    /** A saved group's name as people see it; its code's words when it has no name yet. */
     fun groupLabel(g: SavedGroup): String = g.name.ifEmpty { Words.pretty(g.code) }
 
     private fun toast(a: AppCompatActivity, text: String, long: Boolean = false) =

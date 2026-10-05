@@ -4,20 +4,35 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.util.AtomicFile
 import app.hopline.core.Crypto
+import app.hopline.core.GroupKeys
+import app.hopline.core.IdentityKeys
 import app.hopline.core.Names
 import app.hopline.core.Words
 import app.hopline.mesh.Group
 import app.hopline.mesh.Identity
+import app.hopline.mesh.Router
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * One saved group on this phone. The radio serves one group at a time; the others sleep on disk
  * with their history. Leaving a group does not forget it: the entry stays, marked with [leftAt],
  * and its chat stays readable until the person deletes the group by hand.
+ *
+ * [sid] is this phone's own name for the group on disk — its state file, history, pieces, prefs
+ * and notifications — and is never sent. A group saved before 2.4 keeps the name its files
+ * already have ([Crypto.legacyFingerprint] of the code); one added since gets a random one.
+ * [mk] is the group's master key ([Crypto.stretch] of the code, base64url), kept so the slow
+ * stretch runs once per group and never again; empty until it has been worked out.
  */
-class SavedGroup(val code: String, var name: String, val joinedAt: Long, var lastActive: Long, var nameAt: Long = 0) {
+class SavedGroup(val code: String, var name: String, val joinedAt: Long, var lastActive: Long, var nameAt: Long = 0,
+                 val sid: String = Crypto.legacyFingerprint(code), var mk: String = "") {
     /** 0 = this phone is in the group; otherwise when it left. */
     var leftAt: Long = 0
     /**
@@ -28,23 +43,40 @@ class SavedGroup(val code: String, var name: String, val joinedAt: Long, var las
     var sealed: Boolean = false
     val left: Boolean get() = leftAt > 0
 
-    /** Two hashes of the code — worked out once, because Home asks for it on every redraw. */
-    val fingerprint: String by lazy { Crypto.fingerprint(Crypto.groupKey(code)) }
+    /** The storage id: what every file, folder, pref and notification of the group is named by. */
+    val fingerprint: String get() = sid
 
-    fun copy(): SavedGroup = SavedGroup(code, name, joinedAt, lastActive, nameAt).also { it.leftAt = leftAt; it.sealed = sealed }
+    /** The master key, or null while it hasn't been worked out yet. */
+    fun masterKey(): ByteArray? = if (mk.isEmpty()) null else Crypto.unb64(mk)?.takeIf { it.size == 32 }
 
-    /** A group this phone is in reads and writes exactly as 2.2 saved it; the marks appear only once left. */
+    fun copy(): SavedGroup = SavedGroup(code, name, joinedAt, lastActive, nameAt, sid, mk).also { it.leftAt = leftAt; it.sealed = sealed }
+
+    /** The marks appear only once left; the key once it has been worked out. */
     fun toJson(): JSONObject = JSONObject().apply {
         put("code", code); put("name", name); put("joinedAt", joinedAt); put("lastActive", lastActive); put("nameAt", nameAt)
+        put("sid", sid)
+        if (mk.isNotEmpty()) put("mk", mk)
         if (leftAt > 0) put("leftAt", leftAt)
         if (sealed) put("sealed", true)
     }
     companion object {
-        fun fromJson(j: JSONObject) = SavedGroup(
-            j.getString("code"), Names.clean(j.optString("name", ""), Names.MAX_GROUP), j.optLong("joinedAt", 0),
-            j.optLong("lastActive", 0), j.optLong("nameAt", 0)).also {
-            it.leftAt = j.optLong("leftAt", 0).coerceAtLeast(0)
-            it.sealed = j.optBoolean("sealed", false)
+        /** A storage id is a file name: plain letters and digits only. */
+        private val SID = Regex("^[a-z0-9]{8,32}$")
+
+        /**
+         * An entry saved before 2.4 has no storage id: it gets the one its files already have, and
+         * keeps it from the next save on. A storage id or key that doesn't read is no reason to lose
+         * the group: the first falls back the same way, the second is simply worked out again.
+         */
+        fun fromJson(j: JSONObject): SavedGroup {
+            val code = j.getString("code")
+            val sid = j.optString("sid", "").takeIf { SID.matches(it) } ?: Crypto.legacyFingerprint(code)
+            val mk = j.optString("mk", "").takeIf { Crypto.unb64(it)?.size == 32 } ?: ""
+            return SavedGroup(code, Names.clean(j.optString("name", ""), Names.MAX_GROUP), j.optLong("joinedAt", 0),
+                j.optLong("lastActive", 0), j.optLong("nameAt", 0), sid, mk).also {
+                it.leftAt = j.optLong("leftAt", 0).coerceAtLeast(0)
+                it.sealed = j.optBoolean("sealed", false)
+            }
         }
     }
 }
@@ -71,10 +103,18 @@ class Store(private val context: Context) {
      */
     private val groupLock = Any()
 
+    /** This phone's key pair, once read (or made): see [identityKeys]. */
+    @Volatile private var keys: IdentityKeys? = null
+    private val identityLock = Any()
+
     init { migrateSingleGroup(); repairActive() }
 
+    /**
+     * This phone's node id. While its key pair can't be read (see [identityKeys]) it is what the
+     * prefs noted last — the same id, unless this phone is in the middle of becoming a new one.
+     */
     val nodeId: String
-        get() = prefs.getString("nodeId", null) ?: Crypto.randomId(8).also { prefs.edit().putString("nodeId", it).commit() }
+        get() = identityKeys()?.nodeId ?: prefs.getString("nodeId", "") ?: ""
 
     var name: String
         get() = prefs.getString("name", "") ?: ""
@@ -159,7 +199,126 @@ class Store(private val context: Context) {
         prefs.edit().putString("homeContacts", JSONArray(list.map { JSONObject().put("name", it.first).put("to", it.second) }).toString()).apply()
     }
 
-    fun identity(): Identity = Identity(nodeId, name)
+    /**
+     * People whose security code this phone has checked with them ("Mark as verified"), by node id.
+     * One list for every group: a person's phone is the same phone in all of them. A node id is
+     * made from its phone's key, so a phone with another key is another id and never inherits it.
+     */
+    fun isVerified(id: String): Boolean = id in verified()
+
+    fun setVerified(id: String, on: Boolean) {
+        val now = verified()
+        if ((id in now) == on) return
+        prefs.edit().putStringSet("verified", if (on) now + id else now - id).apply()
+    }
+
+    private fun verified(): Set<String> = prefs.getStringSet("verified", null)?.toSet() ?: emptySet()
+
+    /**
+     * The highest live counter mark ("lastQ") any group's saved state has held. Kept for the phone,
+     * not the group, like the node id the counters go with: a group deleted and joined again, or
+     * whose state was set aside, starts its counters above it (Router.liveQAbove).
+     */
+    fun liveQMark(): Long = prefs.getLong("liveQMark", 0)
+
+    /** Raise [liveQMark] to [q] if that is higher. Writer thread only (one thread, so nothing races). */
+    fun raiseLiveQMark(q: Long) { if (q > liveQMark()) prefs.edit().putLong("liveQMark", q).apply() }
+
+    // ------------------------------------------------------------------ who this phone is
+
+    /** This phone as the mesh knows it, or null while its key pair can't be read (see [identityKeys]). */
+    fun identity(): Identity? = identityKeys()?.let { Identity(it.nodeId, name, it) }
+
+    /** The ids this phone had before its current one (the 8-letter one from before 2.4, most of all). */
+    fun formerIds(): Set<String> = prefs.getStringSet("formerIds", null)?.toSet() ?: emptySet()
+
+    /**
+     * This phone's key pair: read from identity.json once per run, or made the first time — and
+     * then cheap. It lives in noBackupFilesDir, which no backup and no phone-to-phone transfer
+     * copies, so no second phone can ever be this one ([IdentityRules] has the whole table).
+     *
+     * Null when it can't be had right now: the file is there but the storage won't read it (tried
+     * twice), or the new id could not be noted in the prefs. Nothing that speaks for this phone
+     * may start then — the radio least of all; the next try starts over from the file.
+     */
+    fun identityKeys(): IdentityKeys? {
+        keys?.let { return it }
+        synchronized(identityLock) {
+            keys?.let { return it }
+            return loadIdentity()?.also { keys = it }
+        }
+    }
+
+    private fun identityFile(): File = File(context.noBackupFilesDir, "identity.json")
+
+    private fun loadIdentity(): IdentityKeys? {
+        val f = identityFile()
+        var failed = 0
+        while (true) {
+            val found = try {
+                if (f.exists()) IdentityRules.Found.Text(String(f.readBytes(), Charsets.UTF_8)) else IdentityRules.Found.Absent
+            } catch (e: IOException) { IdentityRules.Found.Unreadable }
+            val savedId = prefs.getString("nodeId", null)
+            when (val plan = IdentityRules.plan(found, savedId, formerIds())) {
+                is IdentityRules.Plan.Use -> return if (plan.ids == null || noteIds(plan.ids)) plan.keys else null
+                is IdentityRules.Plan.Create -> {
+                    if (plan.setAside && !setAside(f)) return null
+                    val made = IdentityKeys.generate()
+                    if (!writeIdentity(f, made)) return null
+                    val ids = IdentityRules.ids(made.nodeId, savedId, formerIds())
+                    return if (ids == null || noteIds(ids)) made else null
+                }
+                IdentityRules.Plan.TryAgain -> {
+                    if (failed++ >= 1) return null
+                    try { Thread.sleep(READ_AGAIN_MS) } catch (e: InterruptedException) { Thread.currentThread().interrupt() }
+                }
+            }
+        }
+    }
+
+    /**
+     * Note this phone's id, and the ids it had before, in one commit. If the commit doesn't reach
+     * the disk, memory is put back as it was too, so the next try notes them again — Android
+     * would otherwise keep the failed commit in memory, and nothing would ever write it.
+     */
+    private fun noteIds(ids: IdentityRules.Ids): Boolean {
+        val oldId = prefs.getString("nodeId", null)
+        val oldFormer = prefs.getStringSet("formerIds", null)?.toSet()
+        if (prefs.edit().putString("nodeId", ids.nodeId).putStringSet("formerIds", ids.formerIds).commit()) return true
+        prefs.edit().apply {
+            if (oldId == null) remove("nodeId") else putString("nodeId", oldId)
+            if (oldFormer == null) remove("formerIds") else putStringSet("formerIds", oldFormer)
+        }.apply()
+        return false
+    }
+
+    /** A key pair, whole or not at all: written beside the file, forced to disk, then renamed into place. */
+    private fun writeIdentity(f: File, k: IdentityKeys): Boolean {
+        val tmp = File(f.parentFile, f.name + ".new")
+        return try {
+            f.parentFile?.mkdirs()
+            FileOutputStream(tmp).use { out ->
+                out.write(k.encode().toByteArray(Charsets.UTF_8))
+                out.flush()
+                out.fd.sync()
+            }
+            try {
+                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (e: AtomicMoveNotSupportedException) {
+                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+            true
+        } catch (e: Exception) {
+            tmp.delete()
+            false
+        }
+    }
+
+    /** A file that doesn't read as a key pair goes aside as identity.corrupt — kept, never written over. */
+    private fun setAside(f: File): Boolean = try {
+        Files.move(f.toPath(), File(f.parentFile, "identity.corrupt").toPath(), StandardCopyOption.REPLACE_EXISTING)
+        true
+    } catch (e: Exception) { false }
 
     // ------------------------------------------------------------------ groups
 
@@ -190,8 +349,22 @@ class Store(private val context: Context) {
 
     fun activeGroup(): SavedGroup? = rawActive()?.let { c -> allGroups().firstOrNull { it.code == c && !it.left } }
 
-    /** The group the radio serves right now, as the mesh sees it. */
-    fun group(): Group? = activeGroup()?.let { Group(it.code, it.name, it.nameAt) }
+    /**
+     * Is there a group for the radio? The cheap question every screen asks: a group whose key is
+     * still being worked out counts — it is starting, not missing.
+     */
+    fun hasActive(): Boolean = activeGroup() != null
+
+    /**
+     * The group the radio serves right now, as the mesh sees it. Null while there is none — and
+     * while its key is still being worked out (Core does that, off the main thread): ask
+     * [hasActive] whether there is a group at all.
+     */
+    fun group(): Group? = activeGroup()?.let { groupOf(it) }
+
+    /** [g] as the mesh sees it, from its saved key — cheap. Null while the key hasn't been worked out. */
+    fun groupOf(g: SavedGroup): Group? =
+        g.masterKey()?.let { Group(g.code, g.name, g.nameAt, keys = GroupKeys(it), fingerprint = g.fingerprint) }
 
     /** Is this code saved on this phone at all? A left group counts: a new group must never be given its code. */
     fun hasGroup(code: String): Boolean = Words.normalise(code).let { c -> allGroups().any { it.code == c } }
@@ -227,9 +400,35 @@ class Store(private val context: Context) {
      * A code that was DELETED a moment ago may still have its "purge" note. Joining it again leaves
      * the note alone: it stands until the old files are really gone ([finishPurge]). Dropping it
      * here would let a kill before that bring the deleted chat back inside the new group.
+     *
+     * [mk] is the group's master key, worked out before this is called (it takes seconds). False
+     * when the list did not reach the disk — and then it does not stand in memory either, exactly
+     * as for [rejoin]: the screen says so, and nothing goes on the radio.
      */
-    fun addGroup(code: String, name: String, nameAt: Long = 0) {
-        change { list, active -> GroupRules.add(list, active, code, name, nameAt, System.currentTimeMillis()) }
+    fun addGroup(code: String, name: String, mk: ByteArray, nameAt: Long = 0): Boolean = synchronized(groupLock) {
+        val groups = prefs.getString("groups", null)
+        val active = rawActive()
+        if (change { list, a -> GroupRules.add(list, a, code, name, nameAt, System.currentTimeMillis(), Crypto.b64(mk)) }) return true
+        putBack(groups, active)
+        false
+    }
+
+    /**
+     * Keep a group's master key, worked out after the group was saved (a group from before 2.4).
+     * A write that doesn't reach the disk costs nothing but working it out again at the next start.
+     */
+    fun setKey(code: String, mk: ByteArray) {
+        val k = Crypto.b64(mk)
+        change { list, active -> GroupRules.Result(GroupRules.setKey(list, code, k), active) }
+    }
+
+    /** The group list and the active code back as they were before a change that didn't reach the disk. */
+    private fun putBack(groups: String?, active: String?) {
+        if (prefs.getString("groups", null) == groups && rawActive() == active) return
+        prefs.edit().apply {
+            if (groups == null) remove("groups") else putString("groups", groups)
+            if (active == null) remove("activeCode") else putString("activeCode", active)
+        }.apply()
     }
 
     /** Point the radio at a group this phone is in. A left group is refused: only [rejoin] brings one back. */
@@ -249,7 +448,8 @@ class Store(private val context: Context) {
      */
     fun markLeft(code: String, now: Long): Boolean {
         val g = allGroups().firstOrNull { it.code == Words.normalise(code) && !it.left } ?: return false
-        return change({ remove("unread-${g.fingerprint}") }) { list, active -> GroupRules.leave(list, active, g.code, now) }
+        // A reply still waiting for the group to start would never go now: nothing is sent into a group that was left.
+        return change({ remove("unread-${g.fingerprint}"); remove("outbox-${g.fingerprint}") }) { list, active -> GroupRules.leave(list, active, g.code, now) }
     }
 
     /**
@@ -264,12 +464,7 @@ class Store(private val context: Context) {
         val groups = prefs.getString("groups", null)
         val active = rawActive()
         if (change { list, a -> GroupRules.rejoin(list, a, code, now) }) return true
-        if (prefs.getString("groups", null) != groups || rawActive() != active) {
-            prefs.edit().apply {
-                if (groups == null) remove("groups") else putString("groups", groups)
-                if (active == null) remove("activeCode") else putString("activeCode", active)
-            }.apply()
-        }
+        putBack(groups, active)
         false
     }
 
@@ -374,6 +569,39 @@ class Store(private val context: Context) {
         prefs.edit().putString("mute-$fp", j.toString()).apply()
     }
 
+    // ------------------------------------------------------------------ replies waiting for the group to start
+
+    /** A reply typed into a notification while its group was still starting: [chat] is "*" or a node id. */
+    class KeptReply(val chat: String, val text: String, val ts: Long)
+
+    /**
+     * Keep a reply until the group's router is up (Core sends it then). commit(): the person saw
+     * it go into the notification, and a kill a moment later must not lose it. False when it did
+     * not reach the disk.
+     */
+    fun keepReply(fp: String, chat: String, text: String, now: Long): Boolean = synchronized(groupLock) {
+        val list = keptReplies(fp).takeLast(MAX_KEPT_REPLIES - 1) + KeptReply(chat, text.take(Router.MAX_TEXT), now)
+        prefs.edit().putString("outbox-$fp", encodeReplies(list)).commit()
+    }
+
+    /** The replies kept for a group, oldest first. */
+    fun keptReplies(fp: String): List<KeptReply> = try {
+        val a = JSONArray(prefs.getString("outbox-$fp", "[]") ?: "[]")
+        (0 until a.length()).mapNotNull { a.optJSONObject(it) }
+            .map { KeptReply(it.optString("chat"), it.optString("text"), it.optLong("ts")) }
+            .filter { it.chat.isNotEmpty() && it.text.isNotBlank() }
+    } catch (e: Exception) { emptyList() }
+
+    /** These replies have been sent (and the state that holds them saved): forget them. Any kept since stay. */
+    fun dropKeptReplies(fp: String, sent: List<KeptReply>) = synchronized(groupLock) {
+        val done = sent.map { Triple(it.chat, it.text, it.ts) }.toHashSet()
+        val rest = keptReplies(fp).filter { Triple(it.chat, it.text, it.ts) !in done }
+        prefs.edit().apply { if (rest.isEmpty()) remove("outbox-$fp") else putString("outbox-$fp", encodeReplies(rest)) }.apply()
+    }
+
+    private fun encodeReplies(list: List<KeptReply>): String =
+        JSONArray(list.map { JSONObject().put("chat", it.chat).put("text", it.text).put("ts", it.ts) }).toString()
+
     // ------------------------------------------------------------------ router state, one file per group
 
     private fun stateFile(fp: String): File = File(context.filesDir, "mesh-state-$fp.json")
@@ -461,6 +689,25 @@ class Store(private val context: Context) {
         notes
     }
 
+    /**
+     * A group's state as it was read, made fit for this version ([Upgrade]): null when it already
+     * is. The group's history is rewritten first — so my old messages there are mine too — and only
+     * then is the upgraded state handed back to be restored and saved. [left]: the group was left,
+     * and nothing in it is ever sent again.
+     *
+     * Throws IOException when it can't be done right now: this phone's key pair can't be read, or
+     * a history page could not be written (no space, most likely). Then nothing may be built on
+     * the state or saved over it; the next try starts again from the same saved state, and finishes
+     * what this one began. Writer thread only.
+     */
+    fun upgrade(fp: String, state: JSONObject, left: Boolean, now: Long = System.currentTimeMillis()): JSONObject? {
+        val me = identityKeys()?.nodeId ?: throw IOException("this phone's key pair can't be read right now")
+        val former = formerIds()
+        val up = Upgrade.state(state, me, former, now, left) ?: return null
+        if (!History(historyDir(fp)).rewrite { Upgrade.page(it, me, former) }) throw IOException("the group's history could not be rewritten")
+        return up
+    }
+
     /** True when the state is safely on disk. Writer thread only. */
     fun saveState(fp: String, j: JSONObject): Boolean {
         val af = AtomicFile(stateFile(fp))
@@ -510,19 +757,22 @@ class Store(private val context: Context) {
             setLastRead(fp, "*", now)
             val state = loadState(fp) ?: return
             val msgs = state.optJSONArray("messages") ?: return
-            val me = nodeId
+            // The id 1.x wrote these with: this phone's key pair, and the id made from it, come later.
+            val mine = formerIds() + listOfNotNull(prefs.getString("nodeId", null))
             for (i in 0 until msgs.length()) {
                 val m = msgs.getJSONObject(i)
                 val to = m.optString("to", "")
                 if (to.isEmpty()) continue
-                val partner = if (m.optString("from") == me) to else m.optString("from")
+                val partner = if (m.optString("from") in mine) to else m.optString("from")
                 if (partner.isNotEmpty()) setLastRead(fp, partner, now)
             }
         } catch (e: Exception) { /* badges will just start fresh */ }
     }
 
     private companion object {
-        /** How long a state read that failed without proving the file bad waits before its one more try. */
+        /** How long a read that failed without proving the file bad waits before its one more try. */
         const val READ_AGAIN_MS = 300L
+        /** Replies kept per group while it starts: far more than anyone types into a notification. */
+        const val MAX_KEPT_REPLIES = 20
     }
 }

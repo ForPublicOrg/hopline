@@ -74,7 +74,9 @@ object Ui {
      * Which people a text calls out with @Name. The @ must start a word (not an email) and the
      * name must end at a word boundary — "@Samantha" is not a mention of Sam. Longer names claim
      * their characters first, so "@Ravi Kumar" never also mentions plain "Ravi". When two people
-     * share a name, [chosen] (filled when someone tapped a suggestion chip) says which one.
+     * share a name, [chosen] (filled when someone tapped a suggestion chip) says which one. Only
+     * people on 2.4 or later are mentioned: someone's old id from before the update, still kept
+     * for its old messages' names, would only take a place from the person they are now.
      */
     fun mentionsIn(r: Router, text: String, chosen: Map<String, String> = emptyMap()): List<String> {
         if (!text.contains('@')) return emptyList()
@@ -82,7 +84,7 @@ object Ui {
         val sameLength = lower.length == text.length
         val claimed = ArrayList<IntRange>()
         val out = LinkedHashSet<String>()
-        val byName = r.people.values.filter { it.name.isNotEmpty() }.groupBy { it.name.lowercase(Locale.ROOT) }
+        val byName = r.people.values.filter { it.name.isNotEmpty() && ChatRules.listed(it.id) }.groupBy { it.name.lowercase(Locale.ROOT) }
         for ((nameLower, persons) in byName.entries.sortedByDescending { it.key.length }) {
             val needle = "@" + (if (sameLength) nameLower else persons[0].name)
             val hay = if (sameLength) lower else text
@@ -106,15 +108,25 @@ object Ui {
     /**
      * A name that tells two people apart: when someone else in the group goes by the same name,
      * add a short, stable tag from their phone's id ("Sam · 3f2a") so nobody can hide behind a
-     * namesake.
+     * namesake. Not for an id from before the update: it can't be on the air any more, so it is
+     * nobody's namesake — and the same person's new id, with the same name, must not make every
+     * message they wrote before the update look like someone else's.
      */
     fun uniqueName(r: Router, id: String, fallback: String = ""): String {
         val name = nameOf(r, id, fallback)
+        if (!ChatRules.listed(id)) return name
         val lower = name.lowercase(Locale.ROOT)
         val clash = (r.activePeopleList().filter { it.id != id }.any { it.name.lowercase(Locale.ROOT) == lower }) ||
             (id != r.me.id && r.me.name.lowercase(Locale.ROOT) == lower)
         return if (clash) "$name · ${id.takeLast(4)}" else name
     }
+
+    /**
+     * Has anyone but me ever been in this group, as far as this phone knows: someone it heard from
+     * (under any id — one from before the update too), or a message someone else wrote. A list of
+     * people that is empty right now then means "not heard from lately", never "nobody has joined".
+     */
+    fun othersKnown(r: Router): Boolean = r.people.keys.any { it != r.me.id } || r.messages.any { it.from != r.me.id }
 
     /** First letter for an avatar circle — a whole grapheme, so an emoji or accented name stays intact. */
     fun initial(name: String): String {
@@ -166,12 +178,49 @@ object Ui {
 
     /**
      * A ◷ of mine that stopped trying because I left the group, not because its 48 h ran out: it
-     * is younger than that, yet this phone no longer holds its envelope — and leaving is what lets
-     * one go that early. "No phone came in range within 48 hours" would be untrue of it. (Past
-     * 48 h the two can't be told apart, and that sentence is then true of both.)
+     * is younger than that, yet this phone no longer holds its envelope, and the chat has a "You
+     * left" after it. "No phone came in range within 48 hours" would be untrue of it. (Past 48 h
+     * the two can't be told apart, and that sentence is then true of both.)
      */
     fun unsentByLeaving(r: Router, m: Message, now: Long = System.currentTimeMillis()): Boolean =
+        stoppedEarly(r, m, now) && r.messages.any { it.kind == Message.LEFT && it.sortKey >= m.sortKey }
+
+    /**
+     * A ◷ of mine written before Hopline was updated (its id isn't one this version makes): it
+     * hadn't gone out when the update came, and never will on its own — the old format goes on no
+     * phone's radio any more, and the update sent it again only if it was a group message whose
+     * envelope was still carried (Router.reissueQueued) or a photo whose kept copy could go, never
+     * a private message, whose person has a new id now. That is true of it at any age — also once
+     * its 48 h are over, and of one whose 48 h had already run out before the update, which nothing
+     * kept can tell apart — so it is never told as "no phone came in range within 48 hours".
+     * Leaving after it is told first ([unsentByLeaving]).
+     */
+    fun unsentByUpdate(r: Router, m: Message, now: Long = System.currentTimeMillis()): Boolean =
+        beforeUpdate(r, m) && m.isPersonal && m.status == Message.QUEUED && !r.carries(m.id) && !unsentByLeaving(r, m, now)
+
+    /**
+     * A message of mine written before Hopline was updated: its id isn't one this version makes
+     * (my node id, a dot, ten letters). Who confirmed it then did so under ids nobody has any
+     * more, so it can't be measured against the group as it is now.
+     */
+    fun beforeUpdate(r: Router, m: Message): Boolean = m.from == r.me.id && !m.id.startsWith("${r.me.id}.")
+
+    /** Mine, still ◷ and inside its 48 h, yet this phone holds no envelope of it: something other than time let it go. */
+    private fun stoppedEarly(r: Router, m: Message, now: Long): Boolean =
         m.from == r.me.id && m.isPersonal && m.status == Message.QUEUED && !r.carries(m.id) && now - m.ts <= Router.CARRY_MS
+
+    /** Why a ◷ of mine that [gaveUp] stopped trying — the one story of these that is true of it. */
+    enum class NotSent { TIMED_OUT, LEFT, UPDATE, UPDATE_PRIVATE, LET_GO }
+
+    fun notSent(r: Router, m: Message, now: Long = System.currentTimeMillis()): NotSent = when {
+        // Back in the group after leaving it: the wait wasn't for a phone in range.
+        unsentByLeaving(r, m, now) -> NotSent.LEFT
+        // Hadn't gone out when Hopline was updated, whatever its age; a private one's person has a new id, found in People.
+        unsentByUpdate(r, m, now) -> if (m.to != null && !ChatRules.listed(m.to)) NotSent.UPDATE_PRIVATE else NotSent.UPDATE
+        // Let go of early for neither reason (a phone too full to carry everything): true, and no more.
+        stoppedEarly(r, m, now) -> NotSent.LET_GO
+        else -> NotSent.TIMED_OUT
+    }
 
     /**
      * Was a message of mine past its time when this phone left the group at [leftAt]? Nothing
@@ -204,11 +253,16 @@ object Ui {
                 if (got.isEmpty()) "" else "\n\n" + ctx.getString(R.string.chat_status_got, got.joinToString(", "))
         }
         if (gaveUp(r, m, now)) {
-            return when {
-                m.status != Message.QUEUED -> ctx.getString(R.string.chat_status_dm_not_delivered, nameOf(r, m.to ?: ""))
-                // Back in the group after leaving it: the wait wasn't for a phone in range.
-                unsentByLeaving(r, m, now) -> ctx.getString(R.string.chat_status_left_unsent)
-                else -> ctx.getString(R.string.chat_status_not_sent)
+            // A private message to someone nothing can be sealed for has no "Send again" to point at.
+            val again = ChatRules.sendAgain(gaveUp = true, to = m.to, canWrite = m.to?.let { r.canWriteTo(it) } ?: true)
+            if (m.status != Message.QUEUED) return ctx.getString(if (again) R.string.chat_status_dm_not_delivered else R.string.chat_status_dm_not_delivered_final,
+                nameOf(r, m.to ?: ""))
+            return when (notSent(r, m, now)) {
+                NotSent.LEFT -> ctx.getString(R.string.chat_status_left_unsent)
+                NotSent.UPDATE_PRIVATE -> ctx.getString(R.string.chat_status_update_unsent_dm, nameOf(r, m.to ?: ""))
+                NotSent.UPDATE -> ctx.getString(if (again) R.string.chat_status_update_unsent else R.string.chat_status_update_unsent_final)
+                NotSent.LET_GO -> ctx.getString(if (again) R.string.chat_status_let_go else R.string.chat_status_let_go_final)
+                NotSent.TIMED_OUT -> ctx.getString(if (again) R.string.chat_status_not_sent else R.string.chat_status_not_sent_final)
             }
         }
         if (m.status == Message.QUEUED) return ctx.getString(R.string.status_queued)
@@ -216,6 +270,14 @@ object Ui {
             val name = nameOf(r, m.to)
             return if (m.status == Message.DELIVERED) ctx.getString(R.string.chat_status_delivered, name)
             else ctx.getString(R.string.chat_status_on_way, name)
+        }
+        // From before the update: whoever confirmed it then did so under an id that is gone, and
+        // the same people are in the group under new ones — "2 of 4", "Didn't reach: Asha" would
+        // be untrue. Who got it is all there is to say.
+        if (beforeUpdate(r, m)) {
+            val got = m.reached.map { nameOf(r, it, "") }.sorted()
+            return ctx.getString(R.string.chat_status_sent) +
+                if (got.isEmpty()) "" else "\n\n" + ctx.getString(R.string.chat_status_got, got.joinToString(", "))
         }
         // The group as it is now (heard from within 48 h) — plus anyone who confirmed, so the
         // count can never read "3 of 2".
@@ -234,6 +296,33 @@ object Ui {
                 val missed = now - m.ts > Router.CARRY_MS
                 append("\n").append(ctx.getString(if (missed) R.string.chat_status_missed else R.string.chat_status_waiting, waiting.joinToString(", ")))
             }
+        }
+    }
+
+    /**
+     * Copy a group code. It is the key to the group's chat, so on Android 13+ the clipboard is told
+     * it is sensitive: the "copied" preview doesn't show it, and keyboards don't offer it around.
+     * (Android 13+ also confirms a copy on its own; older ones get a toast.)
+     */
+    fun copyCode(ctx: Context, words: String) {
+        val clip = android.content.ClipData.newPlainText(ctx.getString(R.string.code_clip_label), words)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            clip.description.extras = android.os.PersistableBundle().apply { putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true) }
+        }
+        (ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(clip)
+        if (android.os.Build.VERSION.SDK_INT < 33) android.widget.Toast.makeText(ctx, R.string.code_copied, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Section 13's line for a private chat with [id] that nothing can be sealed for ([ChatRules.bottom]),
+     * or null when it can be written in. [fallback]: their name as their messages carry it.
+     */
+    fun cantWriteLine(r: Router, id: String, fallback: String = ""): String? {
+        val name = nameOf(r, id, fallback.ifEmpty { r.messages.lastOrNull { it.from == id }?.fromName.orEmpty() })
+        return when (ChatRules.bottom(readOnly = false, peer = id, canWrite = r.canWriteTo(id))) {
+            ChatRules.Bottom.FROM_BEFORE -> res.getString(R.string.chat_cant_write_old, name)
+            ChatRules.Bottom.NOT_SEEN -> res.getString(R.string.chat_cant_write_unseen, name)
+            else -> null
         }
     }
 

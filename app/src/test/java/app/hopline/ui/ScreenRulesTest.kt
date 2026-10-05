@@ -4,6 +4,7 @@ import app.hopline.data.SavedGroup
 import app.hopline.ui.ScreenRules.After
 import app.hopline.ui.ScreenRules.Entered
 import app.hopline.ui.ScreenRules.Screen
+import app.hopline.ui.ScreenRules.Typed
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -116,6 +117,41 @@ class ScreenRulesTest {
         assertEquals(Entered.REJOIN, ScreenRules.codeEntered(g(family, leftAt = now), null))
         // and even if the active code somehow named it, left wins: nothing opens a left group as live
         assertEquals(Entered.REJOIN, ScreenRules.codeEntered(g(family, leftAt = now), family))
+    }
+
+    // ---------------------------------------------------------------- a new code, typed or scanned
+
+    @Test fun fourOfHoplinesWordsJoinAtOnce() {
+        assertEquals(Typed.JOIN, ScreenRules.typed("tiger river lamp hat"))
+        assertEquals(Typed.JOIN, ScreenRules.typed("Tiger, River LAMP-hat"))
+    }
+
+    @Test fun threeOfHoplinesWordsAskOnceBeforeJoining() {
+        // A group started before 2.4 — or a new code with a word left off, which would find nobody.
+        assertEquals(Typed.OLDER, ScreenRules.typed("tiger river lamp"))
+        // Asked already, in the question that led here ("Did you mean…?"): joined, not asked again.
+        assertEquals(Typed.JOIN, ScreenRules.typed("tiger river lamp", olderSeen = true))
+    }
+
+    @Test fun aTypoIsOfferedItsFixAndAFixedThreeWordCodeIsNotAskedAboutTwice() {
+        assertEquals(Typed.SUGGEST, ScreenRules.typed("tigre river lamp hat"))
+        assertEquals(Typed.SUGGEST, ScreenRules.typed("tigre river lamp"))
+        // What the "Use that" answer joins: the three-word question was part of "Did you mean…?".
+        assertEquals(Typed.JOIN, ScreenRules.typed("tiger river lamp", olderSeen = true))
+    }
+
+    @Test fun wordsNotOnTheListAreCheckedAndNonsenseIsRefused() {
+        assertEquals(Typed.CHECK, ScreenRules.typed("xqzv wpkj tiger lamp"))
+        assertEquals(Typed.BAD, ScreenRules.typed("hello"))
+        assertEquals(Typed.BAD, ScreenRules.typed(""))
+        assertEquals(Typed.BAD, ScreenRules.typed("tiger river lamp hat moon"))
+    }
+
+    @Test fun onlyAThreeWordCodeIsAnOlderOne() {
+        assertTrue(ScreenRules.olderCode("tiger river lamp"))
+        assertTrue(ScreenRules.olderCode(trek))
+        assertFalse(ScreenRules.olderCode("tiger river lamp hat"))
+        assertFalse(ScreenRules.olderCode("tiger river"))
     }
 
     // ---------------------------------------------------------------- after "Delete group"

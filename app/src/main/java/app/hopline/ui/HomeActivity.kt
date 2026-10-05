@@ -92,7 +92,7 @@ class HomeActivity : AppCompatActivity() {
      * it away would hide its chats behind the join screen ([ScreenRules.homeNeedsLaunch]).
      */
     private fun needsLaunch(): Boolean = ScreenRules.homeNeedsLaunch(
-        inGroup = Core.store.group() != null, anySaved = Core.store.allGroups().isNotEmpty(), granted = Permissions.allGranted(this))
+        inGroup = Core.store.hasActive(), anySaved = Core.store.allGroups().isNotEmpty(), granted = Permissions.allGranted(this))
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -169,7 +169,7 @@ class HomeActivity : AppCompatActivity() {
 
         // Is there a group for the radio at all? With every group left there is none: nothing is
         // starting, nobody can be in range, and no radio advice or message alert means anything.
-        val inGroup = Core.store.group() != null
+        val inGroup = Core.store.hasActive()
         val r = if (inGroup) Core.router else null
         // People is the list of the group on the radio.
         b.btnPeople.visibility = if (inGroup) View.VISIBLE else View.GONE
@@ -273,8 +273,11 @@ class HomeActivity : AppCompatActivity() {
             val fallback = partnerName[t.id].orEmpty()
             val p = r.people[t.id]
             val draft = draftOf(t.id)
+            // A chat from before the update sits beside the same person's new one, under the same
+            // name: the row says which is which (no tag from the id — that would read as a namesake).
+            val name = Ui.uniqueName(r, t.id, fallback).let { if (ChatRules.listed(t.id)) it else getString(R.string.chat_name_before_update, it) }
             rows += HomeAdapter.Row.Chat(
-                key = t.id, name = Ui.uniqueName(r, t.id, fallback), initial = Ui.initial(Ui.nameOf(r, t.id, fallback)),
+                key = t.id, name = name, initial = Ui.initial(Ui.nameOf(r, t.id, fallback)),
                 preview = draft ?: t.react?.let { reactionPreview(r, it) } ?: previewOf(r, t.last, inGroup = false), draft = draft != null,
                 ts = t.ts, time = Ui.listTime(t.ts), unread = unread[t.id] ?: 0, muted = Core.store.isMuted(fp, t.id),
                 avatarColor = MessageAdapter.avatarColor(t.id), live = p != null && r.isInRange(p),

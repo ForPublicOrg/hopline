@@ -15,9 +15,10 @@
 
     <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
         android:orientation="vertical" android:layout_marginStart="14dp">
-        <TextView android:id="@+id/name" android:layout_width="match_parent" android:layout_height="wrap_content"
+        <!-- As wide as the name, so a verified person's shield sits right after it -->
+        <TextView android:id="@+id/name" android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:textSize="17sp" android:textStyle="bold" android:textColor="@color/text"
-            android:maxLines="1" android:ellipsize="end" />
+            android:maxLines="1" android:ellipsize="end" android:drawablePadding="6dp" />
         <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content"
             android:textAppearance="@style/Text.Muted" android:textSize="13.5sp" android:layout_marginTop="2dp" />
     </LinearLayout>

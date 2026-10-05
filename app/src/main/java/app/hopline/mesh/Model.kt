@@ -1,15 +1,34 @@
 package app.hopline.mesh
 
 import app.hopline.core.Crypto
+import app.hopline.core.GroupKeys
+import app.hopline.core.IdentityKeys
 import app.hopline.core.Names
+import app.hopline.core.Words
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.PublicKey
 import java.util.Locale
 
-class Identity(val id: String, var name: String)
+/**
+ * This phone as the mesh knows it: its node id, its display name, and the key pair that signs
+ * everything it sends and opens what is written privately to it. The id is made from the public
+ * key ([Crypto.nodeIdOf]), so nobody can claim it without the key.
+ */
+class Identity(val id: String, var name: String, val keys: IdentityKeys) {
+    init { require(id == keys.nodeId) { "a node id is made from its key" } }
+}
 
-class Group(code: String, var name: String, nameAt: Long = 0, nameV: Int = 0) {
-    val code: String = app.hopline.core.Words.normalise(code)
+/**
+ * The group on the radio. Builds nothing itself: [keys] were stretched from the code beforehand
+ * (slow — [derive], off the main thread), so constructing one is free.
+ *
+ * [fingerprint] is only this phone's own name for the group on disk (state file, history,
+ * pieces, prefs, notification tags) and is never sent. [airTag] is the one thing derived from the
+ * code that goes on air.
+ */
+class Group(code: String, var name: String, nameAt: Long = 0, nameV: Int = 0, val keys: GroupKeys, val fingerprint: String) {
+    val code: String = Words.normalise(code)
     /**
      * How many renames [name] comes after: each rename is one more than the newest it saw, so a
      * rename made after another always wins — whatever anyone's clock says. 0 = never renamed
@@ -19,11 +38,31 @@ class Group(code: String, var name: String, nameAt: Long = 0, nameV: Int = 0) {
     /** When [name] was set, on this phone's clock as best it can tell: only breaks a tie between
      *  two renames made without seeing each other. 0 = unknown. */
     var nameAt: Long = nameAt
-    val key: ByteArray = Crypto.groupKey(this.code)
-    val fingerprint: String = Crypto.fingerprint(key)
+    /** What a phone of this group advertises, and what every envelope is bound to (never sent inside one). */
+    val airTag: String get() = keys.tag
+
+    companion object {
+        /**
+         * A group straight from its code: runs the slow key stretch, so only tests and the keys
+         * thread call it. [fingerprint] defaults to the storage id a group saved before 2.4 has.
+         */
+        fun derive(code: String, name: String, nameAt: Long = 0, nameV: Int = 0,
+                   fingerprint: String = Crypto.legacyFingerprint(code)): Group =
+            Group(code, name, nameAt, nameV, GroupKeys(Crypto.stretch(code)), fingerprint)
+    }
 }
 
-/** One signed, flood-routed unit. Everything that crosses a link (except link handshakes) is an Envelope. */
+/**
+ * One sealed, signed, flood-routed unit. Everything that crosses a link (except link handshakes)
+ * is an Envelope. On the wire: `{id, k, o, on, ts, to?, h, pk, s, c, e?, er?}`.
+ *
+ * Everything but `c` is in the clear, because carriers need it (dedupe, inventory, expiry, who
+ * it is for). `c` is the payload sealed for the whole group, or — for a private message, file or
+ * reaction — for its one recipient; for a file piece it is the piece sealed under the file's own
+ * key. `s` is the origin's signature over the header and `c`, so nobody can speak for anyone
+ * else, and every envelope carries the origin's public key (`pk`) to check it with. Only the hop
+ * count `h` is left unsigned: every relay changes it.
+ */
 class Envelope(val json: JSONObject) {
     val id: String get() = json.getString("id")
     val kind: String get() = json.getString("k")
@@ -34,29 +73,53 @@ class Envelope(val json: JSONObject) {
     var hops: Int
         get() = json.optInt("h", 0)
         set(v) { json.put("h", v) }
-    val payload: JSONObject get() = json.getJSONObject("p")
+    /** The origin's public key, base64url. */
+    val pk: String get() = json.optString("pk", "")
     val sig: String get() = json.optString("s", "")
+    /** The sealed payload (base64url), or for a [CHUNK] the sealed file piece. */
+    val sealed: String get() = json.optString("c", "")
+    /** The one-off public key a private envelope was sealed with; null on every other. */
+    val eph: String? get() = json.optString("e", "").ifEmpty { null }
+    /** A private internet answer's clear "answered" marker, `{eid, ok}`, so other helpers stand down. */
+    val er: JSONObject? get() = json.optJSONObject("er")
+    /** Sealed for its recipient alone rather than for the group. */
+    val isPrivate: Boolean get() = privateKind(kind, to)
 
-    fun signable(): String = "$id|$kind|$origin|$originName|$ts|${to ?: ""}|${Crypto.canonical(payload)}"
-    fun sign(key: ByteArray) { json.put("s", Crypto.hmacHex(key, signable())) }
-    fun verify(key: ByteArray): Boolean = Crypto.constantTimeEquals(sig, Crypto.hmacHex(key, signable()))
+    /**
+     * The payload as this phone built it. Never part of [json], so it is never carried, saved or
+     * sent; an envelope that arrives is opened by the router when it needs to read it.
+     */
+    var payload: JSONObject? = null
+
+    /**
+     * The bytes the seal and the signature are bound to: every clear field but the hop count, each
+     * length-prefixed, plus the group's [airTag], which is never sent — an envelope from another
+     * group (or a phone that only overheard the tag) checks against nothing here.
+     */
+    fun header(airTag: String): ByteArray = Crypto.lp("hl5", airTag, id, kind, origin, originName, ts.toString(), to ?: "", pk,
+        eph ?: "", er?.let { Crypto.canonical(it) } ?: "")
+
+    /** What [sig] signs: the [header], then the sealed payload. */
+    fun signed(airTag: String): ByteArray = header(airTag) + Crypto.lp(sealed)
+
     fun bytes(): ByteArray = json.toString().toByteArray(Charsets.UTF_8)
     fun copy(): Envelope = Envelope(JSONObject(json.toString()))
 
     companion object {
         const val CHAT = "chat"      // group message
-        const val DM = "dm"          // private message, carried by everyone, shown only to `to`
-        const val RECEIPT = "rcpt"   // "my phone has message X"
+        const val DM = "dm"          // private message, sealed for `to` alone, carried by everyone
+        const val RECEIPT = "rcpt"   // "my phone has message X"; id r.<message>.<origin>
         const val PRESENCE = "pres"  // "I'm alive, here's my name, do I have internet"
         const val ERRAND = "errand"  // "someone with internet, please do this"
         const val ERRAND_RESULT = "errres"
-        /** "My phone is on your request" / "I can't, someone else take it". Live only, never carried:
-         *  2.x phones relay unknown kinds without storing them. */
+        /** "My phone is on your request" / "I can't, someone else take it". Live only, never carried. */
         const val ERRAND_ACK = "erak"
-        const val FILE = "file"      // a photo/file message: caption + attachment meta (name, size, chunk count, thumb)
-        const val CHUNK = "fchk"     // one piece of a file's data; id is deterministic: f.<fid>.<index>
-        const val REACT = "reac"     // an emoji on message X; 2.0 clients relay but don't carry or show it
+        const val FILE = "file"      // a photo/file message: caption + attachment meta (name, size, pieces, thumb, key)
+        const val CHUNK = "fchk"     // one sealed piece of a file; id is deterministic: f.<fid>.<index>
+        const val REACT = "reac"     // an emoji on message X
 
+        /** Every kind this version knows. Anything else is refused before it is seen. */
+        val KINDS = setOf(CHAT, DM, RECEIPT, PRESENCE, ERRAND, ERRAND_RESULT, ERRAND_ACK, FILE, CHUNK, REACT)
         /** Kinds that are stored and handed to phones that missed them (chunks are carried separately, on disk). */
         val CARRIED = setOf(CHAT, DM, RECEIPT, ERRAND, ERRAND_RESULT, FILE, REACT)
         // Ceiling on the LIVE flood only: a dense crowd has a tiny diameter (each phone holds
@@ -66,6 +129,35 @@ class Envelope(val json: JSONObject) {
         const val MAX_HOPS = 32
 
         fun chunkId(fid: String, index: Int): String = "f.$fid.$index"
+
+        /** Sealed for one person (its `to`) rather than for the group: a private message, file or reaction. */
+        fun privateKind(kind: String, to: String?): Boolean = kind == DM || (to != null && (kind == FILE || kind == REACT))
+
+        /**
+         * One envelope from [me], sealed and signed. [payload] is sealed for the group, or — when
+         * the kind is private ([privateKind]) — for [to] alone, whose public key is [toKey]; a
+         * [CHUNK] carries [piece], already sealed under its file's key. [er] is the clear marker of
+         * a private internet answer. Null only when a private envelope has no key to seal it with.
+         */
+        fun seal(group: Group, me: Identity, kind: String, payload: JSONObject?, id: String, ts: Long, to: String? = null,
+                 toKey: PublicKey? = null, er: JSONObject? = null, piece: String? = null): Envelope? {
+            val j = JSONObject().put("id", id).put("k", kind).put("o", me.id).put("on", me.name).put("ts", ts).put("h", 0)
+                .put("pk", me.keys.pubB64)
+            if (to != null) j.put("to", to)
+            if (er != null) j.put("er", er)
+            val env = Envelope(j)
+            val plain = (payload ?: JSONObject()).toString().toByteArray(Charsets.UTF_8)
+            val c = when {
+                kind == CHUNK -> piece ?: return null
+                // The one-off key is part of the header the seal is bound to, so it goes in first.
+                privateKind(kind, to) -> Crypto.sealTo(toKey ?: return null, me.keys, plain) { e -> j.put("e", e); env.header(group.airTag) }.first
+                else -> Crypto.seal(group.keys.env, env.header(group.airTag), plain)
+            }
+            j.put("c", c)
+            j.put("s", Crypto.sign(me.keys.priv, env.signed(group.airTag)))
+            env.payload = payload
+            return env
+        }
     }
 }
 
@@ -84,23 +176,59 @@ class Attachment(val json: JSONObject) {
     val height: Int get() = json.optInt("h", 0)
     val thumb: String get() = json.optString("tb", "")   // tiny base64 JPEG, shown while pieces arrive
     val dur: Int get() = json.optInt("dur", 0).coerceIn(0, 3600)   // seconds, for voice notes
+    /** The file's own key (32 bytes), which seals its pieces; null if absent or not one. Sent only inside a sealed payload. */
+    val key: ByteArray? get() = Crypto.unb64(json.optString("fk", ""))?.takeIf { it.size == 32 }
+    /** Lowercase hex SHA-256 of the whole file, to check it once put together. */
+    val sha: String get() = json.optString("sha", "")
+    /**
+     * This phone's own mark, never a sender's ([dropLocalMarks]): every piece came, but the file
+     * can never be opened — a piece failed again after being fetched again, or the whole isn't what
+     * this message says. Kept with the message (state and history); the file is never tried again.
+     */
+    val failed: Boolean get() = json.optBoolean(FAILED, false)
+    /** This phone's own mark too: the pieces that didn't open and were fetched again — each only ever once. */
+    val refilled: Set<Int> get() {
+        val a = json.optJSONArray(REFILLED) ?: return emptySet()
+        return (0 until a.length()).mapNotNullTo(HashSet()) { a.optInt(it, -1).takeIf { i -> i >= 0 } }
+    }
     val isImage: Boolean get() = mime.startsWith("image/")
     /** A photo this app can draw inline: one we shrank ourselves (it carries its size), or a format
      *  Android's decoder reads. An SVG/TIFF/RAW picked as a file stays a file and opens elsewhere. */
     val isInlineImage: Boolean get() = isImage && ((width > 0 && height > 0) || mime.lowercase() in INLINE_MIMES)
     val isAudio: Boolean get() = mime.startsWith("audio/")
 
+    /** See [failed]. Main thread: the message's attachment is the router's. */
+    fun markFailed() { json.put(FAILED, true) }
+
+    /** See [refilled]. */
+    fun markRefilled(pieces: Collection<Int>) { json.put(REFILLED, JSONArray((refilled + pieces).sorted())) }
+
+    /** An attachment as it arrives: the marks only this phone may set go — no sender can call its own file broken here. */
+    fun dropLocalMarks() { json.remove(FAILED); json.remove(REFILLED) }
+
     companion object {
+        private const val FAILED = "bad"
+        private const val REFILLED = "rf"
         private val INLINE_MIMES = setOf("image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif", "image/bmp")
         /** File ids come from Crypto.randomId — anything else is a crafted envelope (and a file path). */
         private val FID = Regex("^[a-z0-9]{6,24}$")
+        private val SHA = Regex("^[0-9a-f]{64}$")
         fun validFid(fid: String): Boolean = FID.matches(fid)
 
-        fun make(fid: String, name: String, mime: String, size: Long, chunks: Int, w: Int, h: Int, thumb: String, dur: Int = 0): Attachment =
+        /** True when [fid] is one [origin] made: its node id and 8 more letters (see Router.newFid). Nobody can take over another's. */
+        fun ownedBy(fid: String, origin: String): Boolean =
+            fid.length == origin.length + 8 && fid.startsWith(origin) && Crypto.isAlphabet(fid.substring(origin.length), 8)
+
+        /** Its key and checksum are there and well formed: without them a file can never be opened. */
+        fun sealable(att: Attachment): Boolean = att.key != null && SHA.matches(att.sha)
+
+        fun make(fid: String, name: String, mime: String, size: Long, chunks: Int, w: Int, h: Int, thumb: String, dur: Int = 0,
+                 key: ByteArray? = null, sha: String = ""): Attachment =
             Attachment(JSONObject().apply {
                 put("fid", fid); put("name", name); put("mime", mime); put("size", size); put("n", chunks)
                 if (w > 0) put("w", w); if (h > 0) put("h", h); if (thumb.isNotEmpty()) put("tb", thumb)
                 if (dur > 0) put("dur", dur)
+                if (key != null) put("fk", Crypto.b64(key)); if (sha.isNotEmpty()) put("sha", sha)
             })
     }
 }
@@ -390,15 +518,21 @@ class Person(val id: String) {
     /** Live location, while they share it. Rides presence, so it clears itself when they stop.
      *  Deliberately not persisted — a position from before a restart is a lie. */
     var loc: Loc? = null
-    var locAt: Long = 0        // their clock, from the presence envelope that carried it (ordering only)
+    /** Their clock, from the presence envelope that carried [loc] (ordering only). Persisted, with [liveQ]. */
+    var locAt: Long = 0
     /** How far their clock runs ahead of ours (negative: behind), measured from their latest
      *  presence — never carried, so it arrives within seconds. 0 until heard. Not persisted. */
     var skew: Long = 0
     var skewKnown: Boolean = false
     var locHeardAt: Long = 0   // OUR clock when that beacon arrived (freshness — their clock may be off)
-    /** Highest protocol version this phone ever showed us. A 4+ phone never gets to fall back to
-     *  the old, relayable link proof. Persisted. */
-    var ver: Int = 0
+    /** Their public key (base64url), from anything they signed: what a private message to them is sealed for. Persisted. */
+    var pk: String = ""
+    /**
+     * The newest counter seen on their presence and "I'm on it" envelopes. One that isn't newer is
+     * a replay — a beacon recorded earlier must not put them back in range or re-arm an old
+     * location — and is not read. Persisted, so a restart doesn't open that door again.
+     */
+    var liveQ: Long = 0
     /** Shared-internet protocol and what their phone can do right now (bitmask of Errand.CAP_*).
      *  From presence only — a capability from before a restart is stale, so not persisted. */
     var ev: Int = 0
@@ -407,14 +541,18 @@ class Person(val id: String) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id); put("name", name); put("nameAt", nameAt); put("lastSeen", lastSeen); put("hasInternet", hasInternet)
         put("hops", hops); put("battery", battery)
-        if (ver > 0) put("ver", ver)
+        if (pk.isNotEmpty()) put("pk", pk)
+        if (liveQ > 0) put("liveQ", liveQ)
+        if (locAt > 0) put("locAt", locAt)
     }
     companion object {
         fun fromJson(j: JSONObject): Person = Person(j.getString("id")).also {
             it.name = Names.clean(j.optString("name", "")); it.nameAt = j.optLong("nameAt", 0); it.lastSeen = j.optLong("lastSeen", 0)
             it.hasInternet = j.optBoolean("hasInternet", false); it.hops = j.optInt("hops", 99)
             it.battery = j.optInt("battery", -1)
-            it.ver = j.optInt("ver", 0)
+            it.pk = j.optString("pk", "")
+            it.liveQ = j.optLong("liveQ", 0)
+            it.locAt = j.optLong("locAt", 0)
         }
     }
 }
@@ -549,7 +687,11 @@ class Errand(
     }
 }
 
-/** gzip + URL-safe base64 for answers that ride one radio frame. Bounded on the way in (no zip bombs). */
+/**
+ * gzip + URL-safe base64 for answers that ride one radio frame. Bounded on the way in: no zip
+ * bombs, and nothing nested deeper than [Crypto.MAX_DEPTH] — the body came from another phone,
+ * and a `[[[[…` that inflates from a few hundred bytes must not run the parser out of stack.
+ */
 object Gz {
     const val MAX_INFLATED = 512 * 1024
 
@@ -570,6 +712,11 @@ object Gz {
                 if (out.size() > MAX_INFLATED) return null
             }
         }
-        JSONObject(String(out.toByteArray(), Charsets.UTF_8))
-    } catch (e: Exception) { null }
+        val text = String(out.toByteArray(), Charsets.UTF_8)
+        if (Crypto.depthOk(text, Crypto.MAX_DEPTH)) JSONObject(text) else null
+    } catch (e: Exception) {
+        null
+    } catch (e: StackOverflowError) {
+        null
+    }
 }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import app.hopline.core.Crypto
 import com.google.android.gms.common.api.CommonStatusCodes
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
@@ -24,13 +25,17 @@ import com.google.android.gms.nearby.connection.Strategy
  * discovers, so a group forms a web of Bluetooth/WiFi links with no hotspot, no router, no setup.
  *
  * What this class does beyond the API:
- *  - only talks to phones advertising the same group fingerprint
+ *  - only talks to phones advertising the same group air tag, and counts the phones of this
+ *    group still on an older Hopline (which it never links to) so the person can be told
  *  - avoids the "both sides connect at once" race (lower node id initiates; the other waits)
- *  - keeps at most MAX_LINKS links, counting dials still in flight
+ *  - keeps at most MAX_LINKS proven links; a connection counts only once the router says its
+ *    phone proved itself ([authed]) — until then it is "unproven", may not block anyone, and is
+ *    let go after a few seconds, or sooner when newer ones need the room ([NearbyRules])
  *  - duty-cycles discovery to save battery once we have a couple of links
  *  - retries failed connections with backoff, notices sessions that died silently,
  *    and restarts the stack if it wedges
- *  - hands the router each connection's authentication token, so link proofs can't be relayed
+ *  - hands the router each connection's authentication token, so link proofs can't be relayed;
+ *    a connection without one is refused
  *
  * The advertised name carries no display name: anyone scanning nearby would otherwise collect
  * the names of every Hopline user in range. Names travel inside the authenticated link instead.
@@ -57,6 +62,12 @@ class NearbyTransport(context: Context, private val group: Group, private val me
         var exhaustedAt = 0L
         var lost = false
         var token = ""
+        /** Its phone proved itself on this connection (the router said so): from now on it is a link. */
+        var authed = false
+        /** When this connection started (dialled, or knocked on our door): the oldest unproven one goes first. */
+        var since = 0L
+        /** Lets the connection go if it is still unproven when it fires. */
+        var deadline: Runnable? = null
     }
 
     private val endpoints = HashMap<String, Endpoint>()
@@ -68,14 +79,18 @@ class NearbyTransport(context: Context, private val group: Group, private val me
     var lastLinkAt = 0L; private set
     var startedAt = 0L; private set
     var problem: String? = null; private set
+    /** What a phone of this group still on a Hopline from before 2.4 advertises (see [olderPhonesNearby]). */
+    private val legacyFp = Crypto.legacyFingerprint(group.code)
 
-    fun connectedCount(): Int = endpoints.values.count { it.state == CONNECTED }
-    fun connectingCount(): Int = endpoints.values.count { it.state == CONNECTING }
+    /** Proven links: what the rest of the app means by "linked". */
+    fun connectedCount(): Int = endpoints.values.count { it.state == CONNECTED && it.authed }
+    /** Connections still being made or proved. */
+    fun connectingCount(): Int = endpoints.values.count { it.state != FOUND && !it.authed }
     fun visibleCount(): Int = endpoints.size
 
     /**
      * Hopline phones in range that advertise ANOTHER group's code. With nobody of our own around,
-     * that is usually a mistyped code ("tiger river lamp" vs "tiger rivers lamp") — worth saying so.
+     * that is usually a mistyped code ("tiger river lamp hat" vs "tiger rivers lamp hat") — worth saying so.
      */
     private val otherGroups = HashMap<String, Long>()
     fun otherGroupNearby(): Boolean {
@@ -83,7 +98,22 @@ class NearbyTransport(context: Context, private val group: Group, private val me
         otherGroups.values.removeAll { now - it > OTHER_GROUP_MS }
         return otherGroups.isNotEmpty()
     }
-    private fun activeCount(): Int = endpoints.values.count { it.state != FOUND }
+
+    /**
+     * Phones in range that are in THIS group but still run a Hopline from before 2.4. They can't
+     * link with this one (nothing they send could be read, nor the other way round), so they are
+     * never connected to — only counted, so the person can be told one of them needs to update.
+     */
+    private val olderPhones = HashMap<String, Long>()
+    fun olderPhonesNearby(): Int {
+        val now = System.currentTimeMillis()
+        olderPhones.values.removeAll { now - it > OTHER_GROUP_MS }
+        return olderPhones.size
+    }
+
+    private fun provenCount(): Int = endpoints.values.count { it.state != FOUND && it.authed }
+    private fun unproven(except: String? = null): Map<String, Long> =
+        endpoints.values.filter { it.state != FOUND && !it.authed && it.id != except }.associate { it.id to it.since }
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -106,6 +136,7 @@ class NearbyTransport(context: Context, private val group: Group, private val me
         for (id in endpoints.filterValues { it.state == CONNECTED }.keys.toList()) events?.onLinkDown(id)
         endpoints.clear()
         otherGroups.clear()
+        olderPhones.clear()
     }
 
     /** Bluetooth stacks wedge. When nothing has linked for a long while despite phones being visible, bounce it. */
@@ -119,15 +150,9 @@ class NearbyTransport(context: Context, private val group: Group, private val me
     /** My display name changed. It isn't advertised (see the class note), so nothing to redo here. */
     fun renamed() {}
 
-    private fun endpointName(): String = "1|${group.fingerprint}|${me.id}|"
+    private fun endpointName(): String = NearbyRules.name(group.airTag, me.id)
 
-    private fun parse(name: String): Endpoint? {
-        val parts = name.split("|")
-        if (parts.size < 4 || parts[0] != "1") return null
-        if (parts[1] != group.fingerprint) return null
-        val nodeId = parts[2]; if (nodeId.isEmpty() || nodeId == me.id || nodeId.length > 40) return null
-        return Endpoint("", nodeId)
-    }
+    private fun parse(name: String): NearbyRules.Seen = NearbyRules.parse(name, group.airTag, legacyFp, me.id)
 
     private fun clearProblem() {
         if (problem != null) { problem = null; events?.onStatus("") }
@@ -198,34 +223,78 @@ class NearbyTransport(context: Context, private val group: Group, private val me
     private val discovery = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             if (!running) return
-            val parsed = parse(info.endpointName)
-            if (parsed == null) {
-                if (info.endpointName.startsWith("1|")) otherGroups[endpointId] = System.currentTimeMillis()
+            val seen = parse(info.endpointName)
+            if (seen !is NearbyRules.Seen.Member) {
+                when (seen) {
+                    NearbyRules.Seen.OtherGroup -> otherGroups[endpointId] = System.currentTimeMillis()
+                    NearbyRules.Seen.Older -> olderPhones[endpointId] = System.currentTimeMillis()
+                    else -> {}
+                }
                 return
             }
             val existing = endpoints[endpointId]
             if (existing != null && existing.state != FOUND) { existing.lost = false; return }
-            val ep = Endpoint(endpointId, parsed.nodeId).also { it.attempts = existing?.attempts ?: 0; it.exhaustedAt = existing?.exhaustedAt ?: 0L }
+            val ep = Endpoint(endpointId, seen.nodeId).also { it.attempts = existing?.attempts ?: 0; it.exhaustedAt = existing?.exhaustedAt ?: 0L }
             endpoints[endpointId] = ep
-            Log.i(TAG, "found ${parsed.nodeId}")
+            Log.i(TAG, "found ${seen.nodeId}")
             clearProblem()
             maybeConnect(ep)
         }
 
         override fun onEndpointLost(endpointId: String) {
             otherGroups.remove(endpointId)
+            olderPhones.remove(endpointId)
             val ep = endpoints[endpointId] ?: return
             if (ep.state == FOUND) endpoints.remove(endpointId) else ep.lost = true
         }
     }
 
+    /** A PROVEN link to [nodeId]: a name copied off the air must not keep the real phone out. */
     private fun alreadyLinkedTo(nodeId: String, except: String? = null): Boolean =
-        endpoints.values.any { it.nodeId == nodeId && it.state != FOUND && it.id != except }
+        endpoints.values.any { it.nodeId == nodeId && it.state != FOUND && it.authed && it.id != except }
+
+    /**
+     * A new unproven connection is starting: when the unproven ones fill their slots, the oldest
+     * makes room ([NearbyRules.evict]), and this one gets its own few seconds to prove itself.
+     */
+    private fun startUnproven(ep: Endpoint) {
+        NearbyRules.evict(unproven(except = ep.id))?.let { id -> endpoints[id]?.let { letGo(it, "made room for a newer connection") } }
+        ep.since = System.currentTimeMillis()
+        armDeadline(ep)
+    }
+
+    /** (Re)start [ep]'s few seconds to prove itself; if it hasn't by then, it goes. */
+    private fun armDeadline(ep: Endpoint) {
+        ep.deadline?.let { handler.removeCallbacks(it) }
+        val gen = generation
+        val r = Runnable { if (gen == generation && endpoints[ep.id] === ep && ep.state != FOUND && !ep.authed) letGo(ep, "never proved itself") }
+        ep.deadline = r
+        handler.postDelayed(r, NearbyRules.UNPROVEN_MS)
+    }
+
+    /**
+     * Drop a connection this side decided against. The router hears of it if it ever heard of the
+     * link, and the slot it held goes to a phone waiting for one.
+     */
+    private fun letGo(ep: Endpoint, why: String) {
+        if (endpoints[ep.id] !== ep) return
+        Log.i(TAG, "let go of ${ep.nodeId}: $why")
+        endpoints.remove(ep.id)
+        ep.deadline?.let { handler.removeCallbacks(it) }
+        try { client.disconnectFromEndpoint(ep.id) } catch (e: Exception) { }
+        if (ep.state == CONNECTED) events?.onLinkDown(ep.id)
+        connectWaiting()
+    }
+
+    /** A slot just freed up: give a phone we couldn't fit earlier its turn. */
+    private fun connectWaiting() {
+        for (other in endpoints.values.filter { it.state == FOUND }) maybeConnect(other)
+    }
 
     private fun maybeConnect(ep: Endpoint) {
         if (!running || ep.state != FOUND) return
         if (alreadyLinkedTo(ep.nodeId)) return
-        if (activeCount() >= MAX_LINKS) return
+        if (provenCount() >= NearbyRules.MAX_LINKS) return
         if (ep.attempts >= MAX_ATTEMPTS) {
             // Tried hard and failed (a crowded radio, a wedged stack). Not forever — a phone that
             // never leaves range is never "rediscovered" — so after a rest, start over.
@@ -239,12 +308,13 @@ class NearbyTransport(context: Context, private val group: Group, private val me
         val gen = generation
         handler.postDelayed({
             if (gen == generation && running && ep.state == FOUND && endpoints[ep.id] === ep &&
-                !alreadyLinkedTo(ep.nodeId) && activeCount() < MAX_LINKS) request(ep)
+                !alreadyLinkedTo(ep.nodeId) && provenCount() < NearbyRules.MAX_LINKS) request(ep)
         }, delay)
     }
 
     private fun request(ep: Endpoint) {
         ep.state = CONNECTING
+        startUnproven(ep)
         val gen = generation
         client.requestConnection(endpointName(), ep.id, lifecycle)
             .addOnFailureListener { e ->
@@ -272,16 +342,22 @@ class NearbyTransport(context: Context, private val group: Group, private val me
     private val lifecycle = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             if (!running) { try { client.rejectConnection(endpointId) } catch (e: Exception) { }; return }
-            val parsed = parse(info.endpointName)
-            if (parsed == null) { client.rejectConnection(endpointId); return }
-            // One link per phone, and a hard ceiling so a crowd can't pile links onto us
-            // (a little slack lets two phones that are both "full" still bridge).
-            if (alreadyLinkedTo(parsed.nodeId, except = endpointId) || activeCount() >= MAX_LINKS + 2 && endpoints[endpointId]?.state != CONNECTING) {
-                client.rejectConnection(endpointId); return
+            val seen = parse(info.endpointName)
+            // Every proof is bound to this token: a connection without one could have a proof relayed onto it.
+            val token = try { info.rawAuthenticationToken?.joinToString("") { "%02x".format(it) } ?: "" } catch (e: Exception) { "" }
+            val existing = endpoints[endpointId]
+            val ourDial = existing?.state == CONNECTING
+            // One proven link per phone, and a hard ceiling on proven links so a crowd can't pile
+            // them onto us. An unproven connection blocks nobody (see NearbyRules).
+            val nodeId = (seen as? NearbyRules.Seen.Member)?.nodeId
+            if (nodeId == null || !NearbyRules.accept(seen, token, alreadyLinkedTo(nodeId, except = endpointId), provenCount(), ourDial)) {
+                try { client.rejectConnection(endpointId) } catch (e: Exception) { }
+                if (existing != null && existing.state == CONNECTING) endpoints.remove(endpointId)
+                return
             }
-            val ep = endpoints[endpointId] ?: Endpoint(endpointId, parsed.nodeId).also { endpoints[endpointId] = it }
-            ep.state = CONNECTING
-            ep.token = try { info.rawAuthenticationToken?.joinToString("") { "%02x".format(it) } ?: "" } catch (e: Exception) { "" }
+            val ep = existing ?: Endpoint(endpointId, nodeId).also { endpoints[endpointId] = it }
+            if (!ourDial) { ep.state = CONNECTING; startUnproven(ep) }
+            ep.token = token
             client.acceptConnection(endpointId, payloads)
         }
 
@@ -290,6 +366,7 @@ class NearbyTransport(context: Context, private val group: Group, private val me
             if (result.status.statusCode == ConnectionsStatusCodes.STATUS_OK) {
                 ep.state = CONNECTED; ep.attempts = 0; ep.lost = false; lastLinkAt = System.currentTimeMillis()
                 Log.i(TAG, "linked ${ep.nodeId}")
+                armDeadline(ep)   // its few seconds to prove itself start now, with the handshake
                 events?.onLinkUp(endpointId, ep.nodeId, "", ep.token)
             } else {
                 Log.w(TAG, "link to ${ep.nodeId} failed: ${result.status}")
@@ -302,10 +379,10 @@ class NearbyTransport(context: Context, private val group: Group, private val me
 
         override fun onDisconnected(endpointId: String) {
             val ep = endpoints.remove(endpointId)
+            ep?.deadline?.let { handler.removeCallbacks(it) }
             Log.i(TAG, "unlinked ${ep?.nodeId}")
             events?.onLinkDown(endpointId)
-            // A slot just freed up: give a phone we couldn't fit earlier its turn.
-            for (other in endpoints.values.filter { it.state == FOUND }) maybeConnect(other)
+            connectWaiting()
         }
     }
 
@@ -346,9 +423,21 @@ class NearbyTransport(context: Context, private val group: Group, private val me
         return p.id
     }
 
+    /** The router dropped the link (a bad proof, a newer link to the same phone, silence): its slot is free again. */
     override fun disconnect(linkId: String) {
-        endpoints.remove(linkId)
+        endpoints.remove(linkId)?.deadline?.let { handler.removeCallbacks(it) }
         try { client.disconnectFromEndpoint(linkId) } catch (e: Exception) { }
+        // Nearby says nothing about a disconnect asked for here: without this, a phone waiting for
+        // a slot would wait for the next discovery round.
+        connectWaiting()
+    }
+
+    /** The link's phone proved itself: from now on it counts as linked, and its timer stops. */
+    override fun authed(linkId: String) {
+        val ep = endpoints[linkId] ?: return
+        ep.authed = true
+        ep.deadline?.let { handler.removeCallbacks(it) }
+        ep.deadline = null
     }
 
     // ------------------------------------------------------------------ helpers
@@ -372,7 +461,6 @@ class NearbyTransport(context: Context, private val group: Group, private val me
     companion object {
         private const val TAG = "Hopline/Nearby"
         const val SERVICE_ID = "app.hopline.mesh.v1"
-        const val MAX_LINKS = 6
         private const val OTHER_GROUP_MS = 120_000L
         private const val MAX_ATTEMPTS = 6
         private const val RETRY_REST_MS = 5 * 60_000L

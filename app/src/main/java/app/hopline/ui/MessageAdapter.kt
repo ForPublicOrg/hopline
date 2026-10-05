@@ -122,8 +122,9 @@ class MessageAdapter(
     private var mentionNames: Map<String, Set<String>> = emptyMap()
 
     /** [onCommit] runs after the diffed rows are actually applied — submitList diffs on a
-     *  background thread, so a scroll issued right after submit() would land on the old list. */
-    fun submit(messages: List<Message>, unread: Unread?, onCommit: (() -> Unit)? = null) {
+     *  background thread, so a scroll issued right after submit() would land on the old list.
+     *  [top]: the line above everything (how the chat is sealed, ChatRules.chip) — never a message. */
+    fun submit(messages: List<Message>, unread: Unread?, top: String? = null, onCommit: (() -> Unit)? = null) {
         val now = System.currentTimeMillis()
         val me = router.me.id
         val rows = ArrayList<Row>(messages.size + 8)
@@ -138,6 +139,7 @@ class MessageAdapter(
         fun nameFor(id: String, fallback: String) = names.getOrPut(id) { Ui.uniqueName(router, id, fallback) }
         val days = DayLabels(ctx, now)
 
+        if (top != null) rows.add(Row.Chip(TOP_KEY, top, CHIP_SECURE))
         val unreadCount = if (unread == null) 0 else messages.count { unread.counts(it, me) }
         var dividerDue = unreadCount > 0
         var lastDay = -1
@@ -230,7 +232,8 @@ class MessageAdapter(
     private fun attState(m: Message, now: Long): String {
         val att = m.att ?: return ""
         if (isReady(att)) return "ready"
-        if (readOnly || neverArrives(m, now)) return "x"
+        if (att.failed) return "bad"
+        if (readOnly || neverArrives(m, now) || ChatRules.lostInUpdate(att)) return "x"
         // A waiting bubble says when the phone is too full to take pieces: that redraws it too.
         return "${router.fileProgress(att)}/${att.chunks}${if (Blobs.storageLow) "!" else ""}"
     }
@@ -249,6 +252,10 @@ class MessageAdapter(
                 else Tick(ctx.getString(R.string.chat_tick_not_delivered), R.color.chat_tick_failed, R.string.chat_tick_not_delivered_desc)
             m.status == Message.QUEUED -> Tick("◷", R.color.tick, R.string.chat_tick_queued_desc)
             m.to != null && m.status == Message.DELIVERED -> Tick("✓✓", R.color.tick_delivered, R.string.chat_tick_delivered_desc)
+            // From before the update: confirmed under ids nobody has now, so never "everyone" nor "some" of today's group.
+            m.to == null && Ui.beforeUpdate(router, m) ->
+                if (m.reached.isEmpty()) Tick("✓", R.color.tick, R.string.chat_tick_sent_desc)
+                else Tick("✓✓", R.color.tick, R.string.chat_tick_confirmed_desc)
             m.to == null && active.isNotEmpty() && m.reached.containsAll(active) -> Tick("✓✓", R.color.tick_delivered, R.string.chat_tick_all_desc)
             m.reached.isNotEmpty() -> Tick("✓✓", R.color.tick, R.string.chat_tick_some_desc)
             else -> Tick("✓", R.color.tick, R.string.chat_tick_sent_desc)
@@ -463,6 +470,9 @@ class MessageAdapter(
             c.setTextColor(ctx.getColor(R.color.chip_text))
             c.setTypeface(null, Typeface.NORMAL)
         }
+        // The line about how the chat is sealed carries a padlock; no other chip does.
+        c.setCompoundDrawablesRelativeWithIntrinsicBounds(if (row.style == CHIP_SECURE) R.drawable.ic_lock_small else 0, 0, 0, 0)
+        c.compoundDrawablePadding = if (row.style == CHIP_SECURE) (6 * ctx.resources.displayMetrics.density).toInt() else 0
         // Day chips are headings, so TalkBack can skim the chat a day at a time.
         ViewCompat.setAccessibilityHeading(c, row.style == CHIP_DAY)
     }
@@ -581,11 +591,17 @@ class MessageAdapter(
         }
         val now = System.currentTimeMillis()
         val ready = isReady(att)
-        val gone = !ready && (readOnly || neverArrives(m, now))
+        // Every piece came, but the file didn't check out (Core marked it, and never tries it again):
+        // said as it is, never as pieces still on their way.
+        val bad = !ready && att.failed
+        val gone = !ready && (readOnly || neverArrives(m, now) || ChatRules.lostInUpdate(att))
         val got = if (ready) att.chunks else router.fileProgress(att)
         val waiting = when {
+            bad -> ctx.getString(R.string.chat_file_bad)
             // The pieces went when the group was left: said at once, not after "Receiving 0 of N" for two days.
             readOnly -> ctx.getString(R.string.chat_file_left)
+            // Still arriving when Hopline was updated: its pieces went with the old format. Said at once too.
+            gone && !mine && ChatRules.lostInUpdate(att) -> ctx.getString(R.string.chat_file_before_update)
             gone -> ctx.getString(R.string.chat_file_expired)
             // Pieces are being turned away to keep the phone usable: say why it's stuck.
             Blobs.storageLow -> ctx.getString(R.string.chat_storage_full)
@@ -617,8 +633,8 @@ class MessageAdapter(
                 b.voicePlay.contentDescription = if (playing) ctx.getString(R.string.chat_voice_pause_desc)
                                                  else ctx.getString(R.string.chat_voice_play_desc, clock(att.dur))
             } else {
-                // The bar honestly shows how much of the clip has hopped in so far.
-                b.voiceProgress.progress = if (att.chunks > 0) (got * 1000 / att.chunks).coerceIn(0, 1000) else 0
+                // The bar honestly shows how much of the clip has hopped in so far (nothing, for one that can't be opened).
+                b.voiceProgress.progress = if (att.chunks > 0 && !bad) (got * 1000 / att.chunks).coerceIn(0, 1000) else 0
                 b.voiceInfo.text = ctx.getString(R.string.chat_with_detail, clock(att.dur), waiting)
                 b.voicePlay.alpha = 0.4f
                 b.voicePlay.setOnClickListener(null)
@@ -657,19 +673,26 @@ class MessageAdapter(
         } else {
             b.imageWrap.isVisible = false; b.image.tag = null
             b.fileRow.isVisible = true
-            b.fileName.text = att.name
-            b.fileInfo.text = ctx.getString(R.string.chat_with_detail, Blobs.prettySize(att.size), if (ready) ctx.getString(R.string.tap_to_open) else waiting)
+            // The sender's name for it, minus anything that would make it read as something else.
+            b.fileName.text = MediaRules.shownName(att.name)
+            // An app installer is never opened from here (MediaRules): the row says how to keep it instead.
+            val openHint = ctx.getString(if (MediaRules.saveOnly(att.name, att.mime)) R.string.media_app_file_hint else R.string.tap_to_open)
+            b.fileInfo.text = ctx.getString(R.string.chat_with_detail, Blobs.prettySize(att.size), if (ready) openHint else waiting)
             b.fileName.setTextColor(fg)
             b.fileInfo.setTextColor(fgMuted)
+            b.fileIcon.setImageResource(if (bad) R.drawable.ic_media_broken else R.drawable.ic_file)
             b.fileIcon.setColorFilter(fg)
         }
     }
 
     companion object {
         const val UNREAD_KEY = "unread"
+        /** The line at the very top of a chat: how it is sealed. */
+        const val TOP_KEY = "top"
         const val CHIP_DAY = 0
         const val CHIP_UNREAD = 1
         const val CHIP_NOTICE = 2
+        const val CHIP_SECURE = 3
         private const val POP_WINDOW_MS = 2_000L
         /** The jump flash: fade to 35 % over the first [FLASH_DIP_MS], then back. */
         private const val FLASH_MS = 580L

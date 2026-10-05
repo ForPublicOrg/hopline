@@ -1,5 +1,6 @@
 package app.hopline.ui
 
+import app.hopline.core.Words
 import app.hopline.data.SavedGroup
 
 /**
@@ -70,6 +71,36 @@ object ScreenRules {
         saved.left -> Entered.REJOIN
         saved.code == activeCode -> Entered.OPEN
         else -> Entered.SWITCH
+    }
+
+    /**
+     * A code of three words: a group started before 2.4. Such codes still open, join and rejoin,
+     * but no new group gets one — a new code is four words.
+     */
+    fun olderCode(code: String): Boolean = Words.normalise(code).split('-').size == 3
+
+    enum class Typed { JOIN, OLDER, SUGGEST, CHECK, BAD }
+
+    /**
+     * What to do with a code typed or scanned on the join screen, once it is known to be none of
+     * this phone's groups ([codeEntered] is NEW):
+     *  - [Typed.SUGGEST]: it isn't quite a code, but one is close — "Did you mean…?";
+     *  - [Typed.BAD]: it isn't a code, and nothing close is;
+     *  - [Typed.CHECK]: three or four words, but not all of them Hopline's — "Join anyway?";
+     *  - [Typed.OLDER]: three of Hopline's words — joined after one question, because a new group's
+     *    code is four, and a word left off would find nobody. [olderSeen]: that question was
+     *    already put in the dialog that led here, so it is not asked twice;
+     *  - [Typed.JOIN]: four of Hopline's words — joined at once.
+     */
+    fun typed(raw: String, olderSeen: Boolean = false): Typed {
+        val valid = Words.looksValid(raw)
+        val unknown = Words.unknownWords(raw)
+        if (!valid || unknown.isNotEmpty()) return when {
+            Words.suggest(raw) != null -> Typed.SUGGEST
+            !valid -> Typed.BAD
+            else -> Typed.CHECK
+        }
+        return if (olderCode(raw) && !olderSeen) Typed.OLDER else Typed.JOIN
     }
 
     enum class After { STAY, HOME, LAUNCH }

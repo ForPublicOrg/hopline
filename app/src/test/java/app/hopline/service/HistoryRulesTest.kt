@@ -265,12 +265,12 @@ class HistoryRulesTest {
         val doomed = batch[5].id
         assertEquals(doomed, a2.router.message(doomed)!!.id)
 
-        // "Delete for me": it goes from the live chat, and the router remembers that for three days.
+        // "Delete for me": it goes from the live chat, and the router remembers that for two weeks.
         assertEquals(listOf(doomed), a2.router.hideMessages(listOf(doomed)).map { it.id })
         assertTrue(a2.router.isHidden(doomed))
-        restarted.now += 73 * 3_600_000L
+        restarted.now += Router.REMEMBER_MS + 3_600_000L
         a2.router.tick()
-        assertFalse("after three days the router no longer knows it was deleted", a2.router.isHidden(doomed))
+        assertFalse("after two weeks the router no longer knows it was deleted", a2.router.isHidden(doomed))
         // Deleted from the live chat alone, the copy in the history would now be read back into the chat:
         val before = HistoryRules.Walk(h, Message.GROUP_CHAT, "A", null); while (!before.step()) { }
         assertTrue(before.messages().any { it.id == doomed })

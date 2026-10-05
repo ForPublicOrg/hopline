@@ -19,7 +19,7 @@ class LaunchActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         val store = Core.store
         val next = when (ScreenRules.launch(
-            named = store.name.isNotBlank(), inGroup = store.group() != null, anySaved = store.allGroups().isNotEmpty(),
+            named = store.name.isNotBlank(), inGroup = store.hasActive(), anySaved = store.allGroups().isNotEmpty(),
             radioReady = Permissions.allGranted(this) && store.permissionsDone)) {
             ScreenRules.Screen.WELCOME -> WelcomeActivity::class.java
             ScreenRules.Screen.PERMISSIONS -> PermissionsActivity::class.java

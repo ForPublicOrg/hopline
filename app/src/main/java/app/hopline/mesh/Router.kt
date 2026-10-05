@@ -10,6 +10,8 @@ interface Transport {
     /** Send bytes over one link. Returns a payload id (so the router can learn when it was delivered), or -1. */
     fun send(linkId: String, bytes: ByteArray): Long
     fun disconnect(linkId: String)
+    /** The link proved the group code and its phone's key: from now on it really is that phone. */
+    fun authed(linkId: String) {}
 }
 
 interface RouterListener {
@@ -32,9 +34,11 @@ interface RouterListener {
 /**
  * The mesh brain. Every phone runs one of these. It is deliberately simple:
  *
- *  - Every message is a signed envelope that is FLOODED to every link, with an id-based dedupe.
- *    With 5–40 phones sending text, flooding is cheaper than any routing protocol and has no
- *    routing tables to get stale while people walk around.
+ *  - Every message is a sealed, signed envelope that is FLOODED to every link, with an id-based
+ *    dedupe. With 5–40 phones sending text, flooding is cheaper than any routing protocol and has
+ *    no routing tables to get stale while people walk around. Group messages are sealed with a key
+ *    from the group code; private ones for their recipient alone; and every one is signed by the
+ *    phone that wrote it, whose id is made from its key — so nobody can speak for anyone else.
  *  - Every phone CARRIES every message for 48 h. When two phones link up they swap inventories
  *    and fill each other's gaps. That is what makes a chain that keeps breaking and re-forming
  *    still deliver everything — people walking between groups literally carry the backlog.
@@ -62,20 +66,23 @@ class Router(
      * One radio link. [token] is the Nearby connection's authentication token: identical on both
      * ends of THIS connection and different on any other, so a proof bound to it can't be relayed.
      */
-    class Link(val id: String, val nodeId: String, var name: String, val since: Long, val token: String = "") {
+    class Link(val id: String, val nodeId: String, var name: String, val since: Long, val token: String) {
         var authed = false
-        var version = 1                  // from their hello; 1 = a 1.x client that doesn't carry files
         val myNonce: String = Crypto.randomId(16)
         var helloSeen = false
         var theirNonce = ""
         /** A proof that arrived before its hello — checked once the hello lands. */
-        var pendingProof: String? = null
-        /** A legacy (2.x) peer gets our proof only after we've verified theirs. */
-        var owesLegacyProof = false
+        var pendingProof: JSONObject? = null
         /** Inventory reassembly: the round's part count, the parts seen, and the ids so far. */
         var invN = 0
         val invGot = HashSet<Int>()
         var invIds = HashSet<String>()
+        /**
+         * Everything the phone at the other end listed in its last complete inventory. An envelope
+         * in here is not passed on to it again: a phone joining two friends who both hold the
+         * backlog would otherwise send each of them, one frame at a time, what the other filled it with.
+         */
+        var has: Set<String> = emptySet()
         /** Last time we re-offered our inventory on this link (periodic anti-entropy). */
         var lastSyncAt = 0L
         /** Last time any frame arrived on it — a silent "connected" link is a dead one. */
@@ -107,11 +114,36 @@ class Router(
     private val filesByFid = HashMap<String, Message>()
     /** Files whose onFileReady already fired (or that this phone originated). */
     private val fileReadyFired = HashSet<String>()
+    /** Files this phone sent (rebuilt on restore from my file messages): their pieces are mine to keep. */
+    private val ownFids = HashSet<String>()
+    /** Files of mine whose message came back from a friend ([rebuildMine]) and whose pieces are still coming back. */
+    private val rebuiltFiles = HashSet<String>()
 
     /** Store-and-forward memory: id -> envelope. */
     private val carry = LinkedHashMap<String, Envelope>()
     /** When each carried envelope's 48 h started, as far as THIS phone can tell (see [birth]). */
     private val carryBorn = HashMap<String, Long>()
+    /** How many bytes each carried envelope takes on the wire, and all of them together (see [MAX_CARRY_BYTES]). */
+    private val carrySizes = HashMap<String, Int>()
+    private var carryBytes = 0L
+    /**
+     * Envelopes this phone carried and let go of (their time ran out here, or the carry was full):
+     * id -> until when it is still listed in the inventory ([retire]). Oldest first, persisted.
+     * Phones don't all let go at the same moment, and a friend still carrying one would otherwise
+     * hand it over at every sync — only for this phone to throw it away again.
+     */
+    private val tombs = LinkedHashMap<String, Long>()
+    /** The newest counter on my own presence and "I'm on it" envelopes (see [Person.liveQ]). */
+    private var lastQ = 0L
+    /**
+     * What the state file holds for [lastQ]: always well ahead of it, and moved on (and saved) long
+     * before [lastQ] gets there. A phone that dies between saves and comes back with its clock set
+     * back then still starts above every counter it sent — peers ignore anything that isn't.
+     */
+    private var qSaved = 0L
+    /** After an upgrade: my messages still waiting to leave in the old format, to put on the air again ([reissueQueued]). */
+    private var reissue: List<String> = emptyList()
+    private var reissuePending = false
     private val seen = object : LinkedHashMap<String, Boolean>(1024, 0.75f, false) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean = size > 40_000
     }
@@ -153,17 +185,26 @@ class Router(
     private fun touched() { dirty = true }
 
     /** Reactions that arrived before the message they belong to (links deliver in any order). */
-    private val pendingReactions = LinkedHashMap<String, ArrayList<Triple<String, String, Long>>>()
+    private val pendingReactions = LinkedHashMap<String, ArrayList<HeldReaction>>()
+
+    /** One of those: who, which emoji, when, and whether it was sealed for one person (see [reactionFits]). */
+    private class HeldReaction(val origin: String, val emoji: String, val ts: Long, val isPrivate: Boolean)
 
     // ---------------------------------------------------------------- transport events
 
-    fun onLinkUp(linkId: String, nodeId: String, name: String, token: String = "") {
-        if (nodeId == me.id) { transport.disconnect(linkId); return }
+    /**
+     * A radio link came up. [token] is the connection's authentication token, which every proof is
+     * bound to: without one a proof could be passed on to another connection, so such a link is
+     * refused — as is one claiming to be this phone, or any id that isn't a node id.
+     */
+    fun onLinkUp(linkId: String, nodeId: String, name: String, token: String) {
+        if (nodeId == me.id || !Crypto.isNodeId(nodeId) || token.isEmpty()) {
+            listener.onLog("link $linkId refused"); transport.disconnect(linkId); return
+        }
         links.remove(linkId)
         val link = Link(linkId, nodeId, Names.clean(name), clock(), token)
         links[linkId] = link
-        // "v" tells peers what we speak; 1.x clients ignore unknown fields.
-        // No name here: anyone who copies the group's (public) fingerprint can open a link, and the
+        // No name here: anyone who copies the group's (public) air tag can open a link, and the
         // name only travels once the link has proved it knows the code (signed presence).
         sendFrame(link, JSONObject().put("t", "hello").put("id", me.id).put("nonce", link.myNonce).put("v", VERSION))
         listener.onLog("link up $linkId")
@@ -198,9 +239,22 @@ class Router(
 
     fun onBytes(linkId: String, bytes: ByteArray) {
         val link = links[linkId] ?: return
-        // A malformed frame from a buggy (or hostile) peer must never take this phone down.
-        try { onFrame(link, JSONObject(String(bytes, Charsets.UTF_8))) }
-        catch (e: Exception) { listener.onLog("bad frame dropped: ${e.message}") }
+        // Before the handshake only a hello and a proof can come, and both are tiny. Anything big
+        // is a stranger probing the parser: the link goes.
+        if (!link.authed && bytes.size > MAX_FRAME_BEFORE_AUTH) { drop(link, "oversized frame before the handshake"); return }
+        if (bytes.size > MAX_FRAME_IN) { listener.onLog("oversized frame ignored"); return }
+        // A malformed frame from a buggy (or hostile) peer must never take this phone down. Nothing
+        // from the frame goes into the log: an exception's message quotes the input.
+        try {
+            val text = String(bytes, Charsets.UTF_8)
+            // A deeply nested frame would run the parser out of stack: refused unread.
+            if (!Crypto.depthOk(text, MAX_FRAME_DEPTH)) listener.onLog("deeply nested frame ignored")
+            else onFrame(link, JSONObject(text))
+        } catch (e: Exception) {
+            listener.onLog("bad frame dropped (${e.javaClass.simpleName})")
+        } catch (e: StackOverflowError) {
+            listener.onLog("bad frame dropped (too deep)")
+        }
         // Requests that landed in this frame start only now, after the whole frame — a gap-fill
         // batch that carries both a request and its answer must not start the request.
         if (claims.isNotEmpty()) pollErrands()
@@ -212,9 +266,8 @@ class Router(
         when (frame.optString("t")) {
             "hello" -> onHello(link, frame)
             "proof" -> {
-                val proof = frame.optString("proof")
-                if (!link.helloSeen) { link.pendingProof = proof; return }
-                checkProof(link, proof)
+                if (!link.helloSeen) { link.pendingProof = frame; return }
+                checkProof(link, frame)
             }
             "inv" -> {
                 if (!link.authed) return
@@ -232,6 +285,8 @@ class Router(
                 if (link.invGot.size >= n) {
                     val have = link.invIds
                     link.invN = 0; link.invGot.clear(); link.invIds = HashSet()
+                    link.has = have
+                    leftMyPhone(have)
                     fillGaps(link, have)
                 }
             }
@@ -240,7 +295,7 @@ class Router(
                 val envs = frame.optJSONArray("envs") ?: return
                 for (i in 0 until envs.length()) {
                     val e = envs.optJSONObject(i) ?: continue
-                    // 2.0/2.1 still spend a hop on every hand-off; backlog must not die at the cap.
+                    // Backlog that came a long way on the live flood must not die at the cap here.
                     if (e.optInt("h", 0) >= Envelope.MAX_HOPS) e.put("h", Envelope.MAX_HOPS - 1)
                     receive(link, Envelope(e), fill = true)
                 }
@@ -256,62 +311,58 @@ class Router(
     // ---------------------------------------------------------------- the link handshake
 
     /**
-     * Each side proves it knows the group key by signing the other's nonce. From version 4 the
-     * proof is also bound to this exact connection, so a stranger in range can't sit between two
-     * members and pass one member's proof off as their own. A 2.x peer can't do that, so it gets
-     * the classic proof — but only after it has proven itself first, so we are never the oracle.
+     * Each side proves two things about the other's challenge, bound to this exact connection (its
+     * token): that it knows the group code (a MAC under the code's link key) and that it holds the
+     * key its node id is made from (a signature). A stranger in range can't sit between two members
+     * and pass one member's proof off as their own, and a member can't pose as another member.
+     * Phones before 2.4 can't do this and are not linked at all.
      */
     private fun onHello(link: Link, frame: JSONObject) {
         if (frame.optString("id") != link.nodeId) { drop(link, "hello id mismatch"); return }
         if (link.helloSeen) return
+        if (frame.optInt("v", 1) < VERSION) { drop(link, "an older Hopline"); return }
         val nonce = frame.optString("nonce", "")
         if (nonce.length !in 8..64 || nonce == link.myNonce) { drop(link, "bad nonce"); return }
         link.helloSeen = true
         link.theirNonce = nonce
-        link.name = Names.clean(frame.optString("name", "")).ifEmpty { link.name }
-        link.version = frame.optInt("v", 1).coerceIn(1, 99)
-        // A phone that once spoke 4+ never gets to fall back to the relayable proof.
-        if (link.version < BOUND_PROOF_VERSION && (people[link.nodeId]?.ver ?: 0) >= BOUND_PROOF_VERSION) {
-            drop(link, "version downgrade"); return
-        }
-        when {
-            bound(link) -> sendFrame(link, JSONObject().put("t", "proof").put("proof", boundProof(link.theirNonce, me.id, link.nodeId, link.token)))
-            link.version >= BOUND_PROOF_VERSION && me.id < link.nodeId -> sendLegacyProof(link)   // no token: lower id goes first
-            link.authed -> sendLegacyProof(link)
-            else -> link.owesLegacyProof = true
-        }
+        val t = proofBytes(link.token, link.theirNonce, me.id, link.nodeId)
+        sendFrame(link, JSONObject().put("t", "proof").put("mac", Crypto.b64(Crypto.hmac(group.keys.link, t)))
+            .put("pk", me.keys.pubB64).put("sig", Crypto.sign(me.keys.priv, t)))
         link.pendingProof?.let { link.pendingProof = null; checkProof(link, it) }
     }
 
-    private fun bound(link: Link): Boolean = link.version >= BOUND_PROOF_VERSION && link.token.isNotEmpty()
+    /** What a proof covers: this connection, the verifier's challenge, and who proves it to whom. */
+    private fun proofBytes(token: String, verifierNonce: String, prover: String, verifier: String): ByteArray =
+        Crypto.lp("hopline/v5/proof", token, verifierNonce, prover, verifier)
 
-    private fun boundProof(verifierNonce: String, prover: String, verifier: String, token: String): String =
-        Crypto.hmacHex(group.key, "p4|$token|$verifierNonce|$prover|$verifier")
-
-    private fun sendLegacyProof(link: Link) {
-        sendFrame(link, JSONObject().put("t", "proof").put("proof", Crypto.hmacHex(group.key, link.theirNonce + "|" + me.id)))
-    }
-
-    private fun checkProof(link: Link, proof: String) {
-        val expect = if (bound(link)) boundProof(link.myNonce, link.nodeId, me.id, link.token)
-                     else Crypto.hmacHex(group.key, link.myNonce + "|" + link.nodeId)
-        if (!Crypto.constantTimeEquals(expect, proof)) { drop(link, "bad proof"); return }
+    /**
+     * In this order: the code first — a link that can't show it is dropped before anything about
+     * it is looked at — then that the key is the one its node id is made from, then the signature.
+     */
+    private fun checkProof(link: Link, frame: JSONObject) {
+        val t = proofBytes(link.token, link.myNonce, link.nodeId, me.id)
+        val mac = Crypto.unb64(frame.optString("mac", ""))
+        if (mac == null || !Crypto.constantTimeEquals(mac, Crypto.hmac(group.keys.link, t))) { drop(link, "bad proof"); return }
+        val pk = frame.optString("pk", "")
+        val pub = Crypto.decodePub(pk)
+        if (pub == null || Crypto.nodeIdOf(Crypto.unb64(pk)!!) != link.nodeId) { drop(link, "proof key is not theirs"); return }
+        if (!Crypto.verify(pub, t, frame.optString("sig", ""))) { drop(link, "bad proof signature"); return }
         if (link.authed) return
         link.authed = true
-        if (link.owesLegacyProof) { link.owesLegacyProof = false; sendLegacyProof(link) }
-        // One phone, one link: an older link claiming the same phone is stale (or an impostor).
+        transport.authed(link.id)
+        // One phone, one link: an older link claiming the same phone is stale.
         for (other in links.values.toList()) if (other !== link && other.nodeId == link.nodeId) drop(other, "replaced by a newer link")
-        // The hello's name is only a stand-in until a signed envelope from them says otherwise —
+        // The link's name is only a stand-in until a signed envelope from them says otherwise —
         // stamping it with OUR clock would let it beat a genuine rename.
         val who = people.getOrPut(link.nodeId) { Person(link.nodeId) }
         if (who.name.isEmpty()) who.name = link.name
         who.lastSeen = maxOf(who.lastSeen, clock())
-        if (link.version > who.ver) { who.ver = link.version; touched() }
+        if (who.pk != pk) { who.pk = pk; touched() }
         refreshDirect()
         sendInventory(link)
         link.lastSyncAt = clock()
         sendPresence()
-        listener.onLog("link authed ${link.id} v${link.version}")
+        listener.onLog("link authed ${link.id}")
         listener.onChanged()
     }
 
@@ -325,15 +376,37 @@ class Router(
 
     // ---------------------------------------------------------------- sync on link-up
 
+    /**
+     * Everything this phone holds, by id, in parts of at most [INV_PART_BYTES] each — sliced by
+     * size, not by count, so no part can outgrow a radio payload however long the ids are. What
+     * it carried and let go of ([tombs]) is listed too, so nobody hands that over again.
+     */
     private fun sendInventory(link: Link) {
-        // 1.x peers don't carry chunks, so telling them about ours only wastes their parser.
-        val ids = if (link.version >= 2) carry.keys.toList() + chunks.advertised() else carry.keys.toList()
-        val chunk = 700
-        val parts = maxOf(1, (ids.size + chunk - 1) / chunk)
-        for (p in 0 until parts) {
-            val slice = ids.subList(p * chunk, minOf(ids.size, (p + 1) * chunk))
-            sendFrame(link, JSONObject().put("t", "inv").put("n", parts).put("i", p).put("ids", JSONArray(slice)))
+        val parts = ArrayList<JSONArray>()
+        // A part as JSON is its ids, each quoted and followed by a comma, between brackets (ids are plain ASCII).
+        var part = JSONArray(); var size = 1
+        for (id in carry.keys.toList() + tombs.keys + chunks.advertised()) {
+            val n = id.length + 3
+            if (size + n > INV_PART_BYTES && part.length() > 0) {
+                parts.add(part); part = JSONArray(); size = 1
+                if (parts.size == MAX_INV_PARTS) break   // a peer reads no more than this; the rest it may be offered again
+            }
+            part.put(id); size += n
         }
+        if (parts.size < MAX_INV_PARTS) parts.add(part)
+        for ((p, ids) in parts.withIndex()) {
+            sendFrame(link, JSONObject().put("t", "inv").put("n", parts.size).put("i", p).put("ids", ids))
+        }
+    }
+
+    /**
+     * A friend's inventory lists messages of mine still marked unsent: they did get out — that
+     * friend has them. They read "sent" from here on, and the tick has nothing to send again.
+     */
+    private fun leftMyPhone(theyHave: Set<String>) {
+        var changed = false
+        for (m in messages) if (m.from == me.id && m.status == Message.QUEUED && m.id in theyHave) { m.status = Message.SENT; changed = true }
+        if (changed) { touched(); listener.onChanged() }
     }
 
     private fun fillGaps(link: Link, theyHave: Set<String>) {
@@ -348,31 +421,26 @@ class Router(
         }
         for (env in carry.values) {
             if (env.id in theyHave) continue
-            // A 1.x client can't show or carry file messages — don't re-send them on every link-up.
-            if (link.version < 2 && env.kind == Envelope.FILE) continue
-            // Pre-2.1 clients don't carry reactions, so their inventory never lists them: sending
-            // the reaction backlog would repeat on every link-up. They still relay live ones.
-            if (link.version < 3 && env.kind == Envelope.REACT) continue
             // Backlog is deduped by id, so a hand-off is not a routing hop: send it at its stored
             // hop count. Spending the flood's hop budget here would let a message that has been
             // carried far (a courier walking back and forth, gap-fills chained through late joiners)
             // silently die at MAX_HOPS mid-group — the very thing the 48 h carry exists to prevent.
-            val copy = env.copy()
-            val bytes = copy.json.toString().toByteArray(Charsets.UTF_8).size
-            if (size + bytes > 24000) flush()                   // Nearby caps a bytes payload at 32 KB
+            val copy = handOff(env)
+            val bytes = (carrySizes[env.id] ?: env.bytes().size) + ageBytes(copy)
+            // One batch stays under the radio's 32 KB payload: an envelope is never more than
+            // MAX_ENVELOPE_IN, so a batch that already holds one goes before the next is added.
+            if (size + bytes > FILL_BATCH_BYTES) flush()
             batch.put(copy.json); size += bytes; ids.add(env.id)
             sent++
         }
         flush()
         // File chunks are big (~19 KB each), so they are queued and streamed a few at a time as
         // the radio confirms delivery — a phone with a 48h photo backlog must not dump it all
-        // into one link-up. 1.x peers don't carry chunks at all; they still relay live traffic.
-        if (link.version >= 2) {
-            val queued = HashSet(link.fillQueue)
-            for (id in chunks.ids()) if (id !in theyHave && id !in queued) link.fillQueue.addLast(id)
-            pumpFill(link)
-            if (link.fillQueue.isNotEmpty() || link.fillInFlight > 0) sent += link.fillQueue.size + link.fillInFlight
-        }
+        // into one link-up.
+        val queued = HashSet(link.fillQueue)
+        for (id in chunks.ids()) if (id !in theyHave && id !in queued) link.fillQueue.addLast(id)
+        pumpFill(link)
+        if (link.fillQueue.isNotEmpty() || link.fillInFlight > 0) sent += link.fillQueue.size + link.fillInFlight
         if (sent > 0) listener.onLog("filling $sent for ${link.id}")
     }
 
@@ -381,6 +449,8 @@ class Router(
         while (link.fillInFlight < FILL_WINDOW && link.fillQueue.isNotEmpty()) {
             val id = link.fillQueue.removeFirst()
             val env = chunks.get(id) ?: continue
+            // Only a piece in today's sealed form goes on the air (an older version's pieces on disk were plain).
+            if (!wellFormed(env, env.bytes().size)) continue
             val copy = env.copy()   // backlog hand-off, not a routing hop — don't spend the hop budget
             val pid = sendFrame(link, JSONObject().put("t", "env").put("e", copy.json))
             if (pid < 0) { link.fillQueue.clear(); return }     // link is gone
@@ -391,38 +461,160 @@ class Router(
 
     // ---------------------------------------------------------------- receiving
 
+    /**
+     * One envelope from a link, in this order: its shape (cheap, and nothing that fails it is ever
+     * remembered), whether it is new, then who signed it — the key must be the one its origin's
+     * id is made from, the id must lie in that origin's own space, and the signature must hold.
+     * Only then is it seen, carried and passed on; and that much every phone does alike with it,
+     * whatever its payload turns out to be — so no honest phone keeps offering what others refuse.
+     * Reading it comes last, and only what this phone may read: a payload that doesn't open or
+     * doesn't make sense is simply never shown.
+     */
     private fun receive(from: Link?, env: Envelope, fill: Boolean) {
         try {
+            val asSent = env.bytes().size
+            // Ids become map keys, inventory entries and (for chunks) file names on disk.
+            if (!wellFormed(env, asSent)) { listener.onLog("malformed envelope dropped"); return }
+            // How long the phone handing it over has carried it ([handOff]): read here, never kept.
+            val age = (env.json.remove("age") as? Number)?.toLong()
+            val size = if (age == null) asSent else env.bytes().size
             val id = env.id
-            if (seen.containsKey(id) || liveSeen.containsKey(id)) {
+            if (seen.containsKey(id) || liveSeen.containsKey(id) || id in tombs) {
                 // Nothing new — but if it is one this phone knows and has stopped carrying, the
                 // phone handing it over will go on doing so until it is carried here again.
-                if (!carry.containsKey(id) && (env.origin == me.id || id in hidden || id in spilled)) carryAgain(env)
+                if (!carry.containsKey(id) && (env.origin == me.id || id in hidden || id in spilled)) carryAgain(env, size)
                 return
             }
-            // Ids become map keys, inventory entries and (for chunks) file names on disk.
-            if (!ENVELOPE_ID.matches(id) || id.contains("..")) { listener.onLog("bad envelope id dropped"); return }
-            if (env.origin == me.id) { carryAgain(env); return }
             // The live flood has a hop ceiling; backlog and file pieces are deduped by id instead.
             if (!fill && env.kind != Envelope.CHUNK && env.hops >= Envelope.MAX_HOPS) return
-            if (!env.verify(group.key)) { listener.onLog("forged/garbled envelope dropped"); return }
+            if (!authentic(env)) { listener.onLog("forged/garbled envelope dropped"); return }
+            if (env.origin == me.id) { carryAgain(env, size, checked = true); return }
             markSeen(env)
             if (env.kind == Envelope.CHUNK) {
-                // A chunk's id names a file on disk: it must be exactly f.<fid>.<index> for a sane
-                // fid and index, or a crafted envelope could write (and later delete) anywhere.
-                if (!validChunk(env)) { listener.onLog("malformed chunk dropped"); return }
                 // If the disk write failed (storage full), forget we saw it so a peer can refill later.
                 if (!chunks.put(env)) seen.remove(id)
-            } else if (env.kind in Envelope.CARRIED) addCarry(env)
-            val live = env.kind == Envelope.PRESENCE || env.kind == Envelope.ERRAND_ACK
-            touchPerson(env.origin, env.originName, env.ts, seenAt = if (live) clock() else minOf(env.ts, clock()))
-            process(env)
+            } else if (env.kind in Envelope.CARRIED) {
+                // Its time ran out at the phone that handed it over: known here now, and that is all —
+                // not carried, not read, not passed on. Its 48 h don't start over at every late carrier.
+                val born = birth(env, age)
+                if (clock() - born >= limitOf(env)) {
+                    retire(id, born, limitOf(env), clock())
+                    listener.onLog("backlog past its time not taken"); return
+                }
+                putCarry(env, born, size)
+            }
+            // Whatever happens reading it, it goes on to the others like any envelope that passed the above.
+            try { read(env) } catch (e: Exception) { listener.onLog("unreadable envelope kept for the others (${e.javaClass.simpleName})") }
             forward(env, from)
         } catch (e: Exception) {
             // A malformed envelope from a buggy client must never take the whole mesh down with it.
-            listener.onLog("garbled envelope dropped: ${e.message}")
+            listener.onLog("garbled envelope dropped (${e.javaClass.simpleName})")
         }
     }
+
+    /** What this phone does with a new, genuine envelope: learn who sent it, and take in what is for it. */
+    private fun read(env: Envelope) {
+        val live = env.kind == Envelope.PRESENCE || env.kind == Envelope.ERRAND_ACK
+        val seenAt = if (live) clock() else minOf(env.ts, clock())
+        // A private answer's clear marker tells every phone the request is done, whoever it is for.
+        env.er?.let { onAnswerMarker(it) }
+        if (env.kind == Envelope.CHUNK || (env.isPrivate && env.to != me.id)) {
+            // A file piece, or someone else's private message: carried and passed on, never read.
+            touchPerson(env.origin, env.originName, env.ts, seenAt, env.pk)
+            if (env.kind == Envelope.CHUNK) onPiece(env)
+            return
+        }
+        val p = open(env) ?: run { listener.onLog("an envelope that doesn't open was kept for the others"); return }
+        if (live) {
+            // A beacon or a claim is about now: a copy recorded earlier and played again says nothing.
+            val q = p.optLong("q", 0)
+            if (q <= (people[env.origin]?.liveQ ?: 0L)) return
+            touchPerson(env.origin, env.originName, env.ts, seenAt, env.pk).liveQ = q
+        } else touchPerson(env.origin, env.originName, env.ts, seenAt, env.pk)
+        process(env, p)
+    }
+
+    /**
+     * [env]'s payload, if this phone may read it: anything sealed for the group, or something
+     * private sealed for me. Null when it isn't mine to read, doesn't open, or is nested too deep.
+     * Not kept on the envelope: what is carried stays ciphertext.
+     */
+    private fun open(env: Envelope): JSONObject? {
+        if (env.kind == Envelope.CHUNK) return null
+        val plain = if (env.isPrivate) {
+            if (env.to != me.id) return null
+            val from = Crypto.decodePub(env.pk) ?: return null
+            Crypto.openFrom(me.keys, from, env.eph ?: return null, env.header(group.airTag), env.sealed)
+        } else Crypto.open(group.keys.env, env.header(group.airTag), env.sealed)
+        val text = String(plain ?: return null, Charsets.UTF_8)
+        if (!Crypto.depthOk(text, Crypto.MAX_DEPTH)) return null
+        return try { JSONObject(text) } catch (e: Exception) { null }
+    }
+
+    /**
+     * The envelope has every field it must, of the right type, and nothing else: ids that can be
+     * map keys and file names, node ids where node ids go, a one-off key exactly on the private
+     * kinds, a clear "answered" marker only on a private message, a carried time ("age") that is
+     * a whole number of milliseconds, and no more than [MAX_ENVELOPE_IN] bytes. Checked before
+     * anything is remembered or looked up.
+     */
+    private fun wellFormed(env: Envelope, size: Int): Boolean {
+        if (size > MAX_ENVELOPE_IN) return false
+        val j = env.json
+        for (k in j.keys()) if (k !in WIRE_KEYS) return false
+        val id = j.opt("id") as? String ?: return false
+        if (!ENVELOPE_ID.matches(id) || id.contains("..")) return false
+        val kind = j.opt("k") as? String ?: return false
+        if (kind !in Envelope.KINDS) return false
+        val origin = j.opt("o") as? String ?: return false
+        if (!Crypto.isNodeId(origin)) return false
+        if (j.has("on") && j.opt("on") !is String) return false
+        val ts = j.opt("ts"); if (ts !is Long && ts !is Int) return false
+        val to = j.opt("to")
+        if (to != null && (to !is String || !Crypto.isNodeId(to))) return false
+        if (kind == Envelope.DM && to == null) return false
+        val h = j.opt("h"); if (h != null && (h !is Int || h < 0)) return false
+        val age = j.opt("age"); if (age != null && ((age !is Int && age !is Long) || (age as Number).toLong() < 0)) return false
+        if (j.opt("pk") !is String || j.opt("s") !is String) return false
+        val c = j.opt("c") as? String ?: return false
+        if (c.isEmpty() || (kind == Envelope.CHUNK && c.length > MAX_PIECE_B64)) return false
+        val e = j.opt("e")
+        if ((e != null) != Envelope.privateKind(kind, to as String?) || (e != null && e !is String)) return false
+        val er = j.opt("er") ?: return true
+        if (kind != Envelope.DM || er !is JSONObject || er.length() != 2) return false
+        return (er.opt("eid") as? String)?.let { ERRAND_ID.matches(it) } == true && er.opt("ok") is Boolean
+    }
+
+    /**
+     * Signed by the phone it claims to come from, with an id that phone may use: its key is the
+     * one its node id is made from, the id lies in its own space ([idFits]), and the signature
+     * covers this group's header and the sealed payload.
+     */
+    private fun authentic(env: Envelope): Boolean {
+        val pub = Crypto.decodePub(env.pk) ?: return false
+        if (env.origin != Crypto.nodeIdOf(Crypto.unb64(env.pk)!!)) return false
+        if (!idFits(env)) return false
+        return Crypto.verify(pub, env.signed(group.airTag), env.sig)
+    }
+
+    /**
+     * Every id belongs to the phone that made it, so nobody can take one first and have the real
+     * envelope turned away as a duplicate: a file piece's id names a file of its origin, a
+     * receipt's ends with its origin, and every other id starts with it ([newId]).
+     */
+    private fun idFits(env: Envelope): Boolean {
+        val id = env.id; val origin = env.origin
+        return when (env.kind) {
+            Envelope.CHUNK -> pieceOf(id, origin) != null
+            Envelope.RECEIPT -> receiptTarget(id, origin) != null
+            else -> madeBy(id, origin)
+        }
+    }
+
+    /** Is [id] one [origin] made with [newId] — its node id, a dot and 10 letters — and so nobody else's to use? */
+    private fun madeBy(id: String, origin: String): Boolean =
+        id.length == origin.length + 11 && id.startsWith(origin) && id[origin.length] == '.' &&
+            Crypto.isAlphabet(id.substring(origin.length + 1), 10)
 
     private fun markSeen(env: Envelope) {
         if (env.kind == Envelope.PRESENCE || env.kind == Envelope.ERRAND_ACK) liveSeen[env.id] = true else seen[env.id] = true
@@ -447,67 +639,193 @@ class Router(
      * age, so that one is left alone. File pieces go to the piece store, which keeps its own time.
      *
      * A message of mine still marked unsent whose envelope a friend hands back did get out — that
-     * friend has it. It reads "sent" from here on, and the tick has nothing to send again.
+     * friend has it. It reads "sent" from here on, and the tick has nothing to send again. One of
+     * mine this phone has no line for at all (the app died before it saved the send) is put back
+     * in the chat, as sent: a group message or a group photo — never a rename or anything private.
+     *
+     * Checked like anything else first ([authentic]) unless [checked] says that was done already.
      */
-    private fun carryAgain(env: Envelope) {
+    private fun carryAgain(env: Envelope, size: Int, checked: Boolean = false) {
         val id = env.id
         val mine = env.origin == me.id
         if (env.kind == Envelope.CHUNK) {
             if (!mine || chunks.has(id)) return
-            if (!env.verify(group.key)) { listener.onLog("forged/garbled envelope dropped"); return }
-            if (!validChunk(env)) { listener.onLog("malformed chunk dropped"); return }
+            if (!checked && !authentic(env)) { listener.onLog("forged/garbled envelope dropped"); return }
             seen[id] = true
-            if (!chunks.put(env)) seen.remove(id)
+            if (!chunks.put(env)) { seen.remove(id); return }
+            pieceOf(id, env.origin)?.first?.let { if (it in rebuiltFiles) mineBack(it) }
             return
         }
         // Presence and "I'm on it" are never carried: an echo of mine is only remembered, as before.
-        if (env.kind !in Envelope.CARRIED) { if (mine) markSeen(env); return }
-        if (carry.containsKey(id) || !ENVELOPE_ID.matches(id) || id.contains("..")) return
+        if (env.kind !in Envelope.CARRIED) { if (mine && checked) markSeen(env); return }
+        if (carry.containsKey(id)) return
         val now = clock()
-        val limit = if (env.kind == Envelope.RECEIPT) RECEIPT_MS else CARRY_MS
+        val limit = limitOf(env)
         if (env.ts > now + FUTURE_SLACK_MS || now - env.ts > limit) return
-        if (!env.verify(group.key)) { listener.onLog("forged/garbled envelope dropped"); return }
+        if (!checked && !authentic(env)) { listener.onLog("forged/garbled envelope dropped"); return }
         markSeen(env)
-        carry[id] = env
-        carryBorn[id] = minOf(env.ts, now)
-        touched()
+        putCarry(env, minOf(env.ts, now), size)
         if (!mine) return
-        val m = messageById[id] ?: return
+        val m = messageById[id] ?: return rebuildMine(env)
         if (m.from == me.id && m.status == Message.QUEUED) { m.status = Message.SENT; listener.onChanged() }
     }
 
-    /**
-     * When an envelope's 48 h began, by this phone's reckoning: the sender's stamp, but never later
-     * than now (a fast clock must not make it immortal), and never more than a day before now (a
-     * phone whose clock reset to 1970 must still get its messages carried).
-     */
-    private fun birth(env: Envelope): Long {
-        val now = clock()
-        return maxOf(minOf(env.ts, now), now - CARRY_MS / 2)
+    /** See [carryAgain]: a group message or photo of mine, back from a friend, with no line here. Not notified. */
+    private fun rebuildMine(env: Envelope) {
+        val id = env.id
+        if (env.kind != Envelope.CHAT && !(env.kind == Envelope.FILE && env.to == null)) return
+        if (id in hidden || id in spilled || id in overflowIds) return
+        val p = open(env) ?: return
+        val m = if (env.kind == Envelope.CHAT) {
+            if (p.has("gn")) return
+            Message(id, Envelope.CHAT, me.id, Names.clean(env.originName), null, p.optString("text").take(MAX_TEXT), env.ts,
+                loc = Loc.fromJson(p.optJSONObject("loc")), quote = Quote.fromJson(p.optJSONObject("re")),
+                mentions = Message.mentionsFromJson(p.optJSONArray("mn")))
+        } else {
+            val att = attachmentOf(env, p) ?: return
+            Message(id, Envelope.FILE, me.id, Names.clean(env.originName), null, p.optString("text").take(MAX_CAPTION), env.ts, att,
+                quote = Quote.fromJson(p.optJSONObject("re")), mentions = Message.mentionsFromJson(p.optJSONArray("mn")))
+        }
+        m.status = Message.SENT
+        if (addMessage(m) == null) return
+        m.att?.let { ownFids.add(it.fid); filesByFid.putIfAbsent(it.fid, m); rebuiltFiles.add(it.fid); mineBack(it.fid) }
+        listener.onLog("a message of mine came back and is in the chat again")
+        listener.onChanged()
     }
 
-    private fun addCarry(env: Envelope) {
+    /**
+     * A photo or file of mine put back in the chat by [rebuildMine] may not be on this phone at all
+     * any more (the group was deleted, and joined again): once every piece of it is back too, it is
+     * put together like any file — without the receipt a received one gets, since it is mine.
+     */
+    private fun mineBack(fid: String) {
+        val m = filesByFid[fid]
+        val att = m?.att
+        if (m != null && att != null && fid !in fileReadyFired) {
+            if (!fileComplete(att)) return
+            fileReadyFired.add(fid)
+            listener.onFileReady(m)
+        }
+        rebuiltFiles.remove(fid)
+    }
+
+    /**
+     * When an envelope's 48 h began, by this phone's reckoning. Handed over with how long the phone
+     * before carried it ([age], see [handOff]): that long ago — so a late carrier can't give an old
+     * envelope another day, and then the next one another — but never before its own stamp, give or
+     * take a few minutes of clock: nothing was carried before it was written, and the age isn't
+     * signed, so a member who hands over a fresh message with a made-up age can't have it turned
+     * away. A stamp from the future (a phone whose date runs ahead) says nothing about when it was
+     * written, so there the age is all there is to go by — taken as it is, the envelope's 48 h are
+     * 48 h in all, however far ahead its stamp, instead of starting over at every carrier until the
+     * real date catches up with it. Even then a made-up age can't have it turned away: it keeps a
+     * few minutes of its time, enough to be read here and passed on. Without an age: the sender's
+     * stamp, but never later than now (a fast clock must not make it immortal), and never more than
+     * half its time before now (a phone whose clock reset to 1970 must still get its messages
+     * carried, with time left to pass them on — a receipt only lives a day).
+     */
+    private fun birth(env: Envelope, age: Long?): Long {
+        val now = clock()
+        val stamp = minOf(env.ts, now)
+        if (age != null && env.ts > now + FUTURE_SLACK_MS) return now - minOf(age, limitOf(env) - FUTURE_SLACK_MS)
+        if (age != null) return maxOf(now - age, stamp - FUTURE_SLACK_MS)
+        return maxOf(stamp, now - limitOf(env) / 2)
+    }
+
+    /** How long an envelope of [env]'s kind is carried: a receipt for a day, anything else for 48 h. */
+    private fun limitOf(env: Envelope): Long = if (env.kind == Envelope.RECEIPT) RECEIPT_MS else CARRY_MS
+
+    /** Every envelope goes into the carry through here, so its size is always counted. */
+    private fun putCarry(env: Envelope, born: Long, size: Int = env.bytes().size) {
+        dropCarry(env.id)
+        tombs.remove(env.id)
         carry[env.id] = env
-        carryBorn[env.id] = birth(env)
+        carryBorn[env.id] = born
+        carrySizes[env.id] = size
+        carryBytes += size
         touched()
     }
 
-    private fun validChunk(env: Envelope): Boolean {
-        val p = env.payload
-        val fid = p.optString("fid", "")
-        val i = p.optInt("i", -1)
-        if (!Attachment.validFid(fid) || i !in 0 until MAX_CHUNKS) return false
-        if (env.id != Envelope.chunkId(fid, i)) return false
-        return p.optString("d", "").length <= CHUNK_RAW * 2
+    /**
+     * [id] was carried here and is let go of — its time ran out, or the carry was full: listed in
+     * the inventory a while longer ([tombs]), until no friend can still be carrying it, so none hands
+     * it over at every sync. Bounded: past [MAX_TOMBS] the oldest go (a friend may offer one again).
+     */
+    private fun retire(id: String, born: Long, limit: Long, now: Long) {
+        tombs.remove(id)
+        tombs[id] = maxOf(born + limit, now) + CARRY_MS / 2
+        while (tombs.size > MAX_TOMBS) tombs.remove(tombs.keys.first())
+        touched()
     }
 
-    private fun process(env: Envelope) {
-        val p = env.payload
+    /**
+     * [env] as handed to another phone, with how long this phone has carried it ("age", beside the
+     * hop count and like it not signed) — so the next phone's 48 h go on from here instead of
+     * starting over ([birth]). An envelope carried for less than [FRESH_MS] goes without: its stamp
+     * says the same.
+     */
+    private fun handOff(env: Envelope): Envelope {
+        val out = env.copy()
+        carryBorn[env.id]?.let { born -> val age = clock() - born; if (age >= FRESH_MS) out.json.put("age", age) }
+        return out
+    }
+
+    /** What [handOff]'s "age" adds to an envelope as sent: `,"age":` and the number. */
+    private fun ageBytes(env: Envelope): Int = env.json.opt("age")?.let { 7 + it.toString().length } ?: 0
+
+    /** ...and out through here. */
+    private fun dropCarry(id: String) {
+        if (carry.remove(id) == null) return
+        carryBorn.remove(id)
+        carryBytes -= carrySizes.remove(id) ?: 0
+    }
+
+    /**
+     * The file a piece belongs to and its place in it, if [id] is exactly f.<fid>.<index> for a
+     * file of [origin]'s and an index a file can have. A piece's id names a file on disk, so
+     * nothing else may pass — not even the same number written differently.
+     */
+    private fun pieceOf(id: String, origin: String): Pair<String, Int>? {
+        if (!id.startsWith("f.")) return null
+        val dot = id.lastIndexOf('.')
+        if (dot <= 2) return null
+        val fid = id.substring(2, dot)
+        if (!Attachment.ownedBy(fid, origin)) return null
+        val i = id.substring(dot + 1).toIntOrNull() ?: return null
+        if (i !in 0 until MAX_CHUNKS || Envelope.chunkId(fid, i) != id) return null
+        return fid to i
+    }
+
+    /** The message a receipt is about, if [id] is exactly r.<message id>.<origin>: only a phone can say its own phone has it. */
+    private fun receiptTarget(id: String, origin: String): String? {
+        val tail = ".$origin"
+        if (!id.startsWith("r.") || !id.endsWith(tail) || id.length <= 2 + tail.length) return null
+        return id.substring(2, id.length - tail.length).takeIf { it.length <= MAX_MESSAGE_ID && MESSAGE_ID.matches(it) }
+    }
+
+    /**
+     * A file message's attachment, read from its payload: a private copy (the envelope is carried
+     * on untouched), or null when it is absurd or not its sender's — a fid of someone else's, no
+     * key, more pieces or bytes than a file can have.
+     */
+    private fun attachmentOf(env: Envelope, p: JSONObject): Attachment? {
+        val att = p.optJSONObject("att")?.let { Attachment(JSONObject(it.toString())) } ?: return null
+        // A signed-but-absurd attachment (a crafted client) must not wedge every phone.
+        if (!Attachment.ownedBy(att.fid, env.origin) || !Attachment.sealable(att) || att.chunks !in 1..MAX_CHUNKS || att.size !in 1..MAX_FILE) {
+            listener.onLog("absurd attachment dropped"); return null
+        }
+        // The inline thumbnail is decoded on every phone; a huge one is a decompression bomb.
+        if (att.thumb.length > MAX_THUMB_B64) att.json.remove("tb")
+        att.dropLocalMarks()
+        return att
+    }
+
+    private fun process(env: Envelope, p: JSONObject) {
         val fromName = Names.clean(env.originName)
         when (env.kind) {
             Envelope.CHAT -> {
                 val renamed = p.optString("gn", "")
-                if (renamed.isNotEmpty()) { applyRename(env, renamed, fromName); return }
+                if (renamed.isNotEmpty()) { applyRename(env, p, renamed, fromName); return }
                 val m = addMessage(Message(env.id, Envelope.CHAT, env.origin, fromName, null, p.optString("text").take(MAX_TEXT), env.ts,
                     loc = Loc.fromJson(p.optJSONObject("loc")), quote = Quote.fromJson(p.optJSONObject("re")),
                     mentions = Message.mentionsFromJson(p.optJSONArray("mn"))).also { it.arrivedAt = clock() }) ?: return
@@ -517,26 +835,24 @@ class Router(
                 listener.onMessage(m)
             }
             Envelope.DM -> {
-                // An answer to an internet request rides a private message. Every phone that sees
-                // one learns the request is answered (so no other helper starts it); only the
-                // asker opens it — and it never becomes a chat bubble.
-                p.optJSONObject("er")?.let { er -> onAnswerEnvelope(env, er); return }
-                if (env.to != me.id) return
+                // An answer to an internet request rides a private message: only the asker opens
+                // it, and it never becomes a chat bubble. (Every other phone already stood down on
+                // its clear marker.) Its inside must be the answer the marker says it is.
+                val marker = env.er
+                val answer = p.optJSONObject("er")
+                if (marker != null || answer != null) {
+                    if (marker != null && answer != null && answer.optString("eid") == marker.optString("eid")) onAnswer(env, marker, answer, p)
+                    return
+                }
                 val m = addMessage(Message(env.id, Envelope.DM, env.origin, fromName, me.id, p.optString("text").take(MAX_TEXT), env.ts,
                     loc = Loc.fromJson(p.optJSONObject("loc")), quote = Quote.fromJson(p.optJSONObject("re")),
                     mentions = Message.mentionsFromJson(p.optJSONArray("mn"))).also { it.arrivedAt = clock() }) ?: return
                 sendReceipt(env.id, env.origin); listener.onMessage(m)
             }
             Envelope.FILE -> {
-                // A private copy: the envelope's own JSON is signed and carried on, never edited.
-                val att = p.optJSONObject("att")?.let { Attachment(JSONObject(it.toString())) } ?: return
-                // A signed-but-absurd attachment (a crafted client) must not wedge every phone.
-                if (!Attachment.validFid(att.fid) || att.chunks !in 1..MAX_CHUNKS || att.size !in 1..MAX_FILE) {
-                    listener.onLog("absurd attachment dropped"); return
-                }
-                // The inline thumbnail is decoded on every phone; a huge one is a decompression bomb.
-                if (att.thumb.length > MAX_THUMB_B64) att.json.remove("tb")
-                if (env.to != null && env.to != me.id) return   // someone else's private photo: carry, don't show
+                val att = attachmentOf(env, p) ?: return
+                // One file, one message: a second message naming the same file is not shown.
+                if (filesByFid[att.fid]?.let { it.id != env.id } == true) { listener.onLog("a second message for one file dropped"); return }
                 val to = if (env.to != null) me.id else null
                 val m = Message(env.id, Envelope.FILE, env.origin, fromName, to, p.optString("text").take(MAX_CAPTION), env.ts, att,
                     quote = Quote.fromJson(p.optJSONObject("re")), mentions = Message.mentionsFromJson(p.optJSONArray("mn")))
@@ -546,18 +862,14 @@ class Router(
                 checkFileReady(att.fid)
                 listener.onMessage(m)
             }
-            Envelope.CHUNK -> {
-                val fid = p.optString("fid")
-                if (fid.isNotEmpty() && filesByFid.containsKey(fid)) checkFileReady(fid)
-                listener.onChanged()
-            }
-            Envelope.REACT -> applyReactionEnvelope(env, live = true)
+            Envelope.REACT -> applyReactionEnvelope(env, p, live = true)
             Envelope.RECEIPT -> {
-                val m = messageById[p.optString("m")] ?: return
+                // Its id names the message and the phone that has it ([receiptTarget]); the inside must say the same.
+                val target = receiptTarget(env.id, env.origin) ?: return
+                if (p.optString("m") != target || p.optString("by") != env.origin) return
+                val m = messageById[target] ?: return
                 if (m.from != me.id) return
-                val by = p.optString("by"); if (by.isEmpty()) return
-                // Only a phone can say its own phone has it.
-                if (by != env.origin) return
+                val by = env.origin
                 if (!m.reached.add(by) && m.status != Message.QUEUED) return
                 if (m.to != null && by == m.to) m.status = Message.DELIVERED
                 else if (m.status == Message.QUEUED) m.status = Message.SENT
@@ -572,8 +884,6 @@ class Router(
                 person.battery = p.optInt("bat", -1).coerceIn(-1, 100)
                 person.ev = p.optInt("ev", 0).coerceIn(0, 99)
                 person.cap = if (person.ev >= Errand.EV) p.optInt("cap", 0) and CAP_MASK else 0
-                val v = p.optInt("v", 0)
-                if (v > person.ver) { person.ver = v.coerceAtMost(99); touched() }
                 // Live location rides presence: present while they share, gone the beacon after they stop.
                 // Only ever move forward — floods can replay an older beacon after a newer one — but
                 // clamp the clock so a forged far-future beacon can't pin a position for hours.
@@ -598,10 +908,17 @@ class Router(
                 if (person.cap != 0) for (e in errands.values.toList()) if (e.from == me.id && e.status == Errand.WAITING) askerTick(e, clock())
                 listener.onChanged()
             }
-            Envelope.ERRAND -> onErrandEnvelope(env, fromName)
-            Envelope.ERRAND_ACK -> onAckEnvelope(env)
-            Envelope.ERRAND_RESULT -> onLegacyResult(env, fromName)
+            Envelope.ERRAND -> onErrandEnvelope(env, p, fromName)
+            Envelope.ERRAND_ACK -> onAckEnvelope(env, p)
+            Envelope.ERRAND_RESULT -> onLegacyResult(env, p, fromName)
         }
+    }
+
+    /** A file piece arrived: its file may be complete now. */
+    private fun onPiece(env: Envelope) {
+        val fid = pieceOf(env.id, env.origin)?.first ?: return
+        if (filesByFid.containsKey(fid)) checkFileReady(fid)
+        listener.onChanged()
     }
 
     // ---------------------------------------------------------------- group name
@@ -650,15 +967,15 @@ class Router(
         return adoptGroupName(name, 0)
     }
 
-    /** A rename rides a normal, carried CHAT envelope: 2.1 phones show its text as a chat line. */
-    private fun applyRename(env: Envelope, raw: String, fromName: String) {
+    /** A rename rides a normal, carried CHAT envelope. */
+    private fun applyRename(env: Envelope, p: JSONObject, raw: String, fromName: String) {
         val name = Names.clean(raw, Names.MAX_GROUP)
         if (name.isEmpty()) return
         // On our clock: the renamer's stamp less how far their clock runs ahead (known from their
         // presence). Never later than now — a rename can't come from the future — so the next
         // honest rename always wins.
         val skew = people[env.origin]?.takeIf { it.skewKnown }?.skew ?: 0L
-        adoptGroupName(name, minOf(env.ts - skew, clock()), env.payload.optInt("gv", 0).coerceIn(0, MAX_NAME_V))
+        adoptGroupName(name, minOf(env.ts - skew, clock()), p.optInt("gv", 0).coerceIn(0, MAX_NAME_V))
         addMessage(Message(env.id, Message.NOTICE, env.origin, fromName, null, name, env.ts).also { it.arrivedAt = clock() })
         listener.onChanged()
     }
@@ -690,11 +1007,9 @@ class Router(
 
     // ---------------------------------------------------------------- reactions
 
-    /** Shared by live receive and restore: point a reaction at its message, or hold it. */
-    private fun applyReactionEnvelope(env: Envelope, live: Boolean) {
-        if (env.to != null && env.to != me.id) return   // a private chat's reaction: carry, don't show
-        val p = env.payload
-        val target = p.optString("m"); if (target.isEmpty() || target.length > 40) return
+    /** Shared by live receive and restore: point a reaction ([p], its opened payload) at its message, or hold it. */
+    private fun applyReactionEnvelope(env: Envelope, p: JSONObject, live: Boolean) {
+        val target = p.optString("m"); if (target.isEmpty() || target.length > MAX_MESSAGE_ID) return
         val emoji = p.optString("e", "").take(Message.MAX_EMOJI)
         val m = messageById[target]
         if (m == null) {
@@ -702,14 +1017,22 @@ class Router(
             if (target in hidden || target in spilled || target in overflowIds) return
             // The message may still be hopping toward us — hold the reaction for it, bounded.
             val list = pendingReactions.getOrPut(target) { ArrayList() }
-            if (list.size < 40) list.add(Triple(env.origin, emoji, env.ts))
+            if (list.size < 40) list.add(HeldReaction(env.origin, emoji, env.ts, env.isPrivate))
             while (pendingReactions.size > 500) pendingReactions.remove(pendingReactions.keys.first())
-        } else if (m.applyReaction(env.origin, emoji, env.ts)) {
+        } else if (reactionFits(m, env.origin, env.isPrivate) && m.applyReaction(env.origin, emoji, env.ts)) {
             touched()
             if (live && m.from == me.id && env.origin != me.id) listener.onReaction(m, env.origin, emoji)
             listener.onChanged()
         }
     }
+
+    /**
+     * A reaction counts only where it was sent from: on a group message, sealed for the group; in
+     * a private chat, sealed for me by the chat's other person. Every carrier sees a private
+     * message's id, but nobody else can put a reaction into that chat — not even a member.
+     */
+    private fun reactionFits(m: Message, origin: String, isPrivate: Boolean): Boolean =
+        if (m.to == null) !isPrivate else isPrivate && origin == m.chatKey(me.id)
 
     // ---------------------------------------------------------------- files
 
@@ -726,6 +1049,12 @@ class Router(
     }
 
     fun fileMessage(fid: String): Message? = filesByFid[fid]
+
+    /**
+     * Is [fid] a file this phone sent — so its pieces are kept like my own, not like a stranger's?
+     * Decided by what this phone knows, never by what a piece claims.
+     */
+    fun isMine(fid: String): Boolean = fid in ownFids || filesByFid[fid]?.from == me.id
 
     /** Mark a file as already on disk (my own sends, or assembled after restore). */
     fun markFileReady(fid: String) { fileReadyFired.add(fid) }
@@ -752,31 +1081,54 @@ class Router(
     fun canSendFiles(): Boolean = activePeople() < FILE_GROUP_LIMIT
 
     /**
-     * Send a file that has already been shrunk and cut into base64 pieces (see Blobs on the app
-     * side). The meta envelope is the visible message; the chunks flood behind it.
+     * Send a file that has already been shrunk and sealed piece by piece (see Blobs on the app
+     * side): [att] has a fid from [newFid] and the file's key and checksum, and [pieces] are the
+     * pieces as [Crypto.sealPiece] sealed them. The meta envelope is the visible message; the
+     * pieces flood behind it, carrying the same `to`.
+     *
+     * Every piece is stored before anything is announced, and only a piece the store really holds
+     * counts: a message whose pieces nobody has could never be completed by anyone. Null — and
+     * nothing sent — when a piece can't be kept (storage full), when [to] has no key here yet, or
+     * when the file isn't one this phone made.
      */
     fun sendFile(att: Attachment, pieces: List<String>, caption: String, to: String? = null, quote: Quote? = null,
-                 mentions: List<String> = emptyList()): Message {
+                 mentions: List<String> = emptyList()): Message? {
+        if (!Attachment.ownedBy(att.fid, me.id) || !Attachment.sealable(att) || att.chunks !in 1..MAX_CHUNKS) return null
+        if (pieces.size != att.chunks || pieces.any { it.isEmpty() || it.length > MAX_PIECE_B64 }) return null
         val mn = if (to == null) mentions.take(Message.MAX_MENTIONS) else emptyList()
         val text = caption.take(MAX_CAPTION)
-        val p = JSONObject().put("text", text).put("att", att.json)
-        quote?.let { p.put("re", it.toJson()) }
-        if (mn.isNotEmpty()) p.put("mn", JSONArray(mn))
-        val meta = newEnvelope(Envelope.FILE, p, to)
-        val m = Message(meta.id, Envelope.FILE, me.id, me.name, to, text, meta.ts, att, quote = quote, mentions = mn)
+        fun meta(a: Attachment): Envelope? {
+            val p = JSONObject().put("text", text).put("att", a.json)
+            quote?.let { p.put("re", it.toJson()) }
+            if (mn.isNotEmpty()) p.put("mn", JSONArray(mn))
+            return if (to == null) newEnvelope(Envelope.FILE, p) else newPrivate(Envelope.FILE, p, to)
+        }
+        var shown = att
+        var meta = meta(shown) ?: return null
+        // The preview is the one part with no fixed size: an envelope that would outgrow the radio goes without it.
+        if (meta.bytes().size > MAX_ENVELOPE_OUT) {
+            shown = Attachment(JSONObject(att.json.toString()).apply { remove("tb") })
+            meta = meta(shown)?.takeIf { it.bytes().size <= MAX_ENVELOPE_OUT } ?: return null
+        }
+        ownFids.add(att.fid)
+        val envs = pieces.mapIndexed { i, c ->
+            Envelope.seal(group, me, Envelope.CHUNK, null, Envelope.chunkId(att.fid, i), meta.ts, to, piece = c)!!
+        }
+        for (env in envs) chunks.put(env)
+        // put() can say yes to a piece it turned away; only what it holds counts.
+        if (envs.any { !chunks.has(it.id) }) {
+            ownFids.remove(att.fid)
+            listener.onLog("a file's pieces could not be kept; not sent")
+            return null
+        }
+        val m = Message(meta.id, Envelope.FILE, me.id, me.name, to, text, meta.ts, shown, quote = quote, mentions = mn)
             .also { it.status = Message.QUEUED }
         addMessage(m)
         filesByFid[att.fid] = m
         fileReadyFired.add(att.fid)   // the original is already on this phone
         originate(meta)
-        for ((i, data) in pieces.withIndex()) {
-            val c = JSONObject().put("id", Envelope.chunkId(att.fid, i)).put("k", Envelope.CHUNK)
-                .put("o", me.id).put("on", me.name).put("ts", meta.ts).put("h", 0)
-                .put("p", JSONObject().put("fid", att.fid).put("i", i).put("d", data))
-            if (to != null) c.put("to", to)
-            val env = Envelope(c).also { it.sign(group.key) }
+        for (env in envs) {
             seen[env.id] = true
-            chunks.put(env)
             forward(env, null)
         }
         listener.onChanged()
@@ -784,12 +1136,14 @@ class Router(
     }
 
     private fun forward(env: Envelope, except: Link?) {
-        val out = env.copy(); out.hops = env.hops + 1
+        val out = handOff(env); out.hops = env.hops + 1
         // Every peer drops an envelope at the ceiling; sending it would only burn airtime.
         if (out.hops >= Envelope.MAX_HOPS && env.kind != Envelope.CHUNK) return
         val frame = JSONObject().put("t", "env").put("e", out.json)
         for (link in links.values) {
-            if (!link.authed || link === except) continue
+            // A phone whose last inventory listed it has it already (backlog both sides were filled
+            // with); one that didn't gets it at once, however it reached this phone.
+            if (!link.authed || link === except || env.id in link.has) continue
             val pid = sendFrame(link, frame)
             if (pid >= 0) pendingPayloads[pid] = listOf(env.id)
         }
@@ -800,17 +1154,36 @@ class Router(
 
     // ---------------------------------------------------------------- my own actions
 
-    private fun newEnvelope(kind: String, payload: JSONObject, to: String? = null): Envelope {
-        val j = JSONObject().put("id", Crypto.randomId(12)).put("k", kind).put("o", me.id).put("on", me.name)
-            .put("ts", clock()).put("h", 0).put("p", payload)
-        if (to != null) j.put("to", to)
-        return Envelope(j).also { it.sign(group.key) }
+    /** A new id for something of mine: my node id, a dot and 10 random letters — nobody else can use it. */
+    fun newId(): String = "${me.id}.${Crypto.randomId(10)}"
+
+    /** A new file id of mine: my node id and 8 random letters. A file's pieces are named after it, so they are mine alone too. */
+    fun newFid(): String = me.id + Crypto.randomId(8)
+
+    /** Someone's public key as this phone last saw it signed: what a private message to them is sealed for. */
+    fun keyOf(id: String): String? = people[id]?.pk?.ifEmpty { null }
+
+    /**
+     * Can something private be written to [id] now? Only to a 2.4 phone whose key this phone has
+     * seen; there is no sending in the clear, and no queue to wait for a key in.
+     */
+    fun canWriteTo(id: String): Boolean = id != me.id && Crypto.isNodeId(id) && keyOf(id)?.let { Crypto.decodePub(it) } != null
+
+    /** An envelope of mine sealed for the whole group ([to] only says who a receipt is for). */
+    private fun newEnvelope(kind: String, payload: JSONObject, to: String? = null, ts: Long = clock(), id: String = newId()): Envelope =
+        Envelope.seal(group, me, kind, payload, id, ts, to)!!
+
+    /** An envelope of mine sealed for [to] alone, or null when this phone has no key for them. */
+    private fun newPrivate(kind: String, payload: JSONObject, to: String, ts: Long = clock(), er: JSONObject? = null): Envelope? {
+        if (!canWriteTo(to)) return null
+        return Envelope.seal(group, me, kind, payload, newId(), ts, to, Crypto.decodePub(keyOf(to)!!), er)
     }
 
     /** Inject one of my own envelopes: remember it, carry it, flood it. */
     private fun originate(env: Envelope) {
         markSeen(env)
-        if (env.kind in Envelope.CARRIED) { carry[env.id] = env; carryBorn[env.id] = clock(); touched() }
+        env.payload = null   // what is carried is the sealed envelope alone
+        if (env.kind in Envelope.CARRIED) putCarry(env, clock())
         forward(env, null)
     }
 
@@ -827,11 +1200,12 @@ class Router(
         return m
     }
 
-    fun sendDm(to: String, text: String, quote: Quote? = null): Message {
+    /** A private message, sealed for [to] alone. Null — and nothing sent — when this phone has no key for them ([canWriteTo]). */
+    fun sendDm(to: String, text: String, quote: Quote? = null): Message? {
         val t = text.take(MAX_TEXT)
         val p = JSONObject().put("text", t)
         quote?.let { p.put("re", it.toJson()) }
-        val env = newEnvelope(Envelope.DM, p, to)
+        val env = newPrivate(Envelope.DM, p, to) ?: return null
         val m = Message(env.id, Envelope.DM, me.id, me.name, to, t, env.ts, quote = quote)
             .also { it.status = Message.QUEUED }
         addMessage(m); originate(env); listener.onChanged()
@@ -841,52 +1215,73 @@ class Router(
     /**
      * React to a message; an empty emoji takes mine back. A reaction is its own tiny envelope —
      * carried and gap-filled like chat, so late joiners see it — and a private chat's reactions
-     * stay between its two people via the same `to` rule as DMs.
+     * are sealed for its other person alone. False — and nothing changes — when that person's key
+     * isn't known here.
      */
-    fun sendReaction(target: Message, emoji: String) {
+    fun sendReaction(target: Message, emoji: String): Boolean {
         val e = emoji.take(Message.MAX_EMOJI)
         val to = if (target.isGroup) null else (if (target.from == me.id) target.to else target.from)
         // Strictly after my previous one, even if this phone's clock was set back since.
         val ts = maxOf(clock(), (target.reactionTsOf(me.id) ?: 0L) + 1)
-        val j = JSONObject().put("id", Crypto.randomId(12)).put("k", Envelope.REACT).put("o", me.id).put("on", me.name)
-            .put("ts", ts).put("h", 0).put("p", JSONObject().put("m", target.id).put("e", e))
-        if (to != null) j.put("to", to)
-        val env = Envelope(j).also { it.sign(group.key) }
+        val p = JSONObject().put("m", target.id).put("e", e)
+        val env = (if (to == null) newEnvelope(Envelope.REACT, p, ts = ts) else newPrivate(Envelope.REACT, p, to, ts)) ?: return false
         target.applyReaction(me.id, e, ts)
         originate(env)
         listener.onChanged()
+        return true
     }
 
     /**
      * Share a place. It rides a normal chat/DM envelope — tiny, so it works at any crowd size —
-     * with a maps link in the text so old clients (and copies) still land on the right spot.
+     * with a maps link in the text, which is also what a copy of it shows. Null when a private
+     * one can't be sealed ([sendDm]).
      */
-    fun sendLocation(loc: Loc, to: String? = null): Message {
+    fun sendLocation(loc: Loc, to: String? = null): Message? {
         val text = loc.fallbackText()
         val kind = if (to == null) Envelope.CHAT else Envelope.DM
-        val env = newEnvelope(kind, JSONObject().put("text", text).put("loc", loc.toJson()), to)
+        val p = JSONObject().put("text", text).put("loc", loc.toJson())
+        val env = (if (to == null) newEnvelope(kind, p) else newPrivate(kind, p, to)) ?: return null
         val m = Message(env.id, kind, me.id, me.name, to, text, env.ts, loc = loc).also { it.status = Message.QUEUED }
         addMessage(m); originate(env); listener.onChanged()
         return m
     }
 
+    /** "My phone has [messageId]", for [origin]: id r.<message>.<me>, so nobody else can say it for me. */
     private fun sendReceipt(messageId: String, origin: String) {
-        val r = JSONObject().put("id", "r.$messageId.${me.id}").put("k", Envelope.RECEIPT).put("o", me.id).put("on", me.name)
-            .put("ts", clock()).put("h", 0).put("to", origin)
-            .put("p", JSONObject().put("m", messageId).put("by", me.id))
-        originate(Envelope(r).also { it.sign(group.key) })
+        // An id a receipt can't name (a crafted one) gets none: every phone would refuse it.
+        if (messageId.length > MAX_MESSAGE_ID || !MESSAGE_ID.matches(messageId)) return
+        originate(newEnvelope(Envelope.RECEIPT, JSONObject().put("m", messageId).put("by", me.id), to = origin, id = "r.$messageId.${me.id}"))
+    }
+
+    /** The counter on my next live envelope: never smaller than the last, whatever the clock does — or a restart. */
+    private fun nextQ(): Long {
+        lastQ = maxOf(clock(), lastQ + 1)
+        if (lastQ + Q_MARGIN / 2 > qSaved) { qSaved = lastQ + Q_MARGIN; touched() }
+        return lastQ
+    }
+
+    /**
+     * Start my live counters above [mark]: the highest any group's saved state on this phone has
+     * held (the app keeps it for the phone, like the node id). A group's own state covers what was
+     * sent in it; this covers one deleted and joined again, or whose state was set aside — friends
+     * still remember my counters from before, up to half an hour or more ahead of the clock, and
+     * would ignore every beacon and "I'm on it" of mine until the clock got there. Before anything is sent.
+     */
+    fun liveQAbove(mark: Long) {
+        lastQ = maxOf(lastQ, mark)
+        qSaved = maxOf(qSaved, lastQ)
     }
 
     fun sendPresence() {
         // "net" keeps its 2.x meaning — "I can fetch for you" — so older askers route around a
         // phone that is out of data budget or has sharing off.
         val p = JSONObject().put("n", me.name).put("net", myCaps and Errand.CAP_READ != 0).put("bat", battery)
-            .put("gn", group.name).put("v", VERSION).put("ev", Errand.EV)
+            .put("gn", group.name).put("ev", Errand.EV).put("q", nextQ())
         if (myCaps != 0) p.put("cap", myCaps)
         if (group.nameAt > 0) { p.put("gt", group.nameAt); p.put("ga", (clock() - group.nameAt).coerceAtLeast(0L)) }
         if (group.nameV > 0) p.put("gv", group.nameV)
         myLoc?.let { p.put("loc", it.toJson()) }
-        forward(newEnvelope(Envelope.PRESENCE, p).also { markSeen(it) }, null)
+        forward(newEnvelope(Envelope.PRESENCE, p).also { markSeen(it); it.payload = null }, null)
     }
 
     // ---------------------------------------------------------------- delete for me
@@ -905,7 +1300,7 @@ class Router(
             hidden[id] = now
             gone.add(m)
             m.att?.let { filesByFid.remove(it.fid) }
-            if (m.from == me.id && m.status == Message.QUEUED) { carry.remove(id); carryBorn.remove(id) }
+            if (m.from == me.id && m.status == Message.QUEUED) dropCarry(id)
         }
         if (gone.isNotEmpty()) { touched(); listener.onChanged() }
         return gone
@@ -952,10 +1347,11 @@ class Router(
         listener.onChanged()
     }
 
-    private fun onErrandEnvelope(env: Envelope, fromName: String) {
-        val p = env.payload
+    private fun onErrandEnvelope(env: Envelope, p: JSONObject, fromName: String) {
         val eid = p.optString("eid", "")
-        if (!ERRAND_ID.matches(eid)) return
+        // A request's id is its asker's ([requestErrand]): a member who saw it go by can't send it
+        // again as their own first, and have the asker's own turned away wherever theirs got first.
+        if (!ERRAND_ID.matches(eid) || !madeBy(eid, env.origin)) return
         var e = errands[eid]
         // Only the asker can re-send or cancel their own request.
         if (e != null && e.from != env.origin) return
@@ -1015,6 +1411,8 @@ class Router(
      */
     private fun maybeScheduleClaim(e: Errand) {
         if (e.from == me.id || !e.isOpen || e.id in doneErrands || e.id in running) return
+        // Its answer could never be sealed for the asker: no data spent, no text sent, for nothing.
+        if (e.rv >= Errand.EV && !canWriteTo(e.from)) return
         val now = clock()
         if (now >= e.exp) return
         val directed = e.helper == me.id
@@ -1040,6 +1438,7 @@ class Router(
 
     private fun canStillClaim(e: Errand): Boolean {
         if (e.from == me.id || !e.isOpen || e.id in doneErrands || e.id in running) return false
+        if (e.rv >= Errand.EV && !canWriteTo(e.from)) return false
         val now = clock()
         if (now >= e.exp) return false
         if (e.status == Errand.CLAIMED && e.helper != me.id && e.leaseUntil > now) return false
@@ -1074,13 +1473,12 @@ class Router(
     private fun beatMs(e: Errand): Long = if (e.type == Errand.SEND) HUMAN_BEAT_MS else WORK_BEAT_MS
 
     private fun sendAck(e: Errand, st: String, why: String = "") {
-        val p = JSONObject().put("eid", e.id).put("st", st).put("rq", e.from).put("lease", leaseMs(e) / 1000)
+        val p = JSONObject().put("eid", e.id).put("st", st).put("rq", e.from).put("lease", leaseMs(e) / 1000).put("q", nextQ())
         if (why.isNotEmpty()) p.put("why", why.take(40))
-        forward(newEnvelope(Envelope.ERRAND_ACK, p).also { markSeen(it) }, null)
+        forward(newEnvelope(Envelope.ERRAND_ACK, p).also { markSeen(it); it.payload = null }, null)
     }
 
-    private fun onAckEnvelope(env: Envelope) {
-        val p = env.payload
+    private fun onAckEnvelope(env: Envelope, p: JSONObject) {
         val e = errands[p.optString("eid", "")] ?: return
         val by = env.origin
         val now = clock()
@@ -1112,7 +1510,8 @@ class Router(
      * The helper finished. [body] is what the asker's screen shows ("t" text, plus "l" links or
      * "r" search results); it travels gzip'd in ONE private envelope, trimmed to fit the radio.
      * Returns false when there is nobody to tell — someone else already answered, or it was
-     * cancelled — so nothing is sent twice.
+     * cancelled — so nothing is sent twice; or when the asker's key isn't known here, so the
+     * answer can't be sealed for them (it is never sent in the clear: someone else may take it).
      */
     fun completeErrand(id: String, ok: Boolean, title: String, body: JSONObject, cost: Int = 0, why: String = ""): Boolean {
         val e = errands[id] ?: return false
@@ -1128,6 +1527,11 @@ class Router(
             return true
         }
         if (id in doneErrands || !e.isOpen) { if (wasRunning) touched(); return false }
+        if (e.rv >= Errand.EV && !canWriteTo(e.from)) {
+            listener.onLog("no key for the asker; the answer stays here")
+            if (wasRunning) touched()
+            return false
+        }
         markDone(id)
         e.status = if (ok) Errand.DONE else Errand.FAILED
         if (e.rv >= Errand.EV) sendPrivateAnswer(e, ok, title, body, cost, why)
@@ -1165,40 +1569,60 @@ class Router(
         touched(); listener.onChanged()
     }
 
-    private fun sendPrivateAnswer(e: Errand, ok: Boolean, title: String, body: JSONObject, cost: Int, why: String) {
-        val limit = if (activePeople() >= FILE_GROUP_LIMIT) MAX_ANSWER_Z_CROWD else MAX_ANSWER_Z
+    /**
+     * The answer, sealed for the asker alone, with a clear `{eid, ok}` marker beside it so every
+     * other phone stands down. Sized by what really goes on the air: the sealed, signed envelope
+     * must fit [MAX_ENVELOPE_OUT] (less in a crowd), so the text is cut until it does.
+     */
+    private fun sendPrivateAnswer(e: Errand, ok: Boolean, title: String, body: JSONObject, cost: Int, why: String): Boolean {
+        val limit = if (activePeople() >= FILE_GROUP_LIMIT) MAX_ANSWER_BYTES_CROWD else MAX_ENVELOPE_OUT
+        val marker = JSONObject().put("eid", e.id).put("ok", ok)
+        fun answer(b: JSONObject): Envelope? {
+            val summary = title.take(120) + if (b.optString("t").isNotEmpty()) "\n" + b.optString("t").take(280) else ""
+            val er = JSONObject().put("eid", e.id).put("ok", ok).put("ty", e.type).put("title", title.take(200)).put("z", Gz.pack(b)).put("by", me.name)
+            if (cost > 0) er.put("cost", cost)
+            if (why.isNotEmpty()) er.put("why", why.take(40))
+            if (b.optInt("parts", 1) > 1) { er.put("part", b.optInt("part", 1)); er.put("parts", b.optInt("parts", 1)) }
+            return newPrivate(Envelope.DM, JSONObject().put("text", summary).put("er", er), e.from, er = marker)
+        }
         var b = body
-        var z = Gz.pack(b)
+        var env = answer(b) ?: return false
         // Too big for one radio frame: shorten the text until it fits (paragraph-cut, honestly marked).
         var guard = 0
-        while (z.length > limit && guard++ < 12) {
+        while (env.bytes().size > limit && guard++ < 16) {
             val t = b.optString("t")
-            if (t.length < 200) { b = JSONObject(b.toString()).put("l", JSONArray()).put("r", JSONArray()) ; z = Gz.pack(b); if (z.length <= limit) break }
-            val cut = (t.length * 0.75).toInt()
-            val at = t.lastIndexOf("\n\n", cut).takeIf { it > cut / 2 } ?: cut
-            b = JSONObject(b.toString()).put("t", t.substring(0, at).trimEnd() + "\n\n…")
-            z = Gz.pack(b)
+            val extras = (b.optJSONArray("l")?.length() ?: 0) + (b.optJSONArray("r")?.length() ?: 0)
+            b = if (t.length < 200 && extras > 0) JSONObject(b.toString()).put("l", JSONArray()).put("r", JSONArray())
+                else {
+                    val cut = (t.length * 0.75).toInt()
+                    val at = t.lastIndexOf("\n\n", cut).takeIf { it > cut / 2 } ?: cut
+                    JSONObject(b.toString()).put("t", t.substring(0, at).trimEnd() + "\n\n…")
+                }
+            env = answer(b) ?: return false
         }
-        val summary = title.take(120) + if (b.optString("t").isNotEmpty()) "\n" + b.optString("t").take(280) else ""
-        val er = JSONObject().put("eid", e.id).put("ok", ok).put("ty", e.type).put("title", title.take(200)).put("z", z).put("by", me.name)
-        if (cost > 0) er.put("cost", cost)
-        if (why.isNotEmpty()) er.put("why", why.take(40))
-        if (b.optInt("parts", 1) > 1) { er.put("part", b.optInt("part", 1)); er.put("parts", b.optInt("parts", 1)) }
-        originate(newEnvelope(Envelope.DM, JSONObject().put("text", summary).put("er", er), e.from))
+        if (env.bytes().size > limit) { listener.onLog("an answer too big to send"); return false }
+        originate(env)
+        return true
     }
 
     private fun sendLegacyResult(e: Errand, ok: Boolean, title: String, text: String) {
-        val env = newEnvelope(Envelope.ERRAND_RESULT, JSONObject().put("eid", e.id).put("ok", ok).put("title", title.take(200)).put("text", text.take(MAX_RESULT)))
-        val m = Message(env.id, Message.SYSTEM, me.id, me.name, null, if (title.isEmpty()) text.take(MAX_RESULT) else "$title\n${text.take(MAX_RESULT)}", env.ts)
+        fun result(t: String) = newEnvelope(Envelope.ERRAND_RESULT, JSONObject().put("eid", e.id).put("ok", ok).put("title", title.take(200)).put("text", t))
+        var t = text.take(MAX_RESULT)
+        var env = result(t)
+        // Text that JSON writes long (control characters) could outgrow an envelope: shorter, then.
+        while (env.bytes().size > MAX_ENVELOPE_OUT && t.isNotEmpty()) { t = t.take(t.length * 3 / 4); env = result(t) }
+        val m = Message(env.id, Message.SYSTEM, me.id, me.name, null, if (title.isEmpty()) t else "$title\n$t", env.ts)
         m.errandId = e.id
         addMessage(m); originate(env)
     }
 
-    private fun onAnswerEnvelope(env: Envelope, er: JSONObject) {
-        val eid = er.optString("eid", "")
+    /**
+     * A private answer went by: its clear marker tells every phone the request is answered, so no
+     * other helper starts it (or carries on with it). Only the asker opens the answer itself ([onAnswer]).
+     */
+    private fun onAnswerMarker(marker: JSONObject) {
+        val eid = marker.optString("eid", "")
         if (!ERRAND_ID.matches(eid)) return
-        val z = er.optString("z", "")
-        if (z.length > MAX_ANSWER_Z + 1_000) return   // absurd: no honest helper sends that
         val e = errands[eid]
         if (e != null && e.from != me.id) {
             // Some other phone answered it: stand down.
@@ -1207,18 +1631,28 @@ class Router(
             stopWork(e)
             touched()
         } else if (e == null) markDone(eid)
-        if (env.to != me.id || e == null || e.from != me.id) return
-        val ok = er.optBoolean("ok", true)
+    }
+
+    /** The answer to one of my requests, opened: [answer] is what [marker] announced, [p] the whole payload. */
+    private fun onAnswer(env: Envelope, marker: JSONObject, answer: JSONObject, p: JSONObject) {
+        val z = answer.optString("z", "")
+        if (z.length > MAX_ANSWER_Z + 1_000) return   // absurd: no honest helper sends that
+        // The body is read again every time the answer is shown: one that doesn't read back (or
+        // nests deeper than any answer) is never kept, so it can't break that screen for good.
+        if (Gz.unpackJson(z) == null) return
+        val e = errands[marker.optString("eid")] ?: return
+        if (e.from != me.id) return
+        val ok = marker.optBoolean("ok", true)
         // Two helpers raced: the first answer stands. And a "couldn't" never closes a request that
         // is closed already. After leaving a group and joining it again, a friend hands the old
         // answers back (leaving let their envelopes go); the failure this phone was told about
         // then must not be announced, and dated, a second time. A real answer still gets through
         // to a request that had failed or run out.
         if (e.status == Errand.DONE || e.status == Errand.CANCELLED || (!e.isOpen && !ok)) { sendReceipt(env.id, env.origin); return }
-        applyAnswer(e, ok, Names.clean(er.optString("title"), 200), z,
-            Names.clean(er.optString("by")).ifEmpty { Names.clean(env.originName) }, er.optInt("cost", 0).coerceAtLeast(0),
-            er.optString("why", "").take(40), er.optInt("part", 1), er.optInt("parts", 1),
-            summary = env.payload.optString("text").take(500))
+        applyAnswer(e, ok, Names.clean(answer.optString("title"), 200), z,
+            Names.clean(answer.optString("by")).ifEmpty { Names.clean(env.originName) }, answer.optInt("cost", 0).coerceAtLeast(0),
+            answer.optString("why", "").take(40), answer.optInt("part", 1), answer.optInt("parts", 1),
+            summary = p.optString("text").take(500))
         sendReceipt(env.id, env.origin)
     }
 
@@ -1237,8 +1671,7 @@ class Router(
     }
 
     /** A 2.x helper's public answer — or our own legacy answer coming back round. Shown in the group as before. */
-    private fun onLegacyResult(env: Envelope, fromName: String) {
-        val p = env.payload
+    private fun onLegacyResult(env: Envelope, p: JSONObject, fromName: String) {
         val eid = p.optString("eid")
         val title = Names.clean(p.optString("title"), 200); val text = p.optString("text").take(MAX_RESULT)
         val e = errands[eid]
@@ -1271,18 +1704,18 @@ class Router(
     fun capableHelpers(e: Errand): List<Person> {
         val need = Errand.capFor(e.type, e.args)
         if (need == 0) return emptyList()
-        return people.values.filter { it.ev >= Errand.EV && it.cap and need != 0 && it.id !in e.tried && isInRange(it) }
+        return people.values.filter { onAir(it) && it.ev >= Errand.EV && it.cap and need != 0 && it.id !in e.tried && isInRange(it) }
             .sortedWith(compareBy<Person> { it.hops }.thenByDescending { it.battery })
     }
 
     /** Phones with internet that run an older Hopline: they can read a page or send a text, publicly. */
     fun legacyHelpers(): List<Person> =
-        people.values.filter { it.ev < Errand.EV && it.hasInternet && isInRange(it) }.sortedBy { it.hops }
+        people.values.filter { onAir(it) && it.ev < Errand.EV && it.hasInternet && isInRange(it) }.sortedBy { it.hops }
 
     /** Everyone who can help with anything right now, nearest first — me first when I can. */
     fun helpers(): List<Person> {
         val now = clock()
-        val list = people.values.filter { isInRange(it) && ((it.ev >= Errand.EV && it.cap != 0) || (it.ev < Errand.EV && it.hasInternet)) }
+        val list = people.values.filter { onAir(it) && isInRange(it) && ((it.ev >= Errand.EV && it.cap != 0) || (it.ev < Errand.EV && it.hasInternet)) }
             .sortedBy { it.hops }.toMutableList()
         if (myCaps != 0) list.add(0, Person(me.id).also { it.name = me.name; it.hasInternet = hasInternet; it.cap = myCaps; it.ev = Errand.EV; it.hops = 0; it.lastSeen = now })
         return list
@@ -1297,7 +1730,8 @@ class Router(
 
     fun requestErrand(type: String, args: JSONObject, ttlMs: Long = defaultTtl(type), selfCaps: Int = myCaps, prefer: String? = null): Errand {
         require(args.toString().length <= MAX_ARGS / 2) { "request too long" }
-        val e = Errand(Crypto.randomId(10), type, JSONObject(args.toString()), me.id, me.name, clock())
+        // Its id is mine like any other ([newId]): only my phone can send this request, or call it off.
+        val e = Errand(newId(), type, JSONObject(args.toString()), me.id, me.name, clock())
         e.rv = Errand.EV
         e.exp = clock() + ttlMs.coerceIn(60_000L, MAX_ERRAND_TTL)
         errands[e.id] = e
@@ -1501,8 +1935,8 @@ class Router(
             val e = errands[eid]
             // Gone, answered, or past its deadline while this phone was off (or out of the group):
             // picking it up now would fetch a page nobody is waiting for, or ask its person to send
-            // a text that is days late.
-            if (e == null || !e.isOpen || eid in doneErrands || clock() >= e.exp) {
+            // a text that is days late. Nor one whose answer could not be sealed for its asker.
+            if (e == null || !e.isOpen || eid in doneErrands || clock() >= e.exp || (e.from != me.id && e.rv >= Errand.EV && !canWriteTo(e.from))) {
                 running.remove(eid); sendOpened.remove(eid); touched(); continue
             }
             e.leaseUntil = clock() + leaseMs(e)
@@ -1576,38 +2010,75 @@ class Router(
     }
 
     private fun expire(now: Long) {
-        val it = carry.entries.iterator()
-        while (it.hasNext()) {
-            val (id, e) = it.next()
-            val limit = if (e.kind == Envelope.RECEIPT) RECEIPT_MS else CARRY_MS
-            if (now - (carryBorn[id] ?: minOf(e.ts, now)) > limit) { it.remove(); carryBorn.remove(id); dirty = true }
+        for ((id, e) in carry.entries.toList()) {
+            if (now - (carryBorn[id] ?: minOf(e.ts, now)) > limitOf(e)) letGo(id, now)
         }
+        // ...and once no friend can still be carrying one, it need not be listed any more.
+        if (tombs.values.removeAll { it <= now }) dirty = true
         chunks.expire(now - CARRY_MS)
         // Pieces turned away for room (or as strays) can come now: forget we saw them.
         for (id in chunks.takeReleased()) seen.remove(id)
-        // Over the cap, let receipts and reactions go first — never someone's words.
-        if (carry.size > MAX_CARRY) {
-            for (kind in listOf(Envelope.RECEIPT, Envelope.REACT, null)) {
-                val victims = carry.values.asSequence().filter { kind == null || it.kind == kind }.map { it.id }.take(carry.size - MAX_CARRY).toList()
-                for (id in victims) { carry.remove(id); carryBorn.remove(id) }
-                if (carry.size <= MAX_CARRY) break
-            }
-        }
+        if (carry.size > MAX_CARRY || carryBytes > MAX_CARRY_BYTES) evictCarry(now)
         spill(now)
-        // People not heard from in a month are history; names live on in their messages.
+        // People not heard from in a month are history; names live on in their messages. Never
+        // someone this phone has a private chat with: their key is what that chat is written with.
+        val privatePeers = HashSet<String>()
+        for (m in messages) if (m.to != null) privatePeers.add(m.chatKey(me.id))
         if (people.size > 50) {
             val pit = people.entries.iterator()
-            while (pit.hasNext()) { val p = pit.next().value; if (now - p.lastSeen > FORGET_PEOPLE_MS && !p.direct) pit.remove() }
+            while (pit.hasNext()) { val p = pit.next().value; if (now - p.lastSeen > FORGET_PEOPLE_MS && !p.direct && p.id !in privatePeers) pit.remove() }
         }
         if (people.size > MAX_PEOPLE) {
-            for (p in people.values.filter { !it.direct }.sortedBy { it.lastSeen }.take(people.size - MAX_PEOPLE)) people.remove(p.id)
+            for (p in people.values.filter { !it.direct && it.id !in privatePeers }.sortedBy { it.lastSeen }.take(people.size - MAX_PEOPLE)) people.remove(p.id)
         }
-        val hit = hidden.entries.iterator()
-        while (hit.hasNext()) if (now - hit.next().value > CARRY_MS + 86_400_000L) hit.remove()
-        // Same rule for messages filed in the history: once no phone can still be carrying them,
-        // nobody can hand them back, and the id need not be remembered.
-        val sit = spilled.entries.iterator()
-        while (sit.hasNext()) if (now - sit.next().value > CARRY_MS + 86_400_000L) sit.remove()
+        // What was deleted here, or filed in the history, is remembered long after its 48 h: a
+        // phone that was off for days, or an older one, can still be handing it round.
+        forgetOlder(hidden, now - REMEMBER_MS)
+        forgetOlder(spilled, now - REMEMBER_MS)
+    }
+
+    /** [ids] (id -> when) without what is older than [before], and never more than [MAX_REMEMBERED]: the oldest go. */
+    private fun forgetOlder(ids: LinkedHashMap<String, Long>, before: Long) {
+        val it = ids.entries.iterator()
+        while (it.hasNext()) if (it.next().value < before) it.remove()
+        if (ids.size > MAX_REMEMBERED) for (id in ids.entries.sortedBy { it.value }.take(ids.size - MAX_REMEMBERED).map { it.key }) ids.remove(id)
+    }
+
+    /** A carried envelope goes, and is listed a while longer ([retire]) so friends don't hand it back. */
+    private fun letGo(id: String, now: Long) {
+        val env = carry[id] ?: return
+        retire(id, carryBorn[id] ?: minOf(env.ts, now), limitOf(env), now)
+        dropCarry(id)
+        dirty = true
+    }
+
+    /**
+     * Over [MAX_CARRY] envelopes or [MAX_CARRY_BYTES]: receipts go first, then reactions — never
+     * someone's words while those last. Then whoever is carried the most of goes first, oldest
+     * first: one phone (a buggy one, or a member flooding) can't push everyone else's messages
+     * out. My own messages still waiting to leave go last of all.
+     */
+    private fun evictCarry(now: Long) {
+        fun over() = carry.size > MAX_CARRY || carryBytes > MAX_CARRY_BYTES
+        for (kind in listOf(Envelope.RECEIPT, Envelope.REACT)) {
+            for (id in carry.values.filter { it.kind == kind }.map { it.id }) { if (!over()) return; letGo(id, now) }
+        }
+        fun waiting(id: String, e: Envelope) = e.origin == me.id && messageById[id]?.status == Message.QUEUED
+        val oldestFirst = LinkedHashMap<String, ArrayDeque<String>>()
+        val held = HashMap<String, Long>()
+        for ((id, e) in carry) if (!waiting(id, e)) {
+            oldestFirst.getOrPut(e.origin) { ArrayDeque() }.addLast(id)
+            held[e.origin] = (held[e.origin] ?: 0L) + (carrySizes[id] ?: 0)
+        }
+        while (over() && held.isNotEmpty()) {
+            val origin = held.entries.maxByOrNull { it.value }!!.key
+            val queue = oldestFirst.getValue(origin)
+            val id = queue.removeFirst()
+            held[origin] = held.getValue(origin) - (carrySizes[id] ?: 0)
+            letGo(id, now)
+            if (queue.isEmpty()) { oldestFirst.remove(origin); held.remove(origin) }
+        }
+        for (id in carry.keys.toList()) { if (!over()) return; letGo(id, now) }
     }
 
     /**
@@ -1714,7 +2185,7 @@ class Router(
         messages.add(i, m)
         // reactions that beat their message here have been waiting for it
         pendingReactions.remove(m.id)?.let { held ->
-            for ((origin, emoji, ts) in held) m.applyReaction(origin, emoji, ts)
+            for (r in held) if (reactionFits(m, r.origin, r.isPrivate)) m.applyReaction(r.origin, r.emoji, r.ts)
         }
         touched()
         return m
@@ -1724,10 +2195,12 @@ class Router(
      * Names are last-writer-wins on the sender's own clock: gap-fill hands over 48 h of someone's
      * old envelopes, each signed with the name they had THEN, and none may undo a later rename.
      * A far-future stamp is clamped so a phone with a wild clock can't pin a name for days.
-     * [seenAt] is OUR idea of when they were last alive (their clock can be off by hours).
+     * [seenAt] is OUR idea of when they were last alive (their clock can be off by hours). [pk] is
+     * the key they signed with: their id is made from it, so it is theirs.
      */
-    private fun touchPerson(id: String, rawName: String, at: Long, seenAt: Long): Person {
+    private fun touchPerson(id: String, rawName: String, at: Long, seenAt: Long, pk: String): Person {
         val p = people.getOrPut(id) { Person(id).also { touched() } }
+        if (p.pk != pk) { p.pk = pk; touched() }
         val name = Names.clean(rawName)
         val t = minOf(at, clock() + FUTURE_SLACK_MS)
         if (name.isNotEmpty() && name != p.name && (t >= p.nameAt || p.name.isEmpty())) { p.name = name; touched() }
@@ -1746,12 +2219,21 @@ class Router(
         if (clock() - p.locHeardAt > presenceInterval() * 2 + 60_000L) return null
         return loc
     }
-    fun peopleInRange(): Int = people.values.count { isInRange(it) }
+    fun peopleInRange(): Int = people.values.count { onAir(it) && isInRange(it) }
     /** People heard from within the carry window — the group as it is now, not everyone ever. */
-    fun activePeople(): Int { val now = clock(); return people.values.count { now - it.lastSeen < CARRY_MS } }
-    fun activePeopleList(): List<Person> { val now = clock(); return people.values.filter { now - it.lastSeen < CARRY_MS } }
+    fun activePeople(): Int { val now = clock(); return people.values.count { onAir(it) && now - it.lastSeen < CARRY_MS } }
+    fun activePeopleList(): List<Person> { val now = clock(); return people.values.filter { onAir(it) && now - it.lastSeen < CARRY_MS } }
+
+    /**
+     * Someone who can be on the air now. A person kept under an id from before 2.4 is only a name in
+     * old chats: they are back under a new id, and counting both would make the group look twice its
+     * size (receipts and photos switch off at a size) for two days after an update.
+     */
+    private fun onAir(p: Person): Boolean = Crypto.isNodeId(p.id)
     fun authedLinks(): List<Link> = links.values.filter { it.authed }
     fun carrySize(): Int = carry.size
+    /** How many bytes the carried envelopes take, as sent. */
+    fun carriedBytes(): Long = carryBytes
     /** Is this phone still holding [id]'s envelope to hand on? Once it isn't, an unsent message of
      *  mine has nothing left to send — it will not go out on its own. */
     fun carries(id: String): Boolean = carry.containsKey(id)
@@ -1759,10 +2241,16 @@ class Router(
     // ---------------------------------------------------------------- persistence
 
     fun snapshot(): JSONObject = JSONObject().apply {
+        // Which way the carried envelopes are sealed, and whose they are: a state saved before 2.4
+        // has neither, and its carry is never taken in (see [restore]).
+        put("fmt", FMT); put("me", me.id)
         // Messages on their way to the history are saved with the rest until the app has taken them.
         put("messages", JSONArray((overflow + messages).map { it.toJson() }))
         put("carry", JSONArray(carry.values.map { it.json }))
         put("born", JSONObject().also { b -> for ((id, t) in carryBorn) if (id in carry) b.put(id, t) })
+        if (tombs.isNotEmpty()) put("tombs", JSONObject().also { d -> for ((id, t) in tombs) d.put(id, t) })
+        if (qSaved > 0) put("lastQ", qSaved)
+        if (reissuePending) put("reissue", JSONArray(reissue))
         put("people", JSONArray(people.values.map { it.toJson() }))
         put("errands", JSONArray(errands.values.map { it.toJson() }))
         put("doneAt", JSONObject().also { d -> for ((id, t) in doneErrands) d.put(id, t) })
@@ -1774,7 +2262,11 @@ class Router(
         if (group.nameV > 0) put("group", JSONObject().put("n", group.name).put("v", group.nameV))
     }
 
-    /** Every record is restored on its own: one bad entry must never cost the rest of the history. */
+    /**
+     * Every record is restored on its own: one bad entry must never cost the rest of the history.
+     * This phone's own state is trusted as it is — nothing in it is checked again. A state from
+     * before 2.4 (no "fmt") keeps everything but its carry, which no phone would take any more.
+     */
     fun restore(j: JSONObject) {
         val now = clock()
         // Deleted and filed-away ids first: the messages below must not bring one of them back.
@@ -1788,7 +2280,7 @@ class Router(
             } catch (e: Exception) { listener.onLog("bad saved message skipped") }
         }
         val born = j.optJSONObject("born")
-        j.optJSONArray("carry")?.let { a ->
+        if (j.optInt("fmt", 0) >= FMT) j.optJSONArray("carry")?.let { a ->
             for (i in 0 until a.length()) try {
                 val e = Envelope(a.getJSONObject(i))
                 if (!ENVELOPE_ID.matches(e.id)) continue
@@ -1796,26 +2288,43 @@ class Router(
                 val bornAt = born?.optLong(e.id, 0)?.takeIf { it > 0 } ?: minOf(e.ts, now)
                 seen[e.id] = true
                 // Its time ran out while this phone was off — or out of the group, for weeks. It must
-                // never reach the inventory: a link can come up before the first tick expires it,
-                // and a phone that took it would carry and show the ancient message as new.
-                if (now - bornAt > limit) continue
-                carry[e.id] = e
-                carryBorn[e.id] = bornAt
+                // never be handed over: a link can come up before the first tick expires it, and a
+                // phone that took it would carry and show the ancient message as new. Only listed.
+                if (now - bornAt > limit) { retire(e.id, bornAt, limit, now); continue }
+                putCarry(e, bornAt)
             } catch (ex: Exception) { listener.onLog("bad saved envelope skipped") }
+        }
+        // What was let go of is still listed, and still not taken in again, until its time is up.
+        if (j.optInt("fmt", 0) >= FMT) j.optJSONObject("tombs")?.let { d ->
+            val listed = ArrayList<Pair<String, Long>>()
+            for (id in d.keys()) {
+                val until = d.optLong(id, 0)
+                if (until > now && !carry.containsKey(id) && ENVELOPE_ID.matches(id)) listed.add(id to until)
+            }
+            // Oldest first, as they were let go of (a saved object keeps no order of its own).
+            for ((id, until) in listed.sortedBy { it.second }.takeLast(MAX_TOMBS)) { tombs[id] = until; seen[id] = true }
+            while (tombs.size > MAX_TOMBS) tombs.remove(tombs.keys.first())
         }
         for (m in messages) {
             seen[m.id] = true
-            m.att?.let { filesByFid[it.fid] = m }
+            m.att?.let { filesByFid[it.fid] = m; if (m.from == me.id) ownFids.add(it.fid) }
         }
         for (id in hidden.keys) seen[id] = true
         for (id in spilled.keys) seen[id] = true
-        // A reaction whose message hadn't arrived before the restart is still in carry — re-point
-        // it so it lands the moment the message hops in (applyReaction dedupes ones already shown).
-        for (e in carry.values) if (e.kind == Envelope.REACT) try { applyReactionEnvelope(e, live = false) } catch (ex: Exception) { }
         for (id in chunks.ids()) seen[id] = true
         j.optJSONArray("people")?.let { a ->
             for (i in 0 until a.length()) try { val p = Person.fromJson(a.getJSONObject(i)); if (p.id != me.id) people[p.id] = p }
             catch (e: Exception) { }
+        }
+        // A reaction whose message hadn't arrived before the restart is still in carry — re-point
+        // it so it lands the moment the message hops in (applyReaction dedupes ones already shown).
+        for (e in carry.values) if (e.kind == Envelope.REACT) try { open(e)?.let { applyReactionEnvelope(e, it, live = false) } } catch (ex: Exception) { }
+        // Saved ahead of anything sent before (see [qSaved]): the next counter is above all of them.
+        lastQ = maxOf(lastQ, j.optLong("lastQ", 0))
+        qSaved = maxOf(qSaved, lastQ)
+        j.optJSONArray("reissue")?.let { a ->
+            reissuePending = true
+            reissue = (0 until a.length()).mapNotNull { a.optString(it).takeIf { id -> id.isNotEmpty() } }
         }
         j.optJSONArray("errands")?.let { a ->
             for (i in 0 until a.length()) try { val e = Errand.fromJson(a.getJSONObject(i)); errands[e.id] = e } catch (ex: Exception) { }
@@ -1825,10 +2334,22 @@ class Router(
         j.optJSONArray("running")?.let { a -> for (i in 0 until a.length()) a.optString(i).takeIf { it in errands }?.let { running.add(it) } }
         j.optJSONArray("sendOpened")?.let { a -> for (i in 0 until a.length()) a.optString(i).takeIf { it in running }?.let { sendOpened.add(it) } }
         // 2.1 kept every request ever seen from anyone, with its args (phone numbers, texts): let them go.
-        for (e in errands.values.toList()) if (e.from != me.id && (e.exp == 0L || e.id in doneErrands)) errands.remove(e.id)
+        // So does someone else's request from before 2.4: no answer can be sealed for an id from then,
+        // and its asker sends it again under their new id — which this old copy must not stand in front of.
+        for (e in errands.values.toList()) if (e.from != me.id && (e.exp == 0L || e.id in doneErrands || !Crypto.isNodeId(e.from))) errands.remove(e.id)
         for (e in errands.values) if (e.from == me.id && e.exp == 0L) {
             // A 2.1 request of mine: it can't be followed any more — close it honestly.
             if (e.isOpen) e.status = Errand.EXPIRED
+        }
+        // A request of mine still open under an id from before requests were their asker's: no
+        // phone would take it in any more ([onErrandEnvelope]), so it goes on under a new id of
+        // mine — the same request, with everything known about it. Finished ones keep theirs.
+        for (e in errands.values.toList()) {
+            if (e.from != me.id || !e.isOpen || madeBy(e.id, me.id)) continue
+            val again = try { Errand.fromJson(e.toJson().put("id", newId())) } catch (ex: Exception) { continue }
+            errands.remove(e.id); errands[again.id] = again
+            if (running.remove(e.id)) running.add(again.id)
+            if (sendOpened.remove(e.id)) sendOpened.add(again.id)
         }
         // Saved before leases were kept: give a claim one fresh lease rather than treating it as lapsed.
         for (e in errands.values) if (e.status == Errand.CLAIMED && e.helper != me.id && e.leaseUntil == 0L && e.why != "quiet") e.leaseUntil = now + leaseMs(e)
@@ -1836,6 +2357,54 @@ class Router(
         // The rename count goes with the name it belongs to (the store may know a newer name).
         j.optJSONObject("group")?.let { g -> if (g.optString("n") == group.name) group.nameV = g.optInt("v", 0).coerceIn(0, MAX_NAME_V) }
         dirty = false
+    }
+
+    /**
+     * Right after an upgrade, for the group going on the radio (never a left group's chat): what
+     * this phone had not got off it yet left in the old format, which no phone takes any more. So
+     * each listed group message still unsent and inside its 48 h goes out again as a new envelope
+     * — the same message (time, words, quote, mentions, place), in its place in the chat, under a
+     * new id — and my open internet requests are sent to the group again. The listed photos and
+     * files are returned: the app sends them again from their copy on this phone (or they stay
+     * "not sent"). Once only; afterwards there is nothing to do.
+     */
+    fun reissueQueued(): List<Message> {
+        if (!reissuePending) return emptyList()
+        val ids = reissue
+        reissue = emptyList(); reissuePending = false
+        val now = clock()
+        val files = ArrayList<Message>()
+        for (id in ids) {
+            val m = messageById[id] ?: continue
+            if (m.from != me.id || m.status != Message.QUEUED || m.to != null || now - m.ts >= CARRY_MS) continue
+            when {
+                m.kind == Envelope.CHAT -> reissueChat(m)
+                m.kind == Envelope.FILE && m.att != null -> files.add(m)
+            }
+        }
+        // My requests the group was carrying went with the old format: tell it again (not the ones
+        // running here on my own signal, which nobody else is to start).
+        for (e in errands.values.toList()) {
+            if (e.from == me.id && e.isOpen && e.lastDispatchAt > 0 && !(e.helper == me.id && e.id in running)) dispatch(e)
+        }
+        touched()
+        listener.onChanged()
+        return files
+    }
+
+    private fun reissueChat(old: Message) {
+        val at = messages.indexOf(old)
+        if (at < 0) return
+        val p = JSONObject().put("text", old.text)
+        old.quote?.let { p.put("re", it.toJson()) }
+        if (old.mentions.isNotEmpty()) p.put("mn", JSONArray(old.mentions))
+        old.loc?.let { p.put("loc", it.toJson()) }
+        val env = newEnvelope(Envelope.CHAT, p, ts = old.ts)
+        val m = Message(env.id, Envelope.CHAT, me.id, old.fromName, null, old.text, old.ts, loc = old.loc, quote = old.quote, mentions = old.mentions)
+            .also { it.status = Message.QUEUED; it.arrivedAt = old.arrivedAt }
+        messages[at] = m
+        messageById.remove(old.id); messageById[m.id] = m
+        originate(env)
     }
 
     private var lastPresenceAt = 0L
@@ -1872,16 +2441,47 @@ class Router(
         const val SAME_TIME_MS = 10_000L
         /** Renames counted, at most (a crafted huge count could otherwise freeze the name). */
         const val MAX_NAME_V = 1_000_000
-        /** Raw bytes per file chunk; base64 puts the envelope at ~19 KB, under the 24 KB batch line. */
+        /** Raw bytes per file chunk; sealed and in base64 it puts the envelope at ~20 KB, under the 24 KB batch line. */
         const val CHUNK_RAW = 14 * 1024
         const val MAX_FILE = 2 * 1024 * 1024L
         val MAX_CHUNKS = ((MAX_FILE + CHUNK_RAW - 1) / CHUNK_RAW).toInt()
-        /** Protocol version announced in hello: 2 = file chunks, 3 = reactions, 4 = connection-bound proofs. */
-        const val VERSION = 4
-        const val BOUND_PROOF_VERSION = 4
-        /** Chunk envelopes in flight per link during a backlog fill (~19 KB each). */
+        /** A sealed piece in base64url: CHUNK_RAW bytes and the 16-byte tag. */
+        const val MAX_PIECE_B64 = ((CHUNK_RAW + 16) * 4 + 2) / 3
+        /**
+         * Protocol version announced in hello. 5 = sealed envelopes, signed by their origin, and
+         * proofs that show the phone's key; nothing older is linked.
+         */
+        const val VERSION = 5
+        /** The state file's format: 5 = what is carried is sealed and signed as above. */
+        const val FMT = 5
+        /** How far ahead of my newest live counter the saved one is kept (see [qSaved]): a save every quarter hour of it at most. */
+        private const val Q_MARGIN = 30 * 60_000L
+        /** Chunk envelopes in flight per link during a backlog fill (~20 KB each). */
         const val FILL_WINDOW = 4
         const val MAX_CARRY = 6000
+        /** What all carried envelopes may take together, as sent. Far beyond any honest group's 48 h. */
+        const val MAX_CARRY_BYTES = 24L * 1024 * 1024
+        /** Envelopes let go of that are still listed ([tombs]), at most: a full carry's worth. */
+        const val MAX_TOMBS = MAX_CARRY
+        /** Carried for less than this, an envelope is handed over without its "age": its stamp says the same. */
+        const val FRESH_MS = 60_000L
+        /** How long the ids of messages deleted here or filed in the history are remembered, and how many at most. */
+        const val REMEMBER_MS = 14 * 86_400_000L
+        const val MAX_REMEMBERED = 40_000
+        /** No envelope this phone builds is bigger, so a fill batch of one always fits a radio payload. */
+        const val MAX_ENVELOPE_OUT = 24_000
+        /** Nor is any this phone takes: anything bigger is refused before it is seen. */
+        const val MAX_ENVELOPE_IN = 28_000
+        /** A gap-fill batch is sent once the next envelope would take it past this (one envelope alone may). */
+        const val FILL_BATCH_BYTES = 24_000
+        /** Bytes of ids in one inventory part, and how many parts a peer reads. */
+        const val INV_PART_BYTES = 24_000
+        /** Before a link has proved itself, only a hello or a proof can come: a few hundred bytes. */
+        const val MAX_FRAME_BEFORE_AUTH = 2_048
+        /** No honest frame is bigger (radio payloads are kept under 32 KB); a bigger one is ignored. */
+        const val MAX_FRAME_IN = 65_536
+        /** How deep a frame may nest before it is parsed: a fill frame is four. */
+        const val MAX_FRAME_DEPTH = 8
         /**
          * The live window: how many messages a group keeps in memory and in its state file. Not a
          * cap on history — older messages move to the group's history segments, never away.
@@ -1893,14 +2493,15 @@ class Router(
         const val KEEP_PER_CHAT = 30
         const val MAX_PEOPLE = 2000
         const val FORGET_PEOPLE_MS = 30 * 86_400_000L
-        const val MAX_INV_PARTS = 64
+        const val MAX_INV_PARTS = 128
         const val MAX_INV_IDS = 100_000
 
         // ---- shared internet
         const val CAP_MASK = Errand.CAP_READ or Errand.CAP_FIND or Errand.CAP_WX or Errand.CAP_SMS or Errand.CAP_MAIL
-        /** Gzip'd answer body, base64 chars: keeps the whole envelope ~20 KB, under the 24 KB fill batch. */
+        /** Gzip'd answer body, base64 chars, beyond which no envelope of MAX_ENVELOPE_OUT could hold it: absurd. */
         const val MAX_ANSWER_Z = 18_000
-        const val MAX_ANSWER_Z_CROWD = 6_000
+        /** A private answer's whole envelope in a crowd, where the radios are shared by many: about 6 000 characters of answer, sealed. */
+        const val MAX_ANSWER_BYTES_CROWD = 9_600
         const val MAX_ARGS = 4_000
         const val MAX_ERRAND_TTL = 24 * 3600_000L
         const val CLAIM_FIRST_MS = 1_500L
@@ -1918,11 +2519,17 @@ class Router(
         const val MAX_MY_ERRANDS = 60
 
         private val ENVELOPE_ID = Regex("^[A-Za-z0-9._-]{1,64}$")
+        /** A message id a receipt or a reaction can name. */
+        private val MESSAGE_ID = Regex("^[A-Za-z0-9._-]+$")
+        private const val MAX_MESSAGE_ID = 40
+        /** Every field an envelope may have on the wire ("age" only as handed over, see [handOff]). */
+        private val WIRE_KEYS = setOf("id", "k", "o", "on", "ts", "to", "h", "pk", "s", "c", "e", "er", "age")
         /** Reasons a request can never be done by asking again. */
         private val PERMANENT = setOf("unsupported", "bad_url")
         /** One person can't have more than this many requests travelling at once. */
         const val MAX_OPEN_REQUESTS = 5
-        private val ERRAND_ID = Regex("^[A-Za-z0-9]{6,24}$")
+        /** A request's id: its asker's node id, a dot and 10 letters ([newId]) — or, saved from before 2.4, letters and digits alone. */
+        private val ERRAND_ID = Regex("^[A-Za-z0-9]{6,24}(\\.[A-Za-z0-9]{6,24})?$")
 
         fun defaultTtl(type: String): Long = when (type) {
             Errand.SEND -> 24 * 3600_000L

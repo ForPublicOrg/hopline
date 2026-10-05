@@ -97,12 +97,25 @@
     <string name="people_starting">Hopline is starting…</string>
     <string name="people_no_match">Nobody here is called “%1$s”</string>
     <string name="action_private_chat">start a private chat</string>
+    <string name="action_verify">verify the security code</string>
+    <string name="verified_desc">%1$s, security code verified</string>
+    <!-- A phone of this group nearby still runs 2.3.1 or older: it can't link to this one until it updates -->
+    <string name="older_hopline_nearby">A phone in this group has an older Hopline and needs to update to chat.</string>
+
+    <!-- Verify security code (a private chat's menu, or press and hold a person) -->
+    <string name="verify_title">Verify security code</string>
+    <string name="verify_names">%1$s (you) and %2$s</string>
+    <string name="verify_explain">Compare this number on both phones — in person, or by reading it out. If it\'s the same, this really is %1$s\'s phone, and only the two of you can read your private chat.</string>
+    <string name="verify_not_yet">There\'s no security code for %1$s yet. It shows up once their phone has been in range.</string>
+    <string name="verify_mark">Mark as verified</string>
 
     <!-- Group info -->
     <string name="group_info">Group info</string>
     <string name="group_name_desc">Group name: %1$s. Tap to rename it for everyone.</string>
     <string name="code_desc">Group code: %1$s. Tap to copy.</string>
     <string name="code_clip_label">Hopline group code</string>
+    <!-- Group info, under the code of a group started before 2.4: said once, quietly; nothing changes by itself -->
+    <string name="code_older_note">An older three-word code. A new group gets a stronger four-word code.</string>
     <string name="show_qr">Show QR</string>
     <plurals name="group_people">
         <item quantity="one">Group · %d person</item>
@@ -130,9 +143,12 @@
     <string name="hello_name">Hi %1$s! 👋</string>
     <string name="default_group_name">%1$s\'s group</string>
     <string name="scan_prompt">Point at your friend\'s screen</string>
-    <string name="scan_no_camera">Hopline needs the camera to scan a QR code. You can type the 3 words instead.</string>
+    <string name="scan_no_camera">Hopline needs the camera to scan a QR code. You can type the code\'s words instead.</string>
     <string name="did_you_mean_title">Did you mean “%1$s”?</string>
-    <string name="did_you_mean_body">Hopline codes are three words from Hopline\'s own list — this is the closest match.</string>
+    <string name="did_you_mean_body">Hopline codes are four words from Hopline\'s own list — this is the closest match.</string>
+    <!-- A code of three words: a group started before 2.4. Asked once, then joined. -->
+    <string name="older_code_title">Join with three words?</string>
+    <string name="older_code_body">Codes are four words now. Join with three only if your group was started on an older Hopline.</string>
     <plurals name="unknown_words">
         <item quantity="one">%1$s isn\'t one of Hopline\'s code words.</item>
         <item quantity="other">%1$s aren\'t Hopline code words.</item>
@@ -149,8 +165,9 @@
     <string name="not_invite_title">That QR code isn\'t a Hopline invite</string>
     <string name="not_invite_body">It says: “%1$s”\n\nAsk your friend to open Hopline and tap Show group code, then scan the code on their screen.</string>
     <string name="scan_again">Scan again</string>
-    <string name="bad_link">That invite link is broken — ask your friend for the 3 words instead.</string>
+    <string name="bad_link">That invite link is broken — ask your friend for the code\'s words instead.</string>
     <string name="join_link_title">Join “%1$s”?</string>
+    <string name="join_link_body">Your phone will start finding this group\'s phones nearby.</string>
     <string name="link_odd_words">This code isn\'t made of Hopline\'s words. Join only if your friend sent you this link.</string>
 
     <!-- Permissions -->
@@ -175,5 +192,5 @@
     <!-- Settings -->
     <string name="share_internet_sub_budget">Friends can text home, check the weather and look things up through your phone when it has signal — up to %1$d MB of your data a day.</string>
     <string name="share_internet_sub_unlimited">Friends can text home, check the weather and look things up through your phone when it has signal — with no daily limit.</string>
-    <string name="how_it_works_body_v2">Phones in your group link to each other directly over Bluetooth and WiFi — no tower, no router, no internet.\n\nEvery message is signed with your group\'s code and passed from phone to phone, so it can travel down a line of hikers or across a crowd, far beyond one phone\'s range.\n\nEvery phone carries the group\'s messages for 48 hours and fills in anyone who was away. Walk off, come back — the chat catches up on its own. What reaches your phone stays on it — even after you leave a group — until you delete it.\n\nThe ticks never lie: ◷ waiting for a phone in range, ✓ on its way, ✓✓ phones confirmed. Tap your own message to see exactly who has it.\n\nDirect chats only show up on your screen and theirs — but they are not encrypted. Like everything else, they are passed along by the group\'s phones on the way, so someone with the group code and a modified app could read them.\n\nNames aren\'t checked: anyone with the code can call themselves anything. When two people share a name, Hopline adds a short tag to tell them apart.\n\nAnyone with the 3-word code can read the group, so treat it like a walkie-talkie, not a vault.</string>
+    <string name="how_it_works_body_v2">Phones in your group link to each other directly over Bluetooth and WiFi — no tower, no router, no internet.\n\nEvery message is passed from phone to phone, so it can travel down a line of hikers or across a crowd, far beyond one phone\'s range.\n\nEvery phone carries the group\'s messages for 48 hours and fills in anyone who was away. Walk off, come back — the chat catches up on its own. What reaches your phone stays on it — even after you leave a group — until you delete it.\n\nThe ticks never lie: ◷ waiting for a phone in range, ✓ on its way, ✓✓ phones confirmed. Tap your own message to see exactly who has it.\n\nThe group chat is encrypted with a key made from the group\'s code: anyone who has the code can read it. A four-word code keeps out bystanders. Someone who spends about a week of graphics-card time once can afterwards work out any four-word code from the radio signal, and with it read the group chat — and an older three-word code in under an hour. Treat the group chat like a walkie-talkie, not a vault.\n\nPrivate chats are end-to-end encrypted: only the two of you can read them, even though other phones carry them. Those phones can see who wrote to whom, and when — not what. To be sure who is on the other end, compare your security code with them (the private chat\'s menu → Verify security code). There is no forward secrecy: someone who records the radio and later gets the key out of a phone could read the private messages that were sent to it.\n\nChats are encrypted on the air, not on your phone: what reached it is kept as you see it, in Hopline\'s own storage.\n\nNames aren\'t checked: anyone with the code can call themselves anything. When two people share a name, Hopline adds a short tag to tell them apart.\n\nSince Hopline 2.4, phones on 2.3.1 or older can\'t join updated phones — everyone in the group needs the update. Private chats started fresh with it: the older ones are still there to read, and to keep talking you open the person again from People.</string>
 </resources>

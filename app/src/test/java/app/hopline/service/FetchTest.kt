@@ -29,9 +29,42 @@ class FetchTest {
         val budget = zipped.size / 4
         val wire = Fetch.CountingStream(ByteArrayInputStream(zipped), budget)
         val body = Fetch.readCapped(GZIPInputStream(wire), wire, 2_000_000, Fetch.Session(), Long.MAX_VALUE)
-        assertTrue(body.isNotEmpty())
-        assertTrue(String(body).startsWith("w7919 "))
+        assertTrue(body.bytes.isNotEmpty())
+        assertTrue(String(body.bytes).startsWith("w7919 "))
         assertEquals(budget, wire.count)
+        // …and says it is only the beginning
+        assertTrue(body.cut)
+    }
+
+    @Test fun `a body stopped by the data budget, the size cap or the clock says it is cut, and a whole one does not`() {
+        fun plain(size: Int, budget: Int, max: Int = 2_000_000): Fetch.Body {
+            val wire = Fetch.CountingStream(ByteArrayInputStream(ByteArray(size) { 'x'.code.toByte() }), budget)
+            return Fetch.readCapped(wire, wire, max, Fetch.Session(), Long.MAX_VALUE)
+        }
+        // read to its end: whole
+        plain(10_000, 400_000).let { assertEquals(10_000, it.bytes.size); assertFalse(it.cut) }
+        val words = (1..20_000).joinToString(" ") { "w$it" }
+        val zipped = Fetch.CountingStream(ByteArrayInputStream(gzip(words)), 400_000)
+        Fetch.readCapped(GZIPInputStream(zipped), zipped, 2_000_000, Fetch.Session(), Long.MAX_VALUE).let {
+            assertEquals(words, String(it.bytes)); assertFalse(it.cut)
+        }
+        // a page that isn't gzipped, stopped at a friend's 400 000 bytes: the budget ends it without any error
+        plain(680_000, 400_000).let { assertEquals(400_000, it.bytes.size); assertTrue(it.cut) }
+        // one that comes out bigger than the size cap (as a gzipped page can)
+        plain(50_000, 400_000, max = 20_000).let { assertEquals(20_000, it.bytes.size); assertTrue(it.cut) }
+        // a slow site, stopped by the clock once enough of it is in
+        val slow = object : InputStream() {
+            var left = 100
+            override fun read(): Int = throw IOException("not used")
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                if (left-- <= 0) return -1
+                Thread.sleep(20); java.util.Arrays.fill(b, off, off + len, 'x'.code.toByte()); return len
+            }
+        }
+        val wire = Fetch.CountingStream(slow, 10_000_000)
+        Fetch.readCapped(wire, wire, 10_000_000, Fetch.Session(), System.currentTimeMillis() + 300).let {
+            assertTrue(it.bytes.size in 4_096 until 100 * 8_192); assertTrue(it.cut)
+        }
     }
 
     @Test fun `a site that trickles bytes times out so another phone can try`() {

@@ -61,6 +61,9 @@ object Errands {
                 }
             } catch (p: Fetch.Problem) {
                 if (p.permanent) Outcome.Fail(titleFor(e), p.message ?: "Couldn't do it.", p.why) else Outcome.Retry(p.why)
+            } catch (x: WebText.TooComplex) {
+                // Another phone would get the same page and stall the same way.
+                Outcome.Fail(titleFor(e), "This page is too big or too tangled to read here. Try a search instead.", "too_complex")
             } catch (x: java.io.IOException) {
                 Log.w(TAG, "errand network failure", x); Outcome.Retry("net")
             } catch (x: Exception) {
@@ -120,8 +123,9 @@ object Errands {
             val r = Fetch.get(url, maxWire = maxWire, session = s)
             cost = r.wireBytes
             val html = WebText.decode(r.body, r.contentType)
-            val p = if (r.contentType.startsWith("text/plain")) WebText.Page(WebText.hostOf(r.url), html.trim(), emptyList(), "", html.isBlank())
-                    else WebText.extract(html, r.url)
+            // A download stopped at this phone's data budget (or the size cap, or the clock) is only the page's start.
+            val p = if (r.contentType.startsWith("text/plain")) WebText.Page(WebText.hostOf(r.url), html.trim(), emptyList(), "", html.isBlank(), r.cut)
+                    else WebText.extract(html, r.url, cutShort = r.cut)
             pages.put(url, now to p); if (r.url != url) pages.put(r.url, now to p)
             p
         }
@@ -129,7 +133,8 @@ object Errands {
             return Outcome.Fail(page.title, "This page only works in a full web browser (it builds itself with scripts). " +
                 "Try a search instead${if (page.title.isNotEmpty()) " for “${page.title.take(60)}”" else ""}.", "needs_browser", cost)
         }
-        val parts = WebText.parts(page.text, partChars)
+        // A page longer than a helper's phone downloads or reads says so where the reading stops (WebText.CUT_NOTE).
+        val parts = WebText.parts(page, partChars)
         val idx = (part - 1).coerceIn(0, parts.size - 1)
         val text = parts[idx]
         val links = JSONArray()

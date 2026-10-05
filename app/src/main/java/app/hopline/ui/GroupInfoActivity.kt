@@ -1,15 +1,10 @@
 package app.hopline.ui
 
 import android.content.ActivityNotFoundException
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
 import android.text.format.DateUtils
 import android.view.View
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.AccessibilityDelegateCompat
 import androidx.core.view.ViewCompat
@@ -122,7 +117,7 @@ class GroupInfoActivity : AppCompatActivity() {
         super.onResume()
         if (!::b.isInitialized || isFinishing) return
         if (leftCode == null) {
-            if (Core.store.group() == null || !Permissions.allGranted(this)) {
+            if (!Core.store.hasActive() || !Permissions.allGranted(this)) {
                 startActivity(Intent(this, LaunchActivity::class.java)); finish(); return
             }
             Core.ensureRunning()
@@ -150,9 +145,7 @@ class GroupInfoActivity : AppCompatActivity() {
         b.groupName.contentDescription = getString(R.string.group_name_desc, name)
         b.avatar.text = Ui.initial(name)
         b.avatar.background.mutate().setTint(MessageAdapter.avatarColor(g.fingerprint))
-        val words = Words.pretty(g.code)
-        b.code.text = words
-        b.code.contentDescription = getString(R.string.code_desc, words)
+        showCode(g)
 
         val muted = Asks.mutedLine(this, Core.GROUP)
         b.muteSwitch.isChecked = muted != null
@@ -182,11 +175,10 @@ class GroupInfoActivity : AppCompatActivity() {
         val shown = sorted.take(MAX_ROWS - 1)
         ensureRows(shown.size + 1)
         bindMe(rows[0])
-        shown.forEachIndexed { i, p -> PeopleActivity.bindPerson(rows[i + 1], r, p) { openChat(p) } }
+        shown.forEachIndexed { i, p -> PeopleActivity.bindPerson(rows[i + 1], r, p, onVerify = { verify(r, p) }) { openChat(p) } }
         // A group that has been quiet for two days (every rejoin starts this way) isn't a group
         // nobody joined: its people are in the chat, just not heard from lately.
-        val known = r.people.keys.any { it != r.me.id } || r.messages.any { it.from != r.me.id }
-        b.membersNote.text = getString(if (known) R.string.nobody_lately else R.string.only_you)
+        b.membersNote.text = getString(if (Ui.othersKnown(r)) R.string.nobody_lately else R.string.only_you)
         b.membersNote.visibility = if (others.isEmpty()) View.VISIBLE else View.GONE
         b.viewAll.text = getString(R.string.view_all, total)
         b.viewAll.visibility = if (sorted.size > shown.size) View.VISIBLE else View.GONE
@@ -200,10 +192,19 @@ class GroupInfoActivity : AppCompatActivity() {
         b.avatar.background.mutate().setTint(getColor(R.color.surface_variant))
         b.avatar.setTextColor(getColor(R.color.text_muted))
         b.subtitle.text = getString(R.string.left_info_subtitle, whenText(g.leftAt))
+        showCode(g)
+        bindPrivateChats(g.fingerprint)
+    }
+
+    /**
+     * The group's code — and, for one started before 2.4, one quiet line under it: its code is
+     * the older three-word kind, and a new group gets a stronger one. Nothing to do, nothing forced.
+     */
+    private fun showCode(g: SavedGroup) {
         val words = Words.pretty(g.code)
         b.code.text = words
         b.code.contentDescription = getString(R.string.code_desc, words)
-        bindPrivateChats(g.fingerprint)
+        b.codeNote.visibility = if (ScreenRules.olderCode(g.code)) View.VISIBLE else View.GONE
     }
 
     /**
@@ -281,6 +282,8 @@ class GroupInfoActivity : AppCompatActivity() {
 
     private fun openChat(p: Person) = startActivity(Intent(this, ChatActivity::class.java).putExtra("peer", p.id))
 
+    private fun verify(r: Router, p: Person) = SecurityCodeDialog.show(this, p.id, Ui.nameOf(r, p.id, p.name))
+
     private fun shareInvite() {
         val g = Core.store.activeGroup() ?: return
         val name = Core.router?.group?.name?.ifEmpty { null } ?: g.name.ifEmpty { getString(R.string.our_group) }
@@ -290,13 +293,10 @@ class GroupInfoActivity : AppCompatActivity() {
         } catch (e: ActivityNotFoundException) { }
     }
 
-    /** The three words of the group on screen — a left group's still work, to get back in or to pass on. */
+    /** The code of the group on screen — a left group's still works, to get back in or to pass on. */
     private fun copyCode() {
         val g = shownGroup() ?: return
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText(getString(R.string.code_clip_label), Words.pretty(g.code)))
-        // Android 13+ confirms a copy on its own; a toast on top would say it twice.
-        if (Build.VERSION.SDK_INT < 33) Toast.makeText(this, R.string.code_copied, Toast.LENGTH_SHORT).show()
+        Ui.copyCode(this, Words.pretty(g.code))
     }
 
     companion object {

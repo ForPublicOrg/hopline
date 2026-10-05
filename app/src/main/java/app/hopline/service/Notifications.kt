@@ -96,7 +96,8 @@ object Notifications {
             att.isAudio && att.dur > 0 -> ctx.getString(R.string.voice_label) + " (${att.dur / 60}:${"%02d".format(att.dur % 60)})"
             // "📷 Trail news" — the caption says it better than the word "Photo".
             att.isImage -> if (m.text.isNotEmpty()) ctx.getString(R.string.photo_with_caption, m.text) else ctx.getString(R.string.photo_label)
-            else -> "${ctx.getString(R.string.file_label)} ${att.name}"
+            // The sender's name for it, minus anything that would make it read as something else.
+            else -> "${ctx.getString(R.string.file_label)} ${app.hopline.ui.MediaRules.shownName(att.name)}"
         }
         return if (m.kind == Message.SYSTEM) "🌐 $body" else body
     }
@@ -401,20 +402,42 @@ object Notifications {
                 clearGroup(ctx, fp)
                 return
             }
-            Core.ensureRunning()
-            val r = Core.router
             // A notification from a group that is no longer on the radio must not act on another one.
-            if (r == null || r.group.fingerprint != fp) {
+            if (Core.store.activeGroup()?.fingerprint != fp) {
                 clearGroup(ctx, fp)
                 android.widget.Toast.makeText(ctx, R.string.notif_other_group, android.widget.Toast.LENGTH_LONG).show()
                 return
             }
+            Core.ensureRunning()
+            // The group on the radio — but its router may still be starting (its saved chat being
+            // read, its key worked out, after the process was killed): what can wait, waits for it.
+            val r = Core.router?.takeIf { it.group.fingerprint == fp }
             when (intent.action) {
                 ACTION_REPLY -> {
                     val chat = intent.getStringExtra(EXTRA_PEER) ?: return
                     val text = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(KEY_REPLY)?.toString()?.trim().orEmpty()
                     if (text.isEmpty()) return
-                    if (chat == Core.GROUP) r.sendChat(text, mentions = app.hopline.ui.Ui.mentionsIn(r, text)) else r.sendDm(chat, text)
+                    if (r == null) {
+                        // Kept on disk and sent the moment the router is up (Core.sendKeptReplies).
+                        if (!Core.store.keepReply(fp, chat, text, System.currentTimeMillis())) {
+                            post(ctx, fp, chat, silent = true, alertAgain = false)
+                            android.widget.Toast.makeText(ctx, R.string.starting_try_again, android.widget.Toast.LENGTH_LONG).show()
+                            return
+                        }
+                        Core.store.setLastRead(fp, chat, System.currentTimeMillis())
+                        appendMine(ctx, fp, chat, text)
+                        return
+                    }
+                    val mine = if (chat == Core.GROUP) r.sendChat(text, mentions = app.hopline.ui.Ui.mentionsIn(r, text)) else r.sendDm(chat, text)
+                    if (mine == null) {
+                        // A private chat nothing can be sealed for (Router.canWriteTo): nothing went, so nothing
+                        // shows as sent; the words wait in that chat (Core.keepAsDraft), the notification is
+                        // put back as it was, and the chat's own line says why (the same one its screen shows).
+                        Core.keepAsDraft(fp, chat, text)
+                        app.hopline.ui.Ui.cantWriteLine(r, chat)?.let { android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_LONG).show() }
+                        post(ctx, fp, chat, silent = true, alertAgain = false)
+                        return
+                    }
                     // Read now, but keep their lines on screen with my reply under them, like
                     // every messaging app (markRead would wipe the conversation first).
                     Core.store.setLastRead(fp, chat, System.currentTimeMillis())
@@ -429,6 +452,8 @@ object Notifications {
                 }
                 ACTION_DECLINE -> {
                     val eid = intent.getStringExtra(EXTRA_ERRAND) ?: return
+                    // Handing a request on needs the group's router: the notification stays until it is up.
+                    if (r == null) { android.widget.Toast.makeText(ctx, R.string.starting_try_again, android.widget.Toast.LENGTH_LONG).show(); return }
                     Core.finishSendErrand(eid, sent = false)
                 }
             }

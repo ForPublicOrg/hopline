@@ -20,7 +20,6 @@ import app.hopline.core.Crypto
 import app.hopline.mesh.Attachment
 import app.hopline.mesh.ChunkStore
 import app.hopline.mesh.Envelope
-import app.hopline.mesh.Message
 import app.hopline.mesh.Router
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -28,6 +27,7 @@ import java.io.File
 import java.io.FileNotFoundException
 import java.nio.file.Files
 import java.nio.file.attribute.BasicFileAttributes
+import java.security.MessageDigest
 import java.util.concurrent.Callable
 import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
@@ -36,12 +36,13 @@ import java.util.concurrent.Future
 
 /**
  * Everything about file bytes lives here, out of the router's way:
- *  - a disk-backed ChunkStore (pieces being carried for the group),
- *  - shrinking a photo until it is small enough to hop,
- *  - gluing arrived pieces back into a real file,
+ *  - a disk-backed ChunkStore (pieces being carried for the group, each sealed under its file's key),
+ *  - shrinking a photo until it is small enough to hop, and sealing a file to send,
+ *  - gluing arrived pieces back into a real file — every byte checked before it is kept,
  *  - keeping a file on the phone (Pictures / Downloads) and handing it to other apps.
- * Layout: files/blobs/<groupFingerprint>/chunks/<envelopeId>.json and .../files/<fid>-<name>.
- * A group that was left keeps its files/ — they are part of its chat — and loses its chunks/;
+ * Layout: files/blobs/<groupFingerprint>/pieces5/<envelopeId>.json and .../files/<fid>-<name>.
+ * (2.3 and older kept plain pieces in .../chunks/; that folder goes for every group.)
+ * A group that was left keeps its files/ — they are part of its chat — and loses its pieces;
  * only deleting the group removes the kept files.
  */
 object Blobs {
@@ -64,14 +65,14 @@ object Blobs {
     private val assembler: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, ASSEMBLER_THREAD).apply { isDaemon = true } }
     private const val ASSEMBLER_THREAD = "hopline-assemble"
     /** Assemblies queued or running, by group/file: a second request for one joins the first. */
-    private val assembling = HashMap<String, Future<Boolean>>()
+    private val assembling = HashMap<String, Future<BlobRules.Assembly>>()
 
     /** True while this phone is too full to take more pieces — a screen can say so instead of "Receiving…" forever. */
     @Volatile var storageLow = false
         private set
 
     fun groupDir(ctx: Context, fp: String): File = File(File(ctx.filesDir, "blobs"), fp)
-    private fun chunksDir(ctx: Context, fp: String): File = File(groupDir(ctx, fp), "chunks")
+    private fun piecesDir(ctx: Context, fp: String): File = File(groupDir(ctx, fp), BlobRules.PIECES)
     /** No mkdirs here: this runs on every chat redraw, and must never resurrect a deleted group. */
     private fun filesDir(ctx: Context, fp: String): File = File(groupDir(ctx, fp), "files")
 
@@ -99,11 +100,28 @@ object Blobs {
      * True when no pieces are left under the group's name (false: the rename failed; try again later).
      */
     fun dropChunks(ctx: Context, fp: String): Boolean {
-        val dir = chunksDir(ctx, fp)
-        if (!dir.exists()) return true
-        val dead = BlobRules.moveAside(dir, BlobRules.deadChunksName(System.currentTimeMillis())) ?: return false
-        housekeeping.execute { dead.deleteRecursively() }
-        return true
+        val now = System.currentTimeMillis()
+        var none = true
+        // Today's pieces, and any plain ones an older version left that nothing has cleared yet.
+        for (name in listOf(BlobRules.PIECES, BlobRules.LEGACY_PIECES)) {
+            val dir = File(groupDir(ctx, fp), name)
+            if (!dir.exists()) continue
+            val dead = BlobRules.moveAside(dir, BlobRules.deadChunksName(now, name))
+            if (dead == null) { none = false; continue }
+            housekeeping.execute { dead.deleteRecursively() }
+        }
+        return none
+    }
+
+    /**
+     * The plain pieces 2.3 and older kept for this group go, before its piece store is built —
+     * whatever the group's state says, and as often as asked ([BlobRules.legacyAside]). The start-up
+     * [sweep] does the same for every group. Files that were still arriving at the upgrade are
+     * lost with them: no phone takes those pieces any more.
+     */
+    private fun dropLegacyPieces(ctx: Context, fp: String) {
+        val old = BlobRules.legacyAside(groupDir(ctx, fp), System.currentTimeMillis()) ?: return
+        housekeeping.execute { old.deleteRecursively() }
     }
 
     /** Run a slow file job (saving, copying) off the main thread, in order with the other file chores. */
@@ -143,6 +161,17 @@ object Blobs {
         @Volatile var isKnownFile: (String) -> Boolean = { true }
         /** Is this piece one of my own sends? Those are always kept: only this phone may have them yet. */
         @Volatile var isMine: (Envelope) -> Boolean = { false }
+
+        /**
+         * Hold pieces for [r]: which files it knows and which are mine is what IT knows — a file
+         * this phone sent (Router.isMine) — never what a piece claims. A piece signed with my id for
+         * a file I never sent is a stranger's, under the reserve and the orphan cap like any other.
+         * Asked from put(), which runs on the router's thread.
+         */
+        fun servedBy(r: Router) {
+            isKnownFile = { fid -> r.fileMessage(fid) != null }
+            isMine = { env -> BlobRules.chunkFid(env.id)?.let { r.isMine(it) } == true }
+        }
 
         private class Entry(val fid: String, val size: Long, val at: Long, val orphan: Boolean)
 
@@ -386,10 +415,15 @@ object Blobs {
             } catch (e: Exception) {
                 // A damaged piece is worse than a missing one: forget it, and let a friend refill it.
                 log("damaged piece dropped", e)
-                synchronized(this) { index[id]?.let { forgetLocked(id, it); refillLocked(id) } }
-                deleteLater(listOf(id))
+                forget(id)
                 null
             }
+        }
+
+        /** A piece that didn't open (see [ChunkStore.forget]): gone from the disk, and handed back so a friend refills it. */
+        override fun forget(id: String) {
+            val had = synchronized(this) { index[id]?.let { forgetLocked(id, it); refillLocked(id); true } ?: false }
+            if (had) deleteLater(listOf(id))
         }
 
         override fun expire(before: Long) {
@@ -414,8 +448,9 @@ object Blobs {
             const val SPACE_CHECK_MS = 5_000L
             /**
              * Pieces listed but not kept, at most: a full friend's worth (~16,000 pieces at the 300 MB
-             * budget), while the inventory — carried messages (6,000) + pieces held (~16,500) + these —
-             * stays inside the ~44,800 ids a friend reads.
+             * budget), while the inventory — carried messages (6,000) and the ones let go of (6,000) +
+             * pieces held (~16,500) + these — stays inside what a friend reads (Router.MAX_INV_PARTS
+             * parts, Router.MAX_INV_IDS ids; pinned in PayloadSizeTest).
              */
             const val MAX_TOMBS = 20_000
             /** Free space needed above the reserve before a full phone takes pieces again. */
@@ -424,17 +459,15 @@ object Blobs {
     }
 
     /**
-     * The piece store of the group going on the radio — and of no other: it creates the folder,
-     * wires itself to the live router and reopens a deleted group's space. A group that was left
-     * must never get one (reading its chat needs no pieces; see Core.archive).
+     * The piece store of the group going on the radio — and of no other: it creates the folder
+     * and reopens a deleted group's space; the router built on it is wired in once it exists
+     * ([DiskChunkStore.servedBy]). A group that was left must never get one (reading its chat
+     * needs no pieces; see Core.archive).
      */
     fun chunkStore(ctx: Context, fp: String): DiskChunkStore {
         closed.remove(fp)   // joining a deleted group's code again reopens its blob space
-        val store = DiskChunkStore(chunksDir(ctx, fp))
-        // put() runs on the main thread, where the router lives — so asking it is safe. A store whose
-        // router isn't up (or was replaced) treats every piece as wanted.
-        store.isKnownFile = { fid -> Core.router?.let { r -> r.chunks !== store || r.fileMessage(fid) != null } ?: true }
-        store.isMine = { env -> Core.router?.let { r -> r.chunks === store && env.origin == r.me.id } == true }
+        dropLegacyPieces(ctx, fp)
+        val store = DiskChunkStore(piecesDir(ctx, fp))
         sweep(ctx, fp)
         return store
     }
@@ -483,62 +516,99 @@ object Blobs {
         else File(filesDir(ctx, fp), "invalid-${safeName(att.name)}")
 
     /**
-     * Glue the pieces of one message's attachment into a real file. Returns true only when the
-     * file is on disk. Blocks until done (callers are background threads); every assembly runs
-     * on one worker, and a second request for the same file simply waits for the first.
+     * Glue the pieces of a message's attachment into a real file ([putTogether] says how, and what
+     * the outcome means). [from] is the message's sender; [att] is a copy the caller made on the
+     * main thread, where the message's own may be marked meanwhile. Blocks until done (callers are
+     * background threads); every assembly runs on one worker, and a second request for the same
+     * file simply waits for the first.
      */
-    fun assemble(ctx: Context, fp: String, router: Router, m: Message): Boolean {
-        if (fp in closed) return false
-        val att = m.att ?: return false
-        if (!Attachment.validFid(att.fid)) return false
+    fun assemble(ctx: Context, fp: String, chunks: ChunkStore, from: String, att: Attachment): BlobRules.Assembly {
+        if (fp in closed || !Attachment.validFid(att.fid)) return BlobRules.Assembly.Waiting()
         val out = fileFor(ctx, fp, att)
-        if (out.exists()) return true
-        if (Thread.currentThread().name == ASSEMBLER_THREAD) return assembleNow(fp, router, att, out)
+        if (Thread.currentThread().name == ASSEMBLER_THREAD) return putTogether(out, chunks, from, att, gone = { fp in closed })
         val key = "$fp/${att.fid}"
         val job = synchronized(assembling) {
             assembling.getOrPut(key) {
                 assembler.submit(Callable {
-                    try { assembleNow(fp, router, att, out) } finally { synchronized(assembling) { assembling.remove(key) } }
+                    try { putTogether(out, chunks, from, att, gone = { fp in closed }) } finally { synchronized(assembling) { assembling.remove(key) } }
                 })
             }
         }
-        return try { job.get() } catch (e: Exception) { Log.w(TAG, "assemble failed", e); false }
+        return try { job.get() } catch (e: Exception) { Log.w(TAG, "assemble failed", e); BlobRules.Assembly.Failed }
     }
 
-    private fun assembleNow(fp: String, router: Router, att: Attachment, out: File): Boolean {
-        if (fp in closed) return false
-        if (out.exists()) return true          // someone finished it while this one waited
-        if (!router.fileComplete(att)) return false
-        val dir = out.parentFile ?: return false
-        if (!dir.isDirectory && !dir.mkdirs()) return false
+    /**
+     * The work of [assemble], on its thread (and in the tests): [out] is the file's place. Every
+     * piece is checked on the way — it must be the file's sender's ([from]) and open under the
+     * file's own key — and so is the whole: its size and checksum must be what the message says.
+     * The bytes go to a temporary file that is renamed into place only once all of that holds, so
+     * no byte that wasn't checked is ever in the final file.
+     *
+     * A piece that fails is let go of for a friend to hand over again — once ([BlobRules.onBadPieces]).
+     * Failing again, or a whole that isn't what its message says, means the file never will open:
+     * its pieces stay (friends still pass them on) and the caller marks the message so. A file
+     * already in [out]'s place counts only for a message whose sender made that file id; a message
+     * from before 2.4 (no key) has no pieces to come and is left alone. [gone]: the group was
+     * deleted meanwhile, and nothing may be written for it.
+     */
+    fun putTogether(out: File, chunks: ChunkStore, from: String, att: Attachment, gone: () -> Boolean = { false },
+                    log: (String, Throwable?) -> Unit = { msg, t -> Log.w(TAG, msg, t) }): BlobRules.Assembly {
+        if (att.failed) return BlobRules.Assembly.Bad
+        val key = att.key
+        if (key == null || !Attachment.ownedBy(att.fid, from)) return BlobRules.Assembly.Waiting()
+        if (out.exists()) return BlobRules.Assembly.Ready   // finished while this one waited, or my own copy
+        for (i in 0 until att.chunks) if (!chunks.has(Envelope.chunkId(att.fid, i))) return BlobRules.Assembly.Waiting()
+        if (gone()) return BlobRules.Assembly.Waiting()
+        val dir = out.parentFile ?: return BlobRules.Assembly.Failed
         var tmp: File? = null
         try {
+            if (!dir.isDirectory && !dir.mkdirs()) return BlobRules.Assembly.Failed
             val t = File.createTempFile(BlobRules.tempPrefix(out.name), ".part", dir).also { tmp = it }
+            val bad = ArrayList<Int>()
+            val sum = MessageDigest.getInstance("SHA-256")
             var written = 0L
             t.outputStream().buffered().use { os ->
                 for (i in 0 until att.chunks) {
-                    val env = router.chunks.get(Envelope.chunkId(att.fid, i)) ?: return false
-                    val bytes = Base64.decode(env.payload.getString("d"), Base64.NO_WRAP)
+                    // Gone a moment ago (expired — or damaged, and handed back by the store): its next arrival tries again.
+                    val env = chunks.get(Envelope.chunkId(att.fid, i)) ?: return BlobRules.Assembly.Waiting()
+                    val bytes = if (env.origin == from) Crypto.openPiece(key, i, env.sealed) else null
+                    if (bytes == null) { bad.add(i); continue }
+                    // After a bad piece nothing more is written, but the rest are still checked: every
+                    // bad one is fetched again in one go, not one per round.
+                    if (bad.isNotEmpty()) continue
                     written += bytes.size
-                    if (written > Router.MAX_FILE) { Log.w(TAG, "pieces add up to more than a file can be"); return false }
+                    if (written > att.size) continue   // more than the file is: said below, never written
+                    sum.update(bytes)
                     os.write(bytes)
                 }
             }
-            if (written != att.size) Log.w(TAG, "file ${att.fid} is $written bytes, its message said ${att.size}")
-            if (fp in closed) return false
+            if (bad.isNotEmpty()) {
+                val verdict = BlobRules.onBadPieces(bad, att.refilled)
+                if (verdict is BlobRules.Assembly.Waiting) {
+                    log("${bad.size} piece(s) of ${att.fid} didn't open; fetching them again", null)
+                    for (i in verdict.refilled) chunks.forget(Envelope.chunkId(att.fid, i))
+                } else log("a piece of ${att.fid} didn't open again: it can't be opened", null)
+                return verdict
+            }
+            if (written != att.size || Crypto.hex(sum.digest()) != att.sha) {
+                log("file ${att.fid} isn't what its message says: it can't be opened", null)
+                return BlobRules.Assembly.Bad
+            }
+            if (gone()) return BlobRules.Assembly.Waiting()
             // rename() replaces in one step. An existing file is never deleted first: if this rename
             // fails, whatever is already there is the finished file, and that is the honest answer.
-            if (!t.renameTo(out)) Log.w(TAG, "couldn't move ${att.fid} into place")
-            return out.exists()
+            if (t.renameTo(out) || out.exists()) return BlobRules.Assembly.Ready
+            log("couldn't move ${att.fid} into place", null)
+            return BlobRules.Assembly.Failed
         } catch (e: Exception) {
-            Log.w(TAG, "assemble failed", e)
-            return out.exists()
+            log("assemble failed", e)
+            return if (out.exists()) BlobRules.Assembly.Ready else BlobRules.Assembly.Failed
         } finally {
             tmp?.let { if (it.exists()) it.delete() }
         }
     }
 
-    /** My own send: the bytes are already here — write the file directly so it shows instantly. */
+    /** My own send: the bytes are already here — write the file directly so it shows instantly. Off the main thread. */
     fun saveOwn(ctx: Context, fp: String, att: Attachment, bytes: ByteArray): Boolean {
         if (fp in closed || !Attachment.validFid(att.fid)) return false
         val out = fileFor(ctx, fp, att)
@@ -558,13 +628,33 @@ object Blobs {
         }
     }
 
-    /** Cut bytes into base64 pieces sized for the radio. */
-    fun chunkify(bytes: ByteArray): List<String> {
+    /** A file made ready to send: its own new key, the checksum and size of its bytes, and its pieces sealed under that key. */
+    class Sealed(val key: ByteArray, val sha: String, val pieces: List<String>, val size: Long) {
+        /**
+         * The attachment of a file of mine sent again ("Send again", or right after the upgrade):
+         * [old]'s name, kind, picture size, preview and length — a photo isn't shrunk a second
+         * time — under the new file id [fid] and this new key.
+         */
+        fun again(old: Attachment, fid: String): Attachment =
+            Attachment.make(fid, old.name, old.mime, size, pieces.size, old.width, old.height, old.thumb, old.dur, key = key, sha = sha)
+    }
+
+    /**
+     * Seal [bytes] to send, under a key of their own: every send gets a new one, a "Send again"
+     * too. The key and the checksum travel only inside the sealed message. Slow: not on the main thread.
+     */
+    fun seal(bytes: ByteArray): Sealed {
+        val key = Crypto.randomBytes(32)
+        return Sealed(key, Crypto.sha256Hex(bytes), chunkify(bytes, key), bytes.size.toLong())
+    }
+
+    /** Cut bytes into pieces sized for the radio, each sealed under the file's own [key] (see Crypto.sealPiece). Slow: not on the main thread. */
+    fun chunkify(bytes: ByteArray, key: ByteArray): List<String> {
         val out = ArrayList<String>((bytes.size + Router.CHUNK_RAW - 1) / Router.CHUNK_RAW)
         var i = 0
         while (i < bytes.size) {
             val end = minOf(bytes.size, i + Router.CHUNK_RAW)
-            out.add(Base64.encodeToString(bytes, i, end - i, Base64.NO_WRAP))
+            out.add(Crypto.sealPiece(key, out.size, bytes.copyOfRange(i, end)))
             i = end
         }
         return out

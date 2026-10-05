@@ -134,7 +134,7 @@ class ViewerActivity : AppCompatActivity() {
             b.image.contentDescription = if (caption.isEmpty()) getString(R.string.viewer_photo_from, who)
                                          else getString(R.string.viewer_photo_from_caption, who, caption)
         } else {
-            b.title.text = name.ifEmpty { getString(R.string.viewer_photo) }
+            b.title.text = MediaRules.shownName(name, fallback = "").ifEmpty { getString(R.string.viewer_photo) }
             b.subtitle.isVisible = false
             caption = ""
             b.image.contentDescription = getString(R.string.viewer_photo)
@@ -179,7 +179,7 @@ class ViewerActivity : AppCompatActivity() {
         // One save at a time: a double tap must not make two copies.
         b.save.isEnabled = false
         b.save.alpha = 0.4f
-        media.save(f, name, mime) { _ -> b.save.isEnabled = true; b.save.alpha = 1f }
+        media.save(f, name) { _ -> b.save.isEnabled = true; b.save.alpha = 1f }
     }
 
     /** Tap the photo to see just the photo (and the system bars go too); tap again for the controls. */

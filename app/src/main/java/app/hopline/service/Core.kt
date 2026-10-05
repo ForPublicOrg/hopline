@@ -22,6 +22,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.MutableLiveData
 import app.hopline.R
 import app.hopline.core.Crypto
+import app.hopline.core.GroupKeys
 import app.hopline.core.HelperLimits
 import app.hopline.core.Names
 import app.hopline.core.Words
@@ -41,11 +42,15 @@ import app.hopline.mesh.Router
 import app.hopline.mesh.RouterListener
 import app.hopline.mesh.Transport
 import app.hopline.ui.ChatDrafts
+import app.hopline.ui.Ui
 import org.json.JSONObject
+import java.io.File
+import java.io.IOException
 import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
@@ -97,24 +102,47 @@ object Core {
         Notifications.createChannels(application)
         Cell.onChange = { refreshCaps() }
         reconcile()
+        backfillKeys()
         Updater.init(application)
     }
 
-    /** Is there a group for the radio? Groups this phone left don't count: they are only read. */
-    fun hasGroup(): Boolean = store.group() != null
-    fun fingerprint(): String? = router?.group?.fingerprint ?: store.group()?.fingerprint
+    /**
+     * Is there a group for the radio? Groups this phone left don't count: they are only read. A
+     * group whose key is still being worked out does: it is starting, not missing.
+     */
+    fun hasGroup(): Boolean = store.hasActive()
+    fun fingerprint(): String? = router?.group?.fingerprint ?: store.activeGroup()?.fingerprint
+
+    /**
+     * The group on the radio has no router yet only because its build is waiting: for the writer
+     * to hand over its saved state, or for its key to be worked out. It will start by itself; the
+     * service stays up meanwhile (see [prepare]).
+     */
+    val buildPending: Boolean
+        get() = buildWaiting || store.activeGroup()?.let { it.masterKey() == null && it.code in keyWaits } == true
 
     /**
      * Build the router for the active group (idempotent) and start the background service. With
      * no active group — every group left, or none joined yet — nothing is built and nothing starts.
+     * True too while the build is waiting ([buildPending]): the service comes up and the radio
+     * starts through it when the router is there. False only when nothing can start: no group, no
+     * permission, or a build that failed for a reason waiting won't cure.
      */
     fun ensureRunning(): Boolean {
-        val group = store.group() ?: return false
-        if (!Permissions.allGranted(app)) return false
-        if (router == null && !build(group)) return false
+        if (!prepare()) return false
         try { ContextCompat.startForegroundService(app, Intent(app, MeshService::class.java)) }
         catch (e: Exception) { Log.w(TAG, "could not start service now", e); return false }
         return true
+    }
+
+    /**
+     * [ensureRunning] without starting the service — what the service itself asks. True when the
+     * active group's router is there, or its build is waiting ([buildPending]).
+     */
+    fun prepare(): Boolean {
+        if (!store.hasActive() || !Permissions.allGranted(app)) return false
+        if (router == null) build()
+        return router != null || buildPending
     }
 
     /** Called by the service once it is in the foreground. */
@@ -132,9 +160,15 @@ object Core {
      * Wake the active group: its router, restored from its saved state, and its radio (not started
      * here). False — and nothing is built — when the saved state can't be had right now: a router
      * that started without it would save an empty chat over the real one a few seconds later.
+     * False too while the group's key is still being worked out: the build then runs by itself
+     * the moment it is there ([keyLanded]).
      */
-    private fun build(group: Group): Boolean {
+    private fun build(): Boolean {
         if (buildWaiting) return false   // already queued behind a busy writer: no second wait
+        val saved = store.activeGroup() ?: return false
+        // The key first: worked out once per group, on the keys thread — seconds, never here.
+        val group = store.groupOf(saved) ?: run { needKey(saved.code); return false }
+        val me = store.identity() ?: run { Log.w(TAG, "this phone's key pair can't be read right now; not starting"); return false }
         val fp = group.fingerprint
         // The state first, and in its turn on the writer: a save of this very group may still be
         // waiting there (a quick switch away and back), and it must land before this reads.
@@ -144,7 +178,6 @@ object Core {
             if (read.busy) buildWhenWriterFree()
             return false
         }
-        val me = store.identity()
         val t = NearbyTransport(app, group, me)
         val chunks = Blobs.chunkStore(app, fp)
         var restored = Router(me, group, t, listener, chunks)
@@ -163,6 +196,20 @@ object Core {
             }
         }
         val r = restored
+        // Live counters above any this phone sent in any group, this one's earlier life included.
+        r.liveQAbove(store.liveQMark())
+        // Mine and known by what this router knows — from the first piece on, a reissued file's included.
+        chunks.servedBy(r)
+        // Right after an upgrade: what this phone had not got off it yet in the old format goes out
+        // again in the new one — and the state that says so is on disk before the radio starts, or
+        // the group doesn't start (a kill in between would send the same messages twice, under two ids).
+        val files = r.reissueQueued()
+        val copies = if (files.isEmpty()) null else reissueFiles(r, fp, files)
+        if (read.upgraded || copies != null) {
+            val saved = savedBeforeStart(fp, r)
+            copies?.let { settleCopies(fp, it) }
+            if (!saved) return false
+        }
         // Back in a group this phone had left: "You rejoined", once, under the "You left" in its chat.
         Archive.rejoined(r)
         r.shareInternet = store.shareInternet
@@ -184,8 +231,110 @@ object Core {
         r.resumeErrands()
         scheduleErrandWake()
         finishInterruptedFiles(r, fp)
+        sendKeptReplies(r)
         changed()
         return true
+    }
+
+    /**
+     * Save a router that is not on the radio yet, and wait — a few seconds at most — to hear that
+     * its state is on disk. A writer too busy to say in time is waited for the usual way
+     * ([buildWhenWriterFree]): the save is queued, and the build after it finds it.
+     */
+    private fun savedBeforeStart(fp: String, r: Router): Boolean {
+        r.takeDirty()
+        queueWrite(fp, r.snapshot())
+        val saved = try { writer.submit(Callable { fp !in unsaved }).get(WRITER_WAIT_S, TimeUnit.SECONDS) }
+            catch (e: TimeoutException) { buildWhenWriterFree(); return false }
+            catch (e: Exception) { false }
+        if (!saved) Log.w(TAG, "the upgraded state could not be saved; not starting the group")
+        return saved
+    }
+
+    /**
+     * Right after the upgrade ([Router.reissueQueued]): photos and files of mine that never got off
+     * this phone in the old format go out again the way "Send again" sends them — read from the
+     * copy this phone kept, under a new file id and key. One whose copy is gone, or that can't go
+     * out (no room), stays "not sent", for the person to send again or delete. The reading and
+     * sealing run off the main thread, and the build waits for them — once, seconds at most —
+     * because what they change belongs in the state that is saved before the radio starts.
+     *
+     * Each file sent again has two copies here for a moment: the old one, which the state on disk
+     * still names, and the new one. Which goes is decided once that save is known ([settleCopies]).
+     */
+    private fun reissueFiles(r: Router, fp: String, files: List<Message>): Copies {
+        class Redo(val old: Message, val was: Attachment, val att: Attachment, val kept: Boolean, val pieces: List<String>)
+        val asked = files.mapNotNull { m -> m.att?.let { Triple(m, it, r.newFid()) } }
+        val work = FutureTask(Callable {
+            asked.mapNotNull { (m, a, fid) ->
+                val bytes = (try { Blobs.fileFor(app, fp, a).readBytes() } catch (e: Exception) { null })?.takeIf { it.isNotEmpty() }
+                    ?: return@mapNotNull null
+                val s = Blobs.seal(bytes)
+                val att = s.again(a, fid)
+                Redo(m, a, att, Blobs.saveOwn(app, fp, att, bytes), s.pieces)
+            }
+        })
+        Thread(work, "hopline-reissue").start()
+        val ready = try { work.get(WRITER_WAIT_S, TimeUnit.SECONDS) } catch (e: Exception) {
+            Log.w(TAG, "files to send again weren't ready in time; they stay not sent")
+            // The copies it still writes belong to no message: they go once it is done.
+            Blobs.background { (try { work.get() } catch (t: Exception) { null })?.forEach { Blobs.fileFor(app, fp, it.att).delete() } }
+            return Copies(emptyList(), emptyList())
+        }
+        val old = ArrayList<File>(); val new = ArrayList<File>()
+        for (x in ready) {
+            // The old message goes from the chat; its copy stays until the save says it may go.
+            val sent = BlobRules.resend(r, x.old, x.att, x.kept, x.pieces) { id -> r.hideMessages(listOf(id)) }
+            if (sent is BlobRules.Sent.Ok) { old.add(Blobs.fileFor(app, fp, x.was)); new.add(Blobs.fileFor(app, fp, x.att)) }
+            else dropOwnCopy(fp, x.att)
+        }
+        return Copies(old, new)
+    }
+
+    /** The copies of the files [reissueFiles] sent again: [old], which the state on disk names until the save, and [new], which it names after. */
+    private class Copies(val old: List<File>, val new: List<File>)
+
+    /**
+     * Once the state saved before the start is on disk — known on the writer, right behind that
+     * save — the old copies go. If it never got there, the new ones go instead: the next start
+     * reads the old state again and sends those files again, from the old copies. Either way no
+     * photo is ever left without its copy, and no copy is left without its message.
+     */
+    private fun settleCopies(fp: String, copies: Copies) {
+        if (copies.old.isEmpty() && copies.new.isEmpty()) return
+        writer.execute {
+            val gone = if (fp !in unsaved) copies.old else copies.new
+            Blobs.background { gone.forEach { it.delete() } }
+        }
+    }
+
+    /**
+     * Replies typed into a notification while the group was still starting (Store.keepReply): they
+     * go now that its router is up, and are forgotten once the state that holds them is on disk.
+     * One for a private chat nothing can be sealed for (Router.canWriteTo) is not lost either: it
+     * waits in that chat ([keepAsDraft]).
+     */
+    private fun sendKeptReplies(r: Router) {
+        val fp = r.group.fingerprint
+        val kept = store.keptReplies(fp)
+        if (kept.isEmpty()) return
+        for (k in kept) {
+            val mine = if (k.chat == GROUP) r.sendChat(k.text, mentions = Ui.mentionsIn(r, k.text)) else r.sendDm(k.chat, k.text)
+            if (mine == null) keepAsDraft(fp, k.chat, k.text)
+        }
+        saveNow()
+        writer.execute { if (fp !in unsaved) handler.post { store.dropKeptReplies(fp, kept) } }
+    }
+
+    /**
+     * Words that could not be sent wait in [chat]'s composer, after whatever was half-typed there
+     * already. A chat from before the update never gets its composer back: its screen shows them
+     * in the bar that says so, with a Copy button, until they are copied out.
+     */
+    fun keepAsDraft(fp: String, chat: String, text: String) {
+        val draft = ChatDrafts.get(app, fp, chat)
+        val words = listOfNotNull(draft?.text?.ifBlank { null }, text).joinToString("\n")
+        ChatDrafts.put(app, fp, chat, ChatDrafts.Draft(words, draft?.replyId, draft?.chosen ?: emptyMap()))
     }
 
     private var buildWaiting = false
@@ -197,8 +346,117 @@ object Core {
     private fun buildWhenWriterFree() {
         if (buildWaiting) return
         buildWaiting = true
-        writer.execute { handler.post { buildWaiting = false; if (router == null) ensureRunning() } }
+        writer.execute {
+            handler.post {
+                buildWaiting = false
+                if (router == null && store.hasActive() && Permissions.allGranted(app)) build()
+                deferredBuildDone()
+            }
+        }
     }
+
+    /**
+     * A build that had to wait has run. Started from the background, a service can't be brought
+     * up again (Android refuses), so the radio starts through the one that stayed up waiting for
+     * it; with none up, it is asked for the usual way. A build that failed for good lets the
+     * waiting service go.
+     */
+    private fun deferredBuildDone() {
+        if (router != null) { if (!MeshService.routerReady()) ensureRunning() }
+        else if (!buildPending) MeshService.nothingToRun()
+        changed()
+    }
+
+    // ------------------------------------------------------------------ group keys
+
+    /**
+     * One thread that stretches group codes into keys (Crypto.stretch, seconds each). Never the
+     * main thread, and never the writer: both are waited on, and a key behind a slow save — or a
+     * save behind a key — would fail the build, a leave or a rejoin.
+     */
+    private val keyThread = Executors.newSingleThreadExecutor()
+    /** Codes whose key is being worked out, and who is waiting for it. Main thread only. */
+    private val keyWaits = HashMap<String, ArrayList<(ByteArray?) -> Unit>>()
+
+    /** Work out [code]'s master key on the keys thread; [done] gets it on the main thread (null if it couldn't be made). */
+    private fun deriveKey(code: String, done: (ByteArray?) -> Unit) {
+        keyWaits[code]?.let { it.add(done); return }
+        keyWaits[code] = arrayListOf(done)
+        keyThread.execute {
+            val mk = try { Crypto.stretch(code) } catch (t: Throwable) { Log.w(TAG, "could not work out a group's key", t); null }
+            handler.post { keyWaits.remove(code)?.forEach { it(mk) } }
+        }
+    }
+
+    /** A saved group without its key: worked out and kept; the group starts the moment it's there, if it's on the radio. */
+    private fun needKey(code: String) {
+        if (code !in keyWaits) deriveKey(code) { keyLanded(code, it) }
+    }
+
+    private fun keyLanded(code: String, mk: ByteArray?) {
+        if (mk != null) store.setKey(code, mk)
+        if (store.activeCode != code || router != null || buildWaiting) return
+        if (mk != null && Permissions.allGranted(app)) build()
+        deferredBuildDone()
+    }
+
+    /**
+     * After the upgrade to 2.4, at every start until done: every saved group without its key gets
+     * it worked out once — the group on the radio first, then the paused ones, then the ones left
+     * (a rejoin needs it). Groups saved since have theirs from the start.
+     */
+    private fun backfillKeys() {
+        val active = store.activeCode
+        val missing = store.allGroups().filter { it.masterKey() == null }
+            .sortedBy { when { it.code == active -> 0; !it.left -> 1; else -> 2 } }
+        for (g in missing) needKey(g.code)
+    }
+
+    /**
+     * A group being started or joined (GroupActivity): its key is worked out first, which takes
+     * seconds, then it is saved and put on the radio. Owned here, not by the screen, so it carries
+     * on through a turned phone or a screen left behind. [made]: this phone started the group.
+     */
+    class Adding(val code: String, val name: String, val nameAt: Long, val made: Boolean) {
+        /** [WORKING], [DONE] (saved and on the radio) or [FAILED] (nothing was saved: the list didn't reach the disk). */
+        var state = WORKING; internal set
+
+        companion object {
+            const val WORKING = 0
+            const val DONE = 1
+            const val FAILED = 2
+        }
+    }
+
+    /** The group being started or joined, or the outcome of the last one until a screen takes it ([takeAdding]). */
+    var adding: Adding? = null; private set
+
+    /** Start a new group with [code] (see [Adding]). False when another start or join is still working. */
+    fun startGroup(code: String, name: String, nameAt: Long): Boolean = addGroup(Adding(Words.normalise(code), name, nameAt, made = true))
+
+    /** Join the group [code] — a link's [name] is only a hint (see Store.addGroup). False when another is still working. */
+    fun joinGroup(code: String, name: String): Boolean = addGroup(Adding(Words.normalise(code), name, 0, made = false))
+
+    private fun addGroup(a: Adding): Boolean {
+        if (adding?.state == Adding.WORKING) return false
+        adding = a
+        deriveKey(a.code) { mk ->
+            if (adding !== a) return@deriveKey
+            if (mk == null || !store.addGroup(a.code, a.name, mk, a.nameAt)) {
+                Log.w(TAG, "a new group could not be saved")
+                a.state = Adding.FAILED
+            } else {
+                switchGroup(a.code)
+                a.state = Adding.DONE
+            }
+            changed()
+        }
+        changed()
+        return true
+    }
+
+    /** The finished start or join, handed to the one screen that shows its outcome; null while it works (or there is none). */
+    fun takeAdding(): Adding? = adding?.takeIf { it.state != Adding.WORKING }?.also { adding = null }
 
     /**
      * Goes up whenever a group's state file changes hands: a router is built for it, the group is
@@ -211,21 +469,93 @@ object Core {
         if (slowRead?.fp == fp) slowRead = null
     }
 
-    /** After a restart: files whose last pieces arrived while we were dead get assembled now. */
+    /**
+     * After a restart: files whose last pieces arrived while we were dead get assembled now, and
+     * each outcome counts as if the file had just come in ([assembled]) — a file already marked as
+     * one that can't be opened is only noted, never tried again.
+     */
     private fun finishInterruptedFiles(r: Router, fp: String) {
-        val pending = r.messages.filter { it.att != null }
+        val pending = r.messages.mapNotNull { m -> m.att?.let { m to copyOf(it) } }
         if (pending.isEmpty()) return
         Thread {
-            for (m in pending) {
+            for ((m, att) in pending) {
                 try {
-                    val att = m.att ?: continue
-                    if (Blobs.fileFor(app, fp, att).exists() || Blobs.assemble(app, fp, r, m)) {
-                        handler.post { if (router === r) r.markFileReady(att.fid) }
-                    }
+                    val a = Blobs.assemble(app, fp, r.chunks, m.from, att)
+                    handler.post { assembled(r, m, a) }
                 } catch (e: Throwable) { Log.w(TAG, "could not finish a file", e) }
             }
             handler.post { changed() }
         }.start()
+    }
+
+    /** The assembler's own copy of an attachment: the message's may be marked on the main thread meanwhile. */
+    private fun copyOf(att: Attachment) = Attachment(JSONObject(att.json.toString()))
+
+    /** Put [m]'s file together off the main thread, and act on how it went ([assembled]). */
+    private fun assembleFile(r: Router, m: Message) {
+        val att = m.att?.let { copyOf(it) } ?: return
+        val fp = r.group.fingerprint
+        Thread {
+            val a = try { Blobs.assemble(app, fp, r.chunks, m.from, att) }
+                catch (e: Throwable) { Log.w(TAG, "could not put a file together", e); BlobRules.Assembly.Failed }
+            handler.post { assembled(r, m, a) }
+        }.start()
+    }
+
+    /**
+     * How putting [m]'s file together went, on the main thread ([r]: the router it was for; a
+     * router that is off the radio by now has nothing left to decide):
+     *  - ready: it is on the phone;
+     *  - waiting: a piece is still to come — perhaps one that didn't open and is being fetched
+     *    again, which the message remembers, so that is done once only — and its arrival tries again;
+     *  - bad: it can never be opened; the message says so from now on, and it is never tried again;
+     *  - failed: every piece is here but the file couldn't be written; the tick tries again later.
+     * The two marks are saved at once: they are what keeps "fetched again once" and "never tried
+     * again" true after the app is killed.
+     */
+    private fun assembled(r: Router, m: Message, a: BlobRules.Assembly) {
+        val att = m.att ?: return
+        if (router !== r) return
+        val fid = att.fid
+        if (a !is BlobRules.Assembly.Failed) fileRetries.remove(fid)
+        when (a) {
+            BlobRules.Assembly.Ready -> r.markFileReady(fid)
+            is BlobRules.Assembly.Waiting -> {
+                r.unmarkFileReady(fid)
+                if (a.refilled.isNotEmpty()) { att.markRefilled(a.refilled); saveNow() }
+            }
+            BlobRules.Assembly.Bad -> {
+                r.markFileReady(fid)
+                if (!att.failed) { att.markFailed(); saveNow() }
+            }
+            BlobRules.Assembly.Failed -> {
+                // No piece is left to arrive and try again: the tick does, less and less often.
+                r.markFileReady(fid)
+                val tries = (fileRetries[fid]?.takeIf { it.r === r }?.tries ?: 0) + 1
+                fileRetries[fid] = FileRetry(r, tries, System.currentTimeMillis() + BlobRules.retryAfter(tries))
+            }
+        }
+        changed()
+    }
+
+    /** A file whose pieces are all here but that couldn't be written: when it is tried again, and how often it was (bug service#5). */
+    private class FileRetry(val r: Router, val tries: Int, val at: Long)
+    private val fileRetries = HashMap<String, FileRetry>()
+
+    /** From the tick: files [assembled] put off whose time has come. Only those — never every file in the chat. */
+    private fun retryFiles(r: Router) {
+        if (fileRetries.isEmpty()) return
+        val now = System.currentTimeMillis()
+        for ((fid, t) in fileRetries.entries.toList()) {
+            if (t.r !== r) { fileRetries.remove(fid); continue }
+            if (now < t.at) continue
+            val m = r.fileMessage(fid)
+            val att = m?.att
+            // Deleted meanwhile, or a piece has gone since (expired): its arrival tries again, not the tick.
+            if (att == null || !r.fileComplete(att)) { fileRetries.remove(fid); r.unmarkFileReady(fid); continue }
+            fileRetries[fid] = FileRetry(r, t.tries, Long.MAX_VALUE)   // under way: not again until it says how it went
+            assembleFile(r, m)
+        }
     }
 
     /** Point the radio at another saved group. Nothing is deleted; the old group sleeps on disk. */
@@ -296,7 +626,7 @@ object Core {
         val full = r?.snapshot()
         // Files whose every piece is here but which were never put together: now is their last
         // chance, before the pieces go.
-        val complete = if (r == null) emptyList() else r.messages.filter { m -> m.att?.let { r.fileComplete(it) } == true }
+        val complete = if (r == null) emptyList() else r.messages.mapNotNull { m -> m.att?.takeIf { r.fileComplete(it) }?.let { m.from to copyOf(it) } }
         if (r != null) {
             // Detached before the radio stops: the link-downs it ends with must not reach a router
             // that has had its last word, nor queue another save of it.
@@ -314,7 +644,7 @@ object Core {
         ChatDrafts.dropGroup(app, fp)
         if (committed) {
             if (r == null) sealPaused(g.code, fp, now)
-            else seal(g.code, fp) { for (m in complete) try { Blobs.assemble(app, fp, r, m) } catch (e: Throwable) { Log.w(TAG, "could not finish a file", e) } }
+            else seal(g.code, fp) { for ((from, att) in complete) try { Blobs.assemble(app, fp, r.chunks, from, att) } catch (e: Throwable) { Log.w(TAG, "could not finish a file", e) } }
         }
         // The radio moves to the group this phone is still in that it used last. With none — or none
         // that can start right now — the service has nothing to keep alive.
@@ -346,12 +676,15 @@ object Core {
      * save still queued for it. A file that can't be read is left exactly as it is.
      */
     private fun sealPaused(code: String, fp: String, leftAt: Long) {
-        val meId = store.nodeId
+        // Without this phone's id nothing can tell its messages from the rest: the next start tries again.
+        val me = store.identity() ?: return
         val meName = store.name
         writer.execute {
             val done = try {
                 val state = store.peekState(fp)
-                state == null || store.saveState(fp, Archive.strip(state, meId, meName, leftAt, System.currentTimeMillis()))
+                // Saved by an older version: made fit for this one first, so "mine" means mine (see Store.upgrade).
+                state == null || store.saveState(fp, Archive.strip(store.upgrade(fp, state, left = true) ?: state,
+                    me.id, meName, leftAt, System.currentTimeMillis()))
             } catch (t: Throwable) { Log.w(TAG, "could not tidy a left group's state", t); false }
             if (done) Blobs.background { dropPieces(code, fp) }
         }
@@ -451,7 +784,7 @@ object Core {
         for (g in left) if (!g.sealed) sealPaused(g.code, g.fingerprint, g.leftAt)
         // A notification posted just before a kill mid-leave would sit there offering a reply box.
         if (left.isNotEmpty()) Notifications.clearGroups(app, left.map { it.fingerprint })
-        Blobs.sweep(app, store.group()?.fingerprint)
+        Blobs.sweep(app, store.activeGroup()?.fingerprint)
     }
 
     // ------------------------------------------------------------------ reading a group that was left
@@ -492,10 +825,14 @@ object Core {
         val g = store.findGroup(fp)?.takeIf { it.left } ?: return null
         if (router?.group?.fingerprint == fp) return null
         if (archiveFp == fp) archiveRouter?.let { return it }
+        val me = store.identity() ?: return null
         val read = loadStateOrdered(fp, peek = true)
         archiveBusy = read.busy
         if (!read.usable) return null
-        val r = Router(store.identity(), Group(g.code, g.name, g.nameAt), noRadio, archiveListener)
+        // Reading a left group's chat needs no key: it never seals, opens or checks anything. The
+        // saved one is used when there is one; otherwise a stand-in nothing is ever sealed with.
+        val group = store.groupOf(g) ?: Group(g.code, g.name, g.nameAt, keys = GroupKeys(ByteArray(32)), fingerprint = g.fingerprint)
+        val r = Router(me, group, noRadio, archiveListener)
         if (read.state != null) try { r.restore(read.state) } catch (e: Throwable) {
             Log.w(TAG, "a left group's chat could not be opened", e)
             return null
@@ -645,23 +982,24 @@ object Core {
     fun sendImage(uri: Uri, caption: String, to: String?, quote: Quote? = null, mentions: List<String> = emptyList(),
                   cleanup: (() -> Unit)? = null, done: (String?) -> Unit) {
         val r0 = router ?: run { cleanup?.invoke(); return done("Hopline is starting — try again in a moment.") }
+        if (to != null && !r0.canWriteTo(to)) { cleanup?.invoke(); return done(cantWriteTo(r0, to)) }
         val fp = r0.group.fingerprint
+        val fid = r0.newFid()
         Thread {
             val prep = try { Blobs.prepareImage(app, uri) } catch (e: Throwable) { null }
+            // Sealed here, off the main thread, under a key of its own — and the copy this phone
+            // keeps is written here too: up to 2 MB is no job for the main thread.
+            val sealed = prep?.let { Blobs.seal(it.bytes) }
+            val att = if (prep == null || sealed == null) null else Attachment.make(fid, prep.name, prep.mime,
+                prep.bytes.size.toLong(), sealed.pieces.size, prep.width, prep.height, prep.thumbB64, key = sealed.key, sha = sealed.sha)
+            val kept = att != null && prep != null && Blobs.saveOwn(app, fp, att, prep.bytes)
             handler.post {
                 cleanup?.invoke()
                 // The user may have switched groups while we were shrinking the photo — a photo
                 // meant for one group must never be flooded into another.
-                if (router !== r0) { done("Group changed — photo not sent."); return@post }
-                if (prep == null) { done("Couldn't read that photo."); return@post }
-                val pieces = Blobs.chunkify(prep.bytes)
-                val att = Attachment.make(Crypto.randomId(12), prep.name, prep.mime,
-                    prep.bytes.size.toLong(), pieces.size, prep.width, prep.height, prep.thumbB64)
-                Blobs.saveOwn(app, fp, att, prep.bytes)
-                r0.sendFile(att, pieces, caption, to, quote, mentions)
-                saveSoon()
-                changed()
-                done(null)
+                if (router !== r0) { att?.let { dropOwnCopy(fp, it) }; done("Group changed — photo not sent."); return@post }
+                if (att == null || sealed == null) { done("Couldn't read that photo."); return@post }
+                done(sent(r0, fp, att, BlobRules.send(r0, att, kept, sealed.pieces, caption, to, quote, mentions)))
             }
         }.start()
     }
@@ -671,18 +1009,17 @@ object Core {
                       mentions: List<String> = emptyList(), done: (String?) -> Unit) {
         val r0 = router ?: return done("Hopline is starting — try again in a moment.")
         if (picked.bytes.isEmpty()) return done("That file is empty.")
+        if (to != null && !r0.canWriteTo(to)) return done(cantWriteTo(r0, to))
         val fp = r0.group.fingerprint
+        val fid = r0.newFid()
         Thread {
-            val pieces = Blobs.chunkify(picked.bytes)
+            val sealed = Blobs.seal(picked.bytes)
+            val att = Attachment.make(fid, picked.name, picked.mime,
+                picked.bytes.size.toLong(), sealed.pieces.size, 0, 0, "", durSec, key = sealed.key, sha = sealed.sha)
+            val kept = Blobs.saveOwn(app, fp, att, picked.bytes)
             handler.post {
-                if (router !== r0) { done("Group changed — file not sent."); return@post }
-                val att = Attachment.make(Crypto.randomId(12), picked.name, picked.mime,
-                    picked.bytes.size.toLong(), pieces.size, 0, 0, "", durSec)
-                Blobs.saveOwn(app, fp, att, picked.bytes)
-                r0.sendFile(att, pieces, caption, to, quote, mentions)
-                saveSoon()
-                changed()
-                done(null)
+                if (router !== r0) { dropOwnCopy(fp, att); done("Group changed — file not sent."); return@post }
+                done(sent(r0, fp, att, BlobRules.send(r0, att, kept, sealed.pieces, caption, to, quote, mentions)))
             }
         }.start()
     }
@@ -690,26 +1027,55 @@ object Core {
     /**
      * "Send again" for a photo, file or voice note that never got through: the very same bytes,
      * picture size, preview and length, as a new message — a photo isn't shrunk a second time.
-     * The old copy goes once the new one is on its way.
+     * The old message goes once the new one is on its way; if this one can't go either, the old
+     * one stays as it was ([BlobRules.resend]).
      */
     fun resendFile(old: Message, done: (String?) -> Unit) {
         val r0 = router ?: return done("Hopline is starting — try again in a moment.")
         val a = old.att ?: return done("That file isn't on this phone any more.")
+        old.to?.let { if (!r0.canWriteTo(it)) return done(cantWriteTo(r0, it)) }
         val fp = r0.group.fingerprint
         val src = Blobs.fileFor(app, fp, a)
+        val fid = r0.newFid()
         Thread {
-            val bytes = try { src.readBytes() } catch (e: Exception) { null }
-            val pieces = if (bytes != null && bytes.isNotEmpty()) Blobs.chunkify(bytes) else null
+            val bytes = (try { src.readBytes() } catch (e: Exception) { null })?.takeIf { it.isNotEmpty() }
+            // A new file id and a new key: a resend is a new file.
+            val sealed = bytes?.let { Blobs.seal(it) }
+            val att = sealed?.again(a, fid)
+            val kept = att != null && bytes != null && Blobs.saveOwn(app, fp, att, bytes)
             handler.post {
-                if (router !== r0) { done("Group changed — not sent."); return@post }
-                if (bytes == null || pieces == null) { done("That file isn't on this phone any more."); return@post }
-                val att = Attachment.make(Crypto.randomId(12), a.name, a.mime, bytes.size.toLong(), pieces.size, a.width, a.height, a.thumb, a.dur)
-                Blobs.saveOwn(app, fp, att, bytes)
-                r0.sendFile(att, pieces, old.text, old.to, old.quote, old.mentions)
-                deleteMessages(listOf(old.id))
-                done(null)
+                if (router !== r0) { att?.let { dropOwnCopy(fp, it) }; done("Group changed — not sent."); return@post }
+                if (att == null || sealed == null) { done("That file isn't on this phone any more."); return@post }
+                done(sent(r0, fp, att, BlobRules.resend(r0, old, att, kept, sealed.pieces) { deleteMessages(listOf(it)) }))
             }
         }.start()
+    }
+
+    /**
+     * The end of every file send, on the main thread: null when it is on its way, otherwise what
+     * to tell the person. A file that didn't go keeps no copy here — nothing in the chat points at it.
+     */
+    private fun sent(r: Router, fp: String, att: Attachment, s: BlobRules.Sent): String? = when (s) {
+        is BlobRules.Sent.Ok -> {
+            saveNow()   // what I send is on disk at once, not seconds later
+            changed()
+            null
+        }
+        BlobRules.Sent.NoRoom -> { dropOwnCopy(fp, att); NO_ROOM }
+        is BlobRules.Sent.CantWrite -> { dropOwnCopy(fp, att); cantWriteTo(r, s.to) }
+    }
+
+    private const val NO_ROOM = "Not enough free space on this phone — not sent."
+
+    /** Why nothing can be sent to [to] (Router.canWriteTo), in the words the chat uses for it. */
+    private fun cantWriteTo(r: Router, to: String): String =
+        if (!Crypto.isNodeId(to)) "This chat is from before the update — not sent. To keep talking, open them from People."
+        else "${Ui.nameOf(r, to)} hasn't been seen for a while — not sent. You can send once their phone has been in range."
+
+    /** The copy of a file of mine that never went out: in the background, with the other file chores. */
+    private fun dropOwnCopy(fp: String, att: Attachment) {
+        val f = Blobs.fileFor(app, fp, att)
+        Blobs.background { f.delete() }
     }
 
     // ------------------------------------------------------------------ delete for me
@@ -727,7 +1093,7 @@ object Core {
         // The history is looked through for every one of them, not only for those the live window
         // didn't have: a message can be in both (the phone was killed, or a save failed, between
         // filing a batch and saving the state without it). The router remembers a deleted id for
-        // three days only; after that the copy left in the history would be back in the chat.
+        // two weeks only; after that the copy left in the history would be back in the chat.
         if (hasEarlier(fp) || filing === r) forgetEarlier(fp) { it.optString("id") in want }
         saveSoon()
         changed()
@@ -1194,6 +1560,7 @@ object Core {
         if (r.hasInternet) runOwnWaiting(r)
         if (liveLocationUntil != 0L) pushMyLocation()   // stops itself once the time is up
         r.tick()
+        retryFiles(r)
         fileOverflow(r)
         scheduleErrandWake()
         // Watchdog: phones visible, nothing linked for 4 minutes → bounce the Bluetooth stack.
@@ -1263,6 +1630,8 @@ object Core {
         }
         writer.execute {
             val j = synchronized(pendingWrites) { pendingWrites.remove(fp) } ?: return@execute
+            // The phone's own mark first, whatever the file does: it outlives the group's state.
+            store.raiseLiveQMark(j.optLong("lastQ", 0))
             if (store.saveState(fp, j)) unsaved.remove(fp) else unsaved.add(fp)
         }
     }
@@ -1270,16 +1639,17 @@ object Core {
     /** Save right away — the app is going to the background, or may be killed. */
     fun flushSave() { handler.removeCallbacks(saveRunnable); savePosted = false; saveNow() }
 
-    /** Wait, a few seconds at most, until everything queued for the writer is on disk. False if it isn't yet. */
-    private fun drainWrites(): Boolean =
-        try { writer.submit {}.get(WRITER_WAIT_S, TimeUnit.SECONDS); true } catch (e: Exception) { false }
+    /** Wait, [ms] at most, until everything queued for the writer is on disk. False if it isn't yet. */
+    fun drainWrites(ms: Long = WRITER_WAIT_S * 1000): Boolean =
+        try { writer.submit {}.get(ms, TimeUnit.MILLISECONDS); true } catch (e: Exception) { false }
 
     /**
      * What reading a group's state gave. [usable] false means there is a state on disk that could
      * not be had — nothing may be built in its place, or the next save would write over it.
-     * [busy]: only because the writer didn't get to it in time.
+     * [busy]: only because the writer didn't get to it in time. [upgraded]: [state] was saved by
+     * an older version and has just been made fit for this one (Store.upgrade) — not on disk yet.
      */
-    private class StateRead(val state: JSONObject?, val usable: Boolean, val busy: Boolean = false)
+    private class StateRead(val state: JSONObject?, val usable: Boolean, val busy: Boolean = false, val upgraded: Boolean = false)
 
     /**
      * Read a group's saved state in its turn on the writer thread: behind every save already
@@ -1288,9 +1658,15 @@ object Core {
      * switch to another group and back used to lose the last seconds of a chat that way.) The
      * caller waits, a few seconds at most.
      *
-     * [peek] is for a group that is only being looked at: nothing is moved aside, whatever the
-     * file's condition. Without it, a state that can't be used is set aside as .corrupt-<time>,
-     * and the group starts clean.
+     * [peek] is for a group that is only being looked at — one this phone left: nothing is moved
+     * aside, whatever the file's condition. Without it, a state that can't be used is set aside as
+     * .corrupt-<time>, and the group starts clean.
+     *
+     * A state saved by an older version is made fit for this one right here, on the writer, before
+     * any router sees it (Store.upgrade). If that can't be done just now, the state is not usable
+     * this time — and stays on disk exactly as it was. A left group's upgraded state is saved at
+     * once (nothing else would ever save it); the group going on the radio saves its own, after
+     * what it has to send again is in it.
      */
     private fun loadStateOrdered(fp: String, peek: Boolean = false): StateRead {
         slowRead?.let { slow ->
@@ -1303,8 +1679,14 @@ object Core {
             if (slow.fp != fp || slow.peek != peek) slowRead = null
         }
         val read = writer.submit(Callable {
-            val state = if (peek) store.peekState(fp) else store.loadState(fp)
-            StateRead(state, usable = state != null || !store.stateExists(fp))
+            val state = (if (peek) store.peekState(fp) else store.loadState(fp))
+                ?: return@Callable StateRead(null, usable = !store.stateExists(fp))
+            val up = try { store.upgrade(fp, state, left = peek) } catch (e: IOException) {
+                Log.w(TAG, "a group's saved state can't be made fit for this version yet")
+                return@Callable StateRead(null, usable = false)
+            }
+            if (up != null && peek) store.saveState(fp, up)
+            StateRead(up ?: state, usable = true, upgraded = up != null && !peek)
         })
         return try { read.get(WRITER_WAIT_S, TimeUnit.SECONDS) }
         catch (e: TimeoutException) {
@@ -1354,16 +1736,7 @@ object Core {
 
         override fun onFileReady(m: Message) {
             val r = router ?: return
-            val fp = r.group.fingerprint
-            Thread {
-                val ok = try { Blobs.assemble(app, fp, r, m) } catch (e: Throwable) { false }
-                handler.post {
-                    // A failed assemble (I/O, storage full) must not stay latched: un-mark so the
-                    // next chunk arrival or restart retries.
-                    if (!ok && router === r) m.att?.let { r.unmarkFileReady(it.fid) }
-                    changed()
-                }
-            }.start()
+            assembleFile(r, m)
         }
 
         override fun onErrandRequest(e: Errand) {
@@ -1466,6 +1839,12 @@ object Core {
     /** Nearly flat and not on a charger: no time to spend the battery on anything but the mesh. */
     fun batteryLow(): Boolean = batteryPercent() in 0..14 && !charging()
 
+    /**
+     * Phones in range that are in this group but still run a Hopline from before 2.4: they can't
+     * link to this one until they update (NearbyTransport never connects to them).
+     */
+    fun olderPhonesNearby(): Int = transport?.olderPhonesNearby() ?: 0
+
     /** One plain-English line for the top of the screen. Links first: radio advice only when nothing is linked. */
     fun statusLine(): String {
         val r = router ?: return "Starting…"
@@ -1474,6 +1853,7 @@ object Core {
         if (links == 0 && inRange == 0) {
             if (!bluetoothOn()) return "Turn on Bluetooth to find your group"
             if (radioProblem.isNotEmpty()) return radioProblem
+            if (olderPhonesNearby() > 0) return "A phone in this group has an older Hopline and needs to update to chat"
             if (transport?.otherGroupNearby() == true) return "Hopline phones nearby are in another group — check you all typed the same code"
             if (!wifiOn()) return "Looking for your group's phones… (WiFi helps)"
             return "Looking for your group's phones…"

@@ -40,6 +40,13 @@
                     </com.google.android.material.textfield.TextInputLayout>
                     <com.google.android.material.button.MaterialButton android:id="@+id/start_btn" android:layout_width="match_parent"
                         android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/start" />
+                    <!-- While the group's key is worked out (a few seconds), and what went wrong if it couldn't be saved -->
+                    <com.google.android.material.progressindicator.LinearProgressIndicator android:id="@+id/start_progress"
+                        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                        android:indeterminate="true" android:visibility="gone" android:importantForAccessibility="no"
+                        app:indicatorColor="@color/ember" app:trackColor="@color/surface_variant" app:trackCornerRadius="2dp" />
+                    <TextView android:id="@+id/start_error" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:text="@string/group_not_saved" android:textColor="@color/danger" android:visibility="gone" android:layout_marginTop="4dp" />
                 </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
@@ -61,17 +68,22 @@
                     android:text="@string/join_group_sub" android:textAppearance="@style/Text.Muted" />
                 <LinearLayout android:id="@+id/join_panel" android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="vertical" android:visibility="gone" android:layout_marginTop="12dp">
+                    <!-- Four words don't fit one line at this size: the field wraps (GroupActivity), Done still joins -->
                     <com.google.android.material.textfield.TextInputLayout android:layout_width="match_parent" android:layout_height="wrap_content"
                         android:hint="@string/code_hint" style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
                         <com.google.android.material.textfield.TextInputEditText android:id="@+id/code" android:layout_width="match_parent"
                             android:layout_height="wrap_content" android:inputType="textNoSuggestions|textVisiblePassword"
-                            android:textSize="22sp" android:singleLine="true" android:imeOptions="actionDone"
+                            android:textSize="22sp" android:imeOptions="actionDone"
                             android:importantForAutofill="no" />
                     </com.google.android.material.textfield.TextInputLayout>
                     <TextView android:id="@+id/code_error" android:layout_width="match_parent" android:layout_height="wrap_content"
                         android:text="@string/bad_code" android:textColor="@color/danger" android:visibility="gone" android:layout_marginTop="4dp" />
                     <com.google.android.material.button.MaterialButton android:id="@+id/join_btn" android:layout_width="match_parent"
                         android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/join" />
+                    <com.google.android.material.progressindicator.LinearProgressIndicator android:id="@+id/join_progress"
+                        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                        android:indeterminate="true" android:visibility="gone" android:importantForAccessibility="no"
+                        app:indicatorColor="@color/ember" app:trackColor="@color/surface_variant" app:trackCornerRadius="2dp" />
                     <com.google.android.material.button.MaterialButton android:id="@+id/scan_btn" android:layout_width="match_parent"
                         android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/scan_qr"
                         style="@style/Widget.Hopline.Button.Quiet" />

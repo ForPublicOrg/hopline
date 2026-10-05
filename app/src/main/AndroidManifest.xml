@@ -56,9 +56,13 @@
         </intent>
     </queries>
 
+    <!-- No backups and no copying to a new phone, on any Android (see xml/data_extraction_rules). -->
     <application
         android:name=".HoplineApp"
         android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        tools:targetApi="s"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"

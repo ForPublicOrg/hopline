@@ -123,7 +123,7 @@ class InternetActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (Core.store.group() == null || !Permissions.allGranted(this)) {
+        if (!Core.store.hasActive() || !Permissions.allGranted(this)) {
             startActivity(Intent(this, LaunchActivity::class.java)); finish(); return
         }
         b = ActivityInternetBinding.inflate(layoutInflater)
@@ -209,7 +209,7 @@ class InternetActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (!ready) return
-        if (Core.store.group() == null || !Permissions.allGranted(this)) {
+        if (!Core.store.hasActive() || !Permissions.allGranted(this)) {
             // The group was left, or Nearby was revoked while we were away.
             startActivity(Intent(this, LaunchActivity::class.java)); finish(); return
         }

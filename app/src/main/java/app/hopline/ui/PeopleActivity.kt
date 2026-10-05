@@ -19,18 +19,26 @@ import app.hopline.mesh.Router
 import app.hopline.service.Core
 import java.util.Locale
 
-/** Everyone the mesh has ever heard of in this group, me first. Tap a person for a private chat. */
+/**
+ * Everyone the mesh has heard of in this group, me first. Tap a person for a private chat; press
+ * and hold one to verify the security code with them.
+ *
+ * Only people on 2.4 or later are listed. Someone heard from before the update had an 8-letter id
+ * no phone uses any more: they are here again under their new one, and the old entry stays only so
+ * old chats keep their names.
+ */
 class PeopleActivity : AppCompatActivity() {
     private lateinit var b: ActivityPeopleBinding
     private val adapter = PeopleAdapter(
         onMe = { Asks.myName(this) },
         onPerson = { p -> startActivity(Intent(this, ChatActivity::class.java).putExtra("peer", p.id)) },
+        onVerify = { p -> Core.router?.let { r -> SecurityCodeDialog.show(this, p.id, Ui.nameOf(r, p.id, p.name)) } },
     )
     private var query = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (Core.store.group() == null) { startActivity(Intent(this, LaunchActivity::class.java)); finish(); return }
+        if (!Core.store.hasActive()) { startActivity(Intent(this, LaunchActivity::class.java)); finish(); return }
         b = ActivityPeopleBinding.inflate(layoutInflater)
         setContentView(b.root)
         Core.ensureRunning()
@@ -56,7 +64,7 @@ class PeopleActivity : AppCompatActivity() {
             return
         }
         // "In range" counts against the group as it is now (heard from in 2 days), not everyone ever.
-        val others = r.people.values.filter { it.id != r.me.id }
+        val others = r.people.values.filter { it.id != r.me.id && ChatRules.listed(it.id) }
         b.toolbar.subtitle = getString(R.string.in_range_now, r.peopleInRange(), r.activePeople())
 
         // A crowd needs a search box; a trekking group doesn't. Keep it while someone is typing in it.
@@ -69,13 +77,18 @@ class PeopleActivity : AppCompatActivity() {
         if (q.isEmpty() || Core.store.name.lowercase(Locale.getDefault()).contains(q)) rows += PeopleAdapter.Row.Me
         sorted.forEach { rows += PeopleAdapter.Row.P(it) }
         when {
-            others.isEmpty() -> rows += PeopleAdapter.Row.Note(getString(R.string.person_empty))
+            // Only people on 2.4 or later are listed: right after the update, a group full of
+            // friends lists nobody until their updated phones have been in range. Not "nobody joined".
+            others.isEmpty() -> rows += PeopleAdapter.Row.Note(getString(if (Ui.othersKnown(r)) R.string.people_none_lately else R.string.person_empty))
             sorted.isEmpty() -> rows += PeopleAdapter.Row.Note(getString(R.string.people_no_match, query))
         }
+        // Someone missing from the list may be standing right here, on a Hopline that can't link to this one.
+        if (Core.olderPhonesNearby() > 0) rows += PeopleAdapter.Row.Note(getString(R.string.older_hopline_nearby))
         adapter.submit(rows, r)
     }
 
-    class PeopleAdapter(private val onMe: () -> Unit, private val onPerson: (Person) -> Unit) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+    class PeopleAdapter(private val onMe: () -> Unit, private val onPerson: (Person) -> Unit,
+                        private val onVerify: (Person) -> Unit) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         sealed class Row {
             object Me : Row()
             class P(val p: Person) : Row()
@@ -98,18 +111,25 @@ class PeopleActivity : AppCompatActivity() {
         override fun onBindViewHolder(h: RecyclerView.ViewHolder, i: Int) {
             when (val row = items[i]) {
                 is Row.Me -> bindMe((h as PersonVH).b, onMe)
-                is Row.P -> bindPerson((h as PersonVH).b, router ?: return, row.p) { onPerson(row.p) }
+                is Row.P -> bindPerson((h as PersonVH).b, router ?: return, row.p, onVerify = { onVerify(row.p) }) { onPerson(row.p) }
                 is Row.Note -> (h as NoteVH).b.note.text = row.text
             }
         }
     }
 
     companion object {
-        /** One person's row — shared with Group info so both lists look and read the same. */
-        fun bindPerson(h: ItemPersonBinding, r: Router, p: Person, onClick: () -> Unit) {
+        /**
+         * One person's row — shared with Group info so both lists look and read the same. A shield
+         * after the name: their security code was verified on this phone. Press and hold: [onVerify].
+         */
+        fun bindPerson(h: ItemPersonBinding, r: Router, p: Person, onVerify: () -> Unit, onClick: () -> Unit) {
             val ctx = h.root.context
             val name = Ui.nameOf(r, p.id, p.name)
-            h.name.text = Ui.uniqueName(r, p.id, p.name)
+            val shown = Ui.uniqueName(r, p.id, p.name)
+            val verified = Core.store.isVerified(p.id)
+            h.name.text = shown
+            h.name.setCompoundDrawablesRelativeWithIntrinsicBounds(0, 0, if (verified) R.drawable.ic_verified else 0, 0)
+            h.name.contentDescription = if (verified) ctx.getString(R.string.verified_desc, shown) else null
             h.avatar.text = Ui.initial(name)
             h.avatar.background.mutate().setTint(MessageAdapter.avatarColor(p.id))
             h.status.text = Ui.personStatus(r, p)
@@ -118,8 +138,11 @@ class PeopleActivity : AppCompatActivity() {
             h.dot.background.mutate().setTint(ctx.getColor(if (inRange) R.color.online else R.color.offline))
             h.badge.visibility = if (p.hasInternet && inRange) View.VISIBLE else View.GONE
             h.root.setOnClickListener { onClick() }
+            h.root.setOnLongClickListener { onVerify(); true }
             ViewCompat.replaceAccessibilityAction(h.root, androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK,
                 ctx.getString(R.string.action_private_chat), null)
+            ViewCompat.replaceAccessibilityAction(h.root, androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_LONG_CLICK,
+                ctx.getString(R.string.action_verify), null)
         }
 
         /** My own row: "Vikas (you) · Tap to change your name". */
@@ -127,14 +150,19 @@ class PeopleActivity : AppCompatActivity() {
             val ctx = h.root.context
             val name = Core.store.name
             h.name.text = ctx.getString(R.string.you_suffix, name)
+            h.name.setCompoundDrawablesRelativeWithIntrinsicBounds(0, 0, 0, 0)
+            h.name.contentDescription = null
             h.avatar.text = Ui.initial(name)
             h.avatar.background.mutate().setTint(MessageAdapter.avatarColor(Core.store.nodeId))
             h.status.text = ctx.getString(R.string.you_change_name)
             h.dot.visibility = View.GONE
             h.badge.visibility = View.GONE
             h.root.setOnClickListener { onClick() }
+            h.root.setOnLongClickListener(null); h.root.isLongClickable = false
             ViewCompat.replaceAccessibilityAction(h.root, androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK,
                 ctx.getString(R.string.edit_name), null)
+            ViewCompat.replaceAccessibilityAction(h.root, androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_LONG_CLICK,
+                null, null)
         }
     }
 }

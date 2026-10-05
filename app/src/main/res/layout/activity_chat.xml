@@ -182,4 +182,35 @@
             android:minHeight="48dp" android:text="@string/rejoin" android:textAllCaps="false"
             android:textSize="15sp" android:textStyle="bold" android:textColor="@color/ember" />
     </LinearLayout>
+
+    <!-- A private chat nothing can be sealed for (from before the update, or someone whose phone
+         hasn't been in range): one line saying why, in place of the composer — and, for a chat
+         from before the update, the way to the person's new self, and any words that were waiting
+         to be sent in it, to copy out (its composer never comes back). -->
+    <LinearLayout android:id="@+id/cant_write_bar" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:visibility="gone"
+        android:background="@color/surface" android:elevation="2dp" android:minHeight="56dp"
+        android:paddingStart="16dp" android:paddingEnd="4dp" android:paddingTop="4dp" android:paddingBottom="4dp">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal" android:gravity="center_vertical" android:minHeight="48dp">
+            <TextView android:id="@+id/cant_write_text" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                android:textSize="14sp" android:textColor="@color/text_muted" android:paddingTop="6dp" android:paddingBottom="6dp" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/cant_write_people"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="4dp"
+                android:minHeight="48dp" android:text="@string/people" android:textAllCaps="false"
+                android:textSize="15sp" android:textStyle="bold" android:textColor="@color/ember" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/cant_write_draft_row" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal" android:gravity="center_vertical" android:visibility="gone">
+            <TextView android:id="@+id/cant_write_draft" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                android:textSize="14sp" android:textColor="@color/text" android:maxLines="3" android:ellipsize="end"
+                android:paddingTop="6dp" android:paddingBottom="6dp" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/cant_write_copy"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="4dp"
+                android:minHeight="48dp" android:text="@string/chat_old_draft_copy" android:textAllCaps="false"
+                android:textSize="15sp" android:textStyle="bold" android:textColor="@color/ember" />
+        </LinearLayout>
+    </LinearLayout>
 </LinearLayout>
