@@ -179,11 +179,15 @@ class ChatActivity : AppCompatActivity() {
 
     private var replyTo: Message? = null
     private var pendingReplyId: String? = null
+    /** This chat's saved draft as the screen last read or wrote it: words added to it since came from elsewhere ([takeKeptWords]). */
+    private var draftSeen = ""
     /** People picked from @ chips (lowercase name -> id): decides between namesakes. */
     private val chosenMentions = HashMap<String, String>()
     private var mentionKey = ""
     private var lastTooLongToast = 0L
     private var headerShown = ""
+    /** What [renderBottom] last put in the composer's place, for the chat on screen; null before it has. */
+    private var bottomShown: ChatRules.Bottom? = null
 
     private var cameraFile: File? = null
     /** The chat a picker or the camera was opened for — its result must not land in another one. */
@@ -198,6 +202,8 @@ class ChatActivity : AppCompatActivity() {
 
     private var menu: MessageMenu? = null
     private val sheets = ArrayList<Dialog>()
+    /** The attach and location sheets: they close when the group chat shuts on a phone that may not post ([dropGroupSends]). */
+    private val composeSheets = ArrayList<Dialog>()
     /** The open question (caption, delete, mute…), as data — so a rotation can ask it again. */
     private var prompt: Bundle? = null
     private var promptDialog: Dialog? = null
@@ -276,6 +282,8 @@ class ChatActivity : AppCompatActivity() {
         if (s != null) {
             peer = peerOf(s.getString(S_CHAT) ?: Core.GROUP)
             chatFp = s.getString(S_FP)
+            // What onPause saved: the composer gets the same words back, in onRestoreInstanceState.
+            draftSeen = chatFp?.let { ChatDrafts.get(this, it, chatKey) }?.text.orEmpty()
             s.getStringArrayList(S_BACK)?.let { backStack.addAll(it) }
             cameraFile = s.getString(S_CAMERA)?.let { File(it) }
             pickTarget = s.getString(S_PICK)
@@ -336,7 +344,7 @@ class ChatActivity : AppCompatActivity() {
         b.errandBanner.setOnClickListener { openPendingSends() }
         b.leftRejoin.setOnClickListener { leftGroup()?.let { Asks.rejoin(this, it) } }
         b.cantWritePeople.setOnClickListener { startActivity(Intent(this, PeopleActivity::class.java)) }
-        b.cantWriteCopy.setOnClickListener { copyOldDraft() }
+        b.cantWriteCopy.setOnClickListener { copyWaiting() }
         b.newAbove.setOnClickListener { jumpToNewAbove() }
         b.jump.setOnClickListener { scrollToBottom(smooth = true) }
         b.input.filters = arrayOf(lengthGuard(Router.MAX_TEXT))
@@ -522,7 +530,7 @@ class ChatActivity : AppCompatActivity() {
         hidePromptQuietly()
         fixStop?.invoke(); fixStop = null
         // A camera shot that never got its caption is litter once the screen is really gone.
-        if (isFinishing && leftPrompt?.getString(P_KIND) == P_CAPTION) leftPrompt.getString("temp")?.let { File(it).delete() }
+        if (isFinishing) dropShot(leftPrompt)
     }
 
     private fun toLaunch() {
@@ -576,6 +584,16 @@ class ChatActivity : AppCompatActivity() {
                 unreadJump = isAtBottom()
                 unreadSince = since
                 unreadUntil = System.currentTimeMillis()
+            }
+        }
+        // Words kept for this chat while the screen wasn't looking (a reply typed into a notification that couldn't go,
+        // Core.keepAsDraft) are what the composer holds now: the screen saved its own words when it stopped (onPause), so
+        // any difference came from elsewhere — and saving the old ones over it would lose the reply.
+        if (!fromBefore()) {
+            val stored = ChatDrafts.get(this, fp, chatKey)
+            if ((stored?.text ?: "") != b.input.text?.toString().orEmpty()) {
+                b.input.setText(""); chosenMentions.clear(); clearReply()
+                loadDraft()
             }
         }
         Core.openChat = chatKey
@@ -633,6 +651,7 @@ class ChatActivity : AppCompatActivity() {
         unreadSince = UNREAD_CAPTURE; unreadJump = true; recheckUnread = false
         newAbove.clear(); newBelow.clear(); pendingJumpId = null
         keepScroll = null
+        bottomShown = null
         resetEarlier()
         updateScrollPills()
     }
@@ -814,34 +833,57 @@ class ChatActivity : AppCompatActivity() {
     private fun saveDraft() {
         if (!::b.isInitialized || readOnly || fromBefore()) return
         val fp = chatFp ?: return
-        ChatDrafts.put(this, fp, chatKey, ChatDrafts.Draft(b.input.text?.toString().orEmpty(), replyTo?.id ?: pendingReplyId, HashMap(chosenMentions)))
+        val text = b.input.text?.toString().orEmpty()
+        ChatDrafts.put(this, fp, chatKey, ChatDrafts.Draft(text, replyTo?.id ?: pendingReplyId, HashMap(chosenMentions)))
+        draftSeen = text
     }
 
     /** A private chat from before the update (an 8-letter id): nothing can be written in it, ever. */
     private fun fromBefore(): Boolean = peer?.let { !ChatRules.listed(it) } == true
 
-    /** [fromBefore]'s words that were waiting to be sent: copied, and then gone from the chat. */
-    private fun copyOldDraft() {
+    /**
+     * The words waiting in the bar: copied, and then gone from here (they have a new home now). The group chat
+     * while only admins can send keeps them in its hidden composer; a chat from before the update, in its saved
+     * draft ([fromBefore]).
+     */
+    private fun copyWaiting() {
         val fp = chatFp ?: return
-        val words = ChatDrafts.get(this, fp, chatKey)?.text?.trim().orEmpty()
+        val inComposer = bottomShown == ChatRules.Bottom.ADMINS_ONLY
+        val words = (if (inComposer) b.input.text?.toString() else ChatDrafts.get(this, fp, chatKey)?.text)?.trim().orEmpty()
         if (words.isNotEmpty()) {
-            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            cm.setPrimaryClip(ClipData.newPlainText(getString(R.string.chat_clip_label), words))
+            toClipboard(words)
             // Android 13+ shows its own "copied"; the toast says where the words can go.
-            toast(getString(R.string.chat_old_draft_copied))
+            toast(getString(if (inComposer) R.string.chat_admins_only_copied else R.string.chat_old_draft_copied))
         }
-        ChatDrafts.put(this, fp, chatKey, null)
+        if (inComposer) { b.input.setText(""); chosenMentions.clear(); clearReply(); saveDraft() }
+        else ChatDrafts.put(this, fp, chatKey, null)
         Core.router?.let { renderBottom(it) }
     }
 
     private fun loadDraft() {
         if (readOnly || fromBefore()) return
         val fp = chatFp ?: return
-        val d = ChatDrafts.get(this, fp, chatKey) ?: return
+        val d = ChatDrafts.get(this, fp, chatKey)
+        draftSeen = d?.text.orEmpty()
+        if (d == null) return
         b.input.setText(d.text)
         b.input.setSelection(b.input.text?.length ?: 0)
         chosenMentions.putAll(d.chosen)
         d.replyId?.let { id -> Core.router?.message(id)?.let { startReply(it, focus = false) } ?: run { pendingReplyId = id } }
+    }
+
+    /**
+     * A reply typed into a notification while the group was starting with this chat on screen, that couldn't go once
+     * it was up (Core.sendKeptReplies): Core.keepAsDraft put it after the saved draft, behind the composer's back. It
+     * joins the composer now (the bar shows it while only admins can send) and is saved with it, never saved over.
+     */
+    private fun takeKeptWords() {
+        if (readOnly || fromBefore()) return
+        val fp = chatFp ?: return
+        val words = ChatRules.withKeptWords(b.input.text?.toString().orEmpty(), draftSeen, ChatDrafts.get(this, fp, chatKey)?.text.orEmpty()) ?: return
+        b.input.setText(words)
+        b.input.setSelection(b.input.text?.length ?: 0)
+        saveDraft()
     }
 
     // ------------------------------------------------------------------ sending
@@ -852,8 +894,10 @@ class ChatActivity : AppCompatActivity() {
         if (text.isEmpty()) return
         // Still starting: the words stay where they are, for a tap in a moment.
         val r = Core.router ?: run { toast(getString(R.string.starting_try_again)); return }
-        val quote = replyTo?.let { quoteOf(r, it) }
         val to = peer
+        // Nor to the group while only admins may send (the composer is hidden then too): the words stay.
+        if (to == null && barred()) return
+        val quote = replyTo?.let { quoteOf(r, it) }
         // Nothing goes to a private chat nothing can be sealed for (its composer is hidden, see
         // renderBottom); should a tap get here all the same, the typed words stay.
         val mine = if (to == null) r.sendChat(text, quote, Ui.mentionsIn(r, text, chosenMentions)) else r.sendDm(to, text, quote)
@@ -947,8 +991,9 @@ class ChatActivity : AppCompatActivity() {
 
             override fun getMovementFlags(rv: RecyclerView, vh: RecyclerView.ViewHolder): Int {
                 val m = adapter?.messageAt(vh.bindingAdapterPosition) ?: return 0   // chips don't swipe
-                // Nothing to reply into in a left group, or in a private chat that can't be written in.
-                if (!m.isPersonal || menu?.isShowing == true || !writable()) return 0
+                // Nothing to reply into in a left group, in a private chat that can't be written in, or in
+                // the group chat while only admins may send.
+                if (!m.isPersonal || menu?.isShowing == true || !composable()) return 0
                 return makeMovementFlags(0, ItemTouchHelper.END)
             }
 
@@ -1034,6 +1079,8 @@ class ChatActivity : AppCompatActivity() {
 
     /** Typing "@" in the group chat offers name chips; tapping one completes the mention. */
     private fun updateMentionBar() {
+        // A line where the composer would be: nothing is being typed, so no names to offer.
+        if (b.cantWriteBar.isVisible) { b.mentionBar.isVisible = false; return }
         val r = Core.router
         val open = if (r == null || chatFp == null || readOnly) null else openMention()
         // People on 2.4 or later only: an old id's entry is kept for its old messages' names, nobody to call out.
@@ -1081,7 +1128,7 @@ class ChatActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ photos & files
 
     private fun onImagePicked(uri: Uri, temp: File?) {
-        if (readOnly) { temp?.delete(); return }
+        if (readOnly || barred()) { temp?.delete(); return }
         val r = Core.router ?: run { temp?.delete(); toast(getString(R.string.chat_starting)); return }
         if (!r.canSendFiles()) { temp?.delete(); toast(getString(R.string.files_crowd_off)); return }
         val draft = b.input.text?.toString()?.trim().orEmpty()
@@ -1106,7 +1153,7 @@ class ChatActivity : AppCompatActivity() {
 
     private fun sendPhoto(uri: Uri, caption: String, temp: File?, prefill: String, target: String?) {
         val r = Core.router
-        if (r == null || readOnly || !checkTarget(target)) { temp?.delete(); return }
+        if (r == null || readOnly || !checkTarget(target) || barred()) { temp?.delete(); return }
         val mentions = if (peer == null) Ui.mentionsIn(r, caption, chosenMentions) else emptyList()
         if (prefill.isNotEmpty() && caption == prefill) b.input.setText("")
         val quote = replyTo?.let { quoteOf(r, it) }
@@ -1117,14 +1164,15 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun sendPickedFile(uri: Uri, target: String) {
-        if (readOnly) return
+        if (readOnly || barred()) return
         val r = Core.router ?: return
         if (!r.canSendFiles()) { toast(getString(R.string.files_crowd_off)); return }
         val app = applicationContext
         Thread {
             val result = Blobs.readPicked(app, uri)
             runOnUiThread {
-                if (isFinishing || isDestroyed || readOnly || !checkTarget(target)) return@runOnUiThread
+                // Only admins may send now (a slow file can take seconds to read): said here, not kept for a question never asked.
+                if (isFinishing || isDestroyed || readOnly || !checkTarget(target) || barred()) return@runOnUiThread
                 when (result) {
                     is Blobs.Picked.Ok -> {
                         val picked = result.file
@@ -1144,7 +1192,7 @@ class ChatActivity : AppCompatActivity() {
 
     private fun sendFile(picked: Blobs.PickedFile) {
         pendingPicked = null
-        if (readOnly) return
+        if (readOnly || barred()) return
         val r = Core.router ?: return
         val quote = replyTo?.let { quoteOf(r, it) }
         clearReply()
@@ -1153,7 +1201,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun launchCamera() {
-        if (readOnly) return
+        if (readOnly || barred()) return
         try {
             val dir = File(cacheDir, "camera").apply { mkdirs() }
             val f = File(dir, "shot-${System.currentTimeMillis()}.jpg")
@@ -1234,6 +1282,8 @@ class ChatActivity : AppCompatActivity() {
         if (readOnly) return   // nothing is sent from a group this phone left
         val r = Core.router ?: return
         val old = find(r, m.id) ?: return
+        // A group one goes again only while this phone may post there; it stays "not sent" meanwhile.
+        if (old.to == null && barred()) return
         // A private message goes again only to a phone whose key is known here, still in the group (Router.canMessage):
         // "Send again" isn't offered otherwise (canSendAgain), and the old one stays "not sent".
         if (!canSendAgain(r, old)) return
@@ -1264,7 +1314,7 @@ class ChatActivity : AppCompatActivity() {
 
     /** "Send again" for [m]: one of mine that stopped trying, in a chat of the radio's group that can still be written to. */
     private fun canSendAgain(r: Router, m: Message): Boolean =
-        !readOnly && ChatRules.sendAgain(Ui.gaveUp(r, m), m.to, m.to?.let { r.canMessage(it) } ?: true)
+        !readOnly && ChatRules.sendAgain(Ui.gaveUp(r, m), m.to, m.to?.let { r.canMessage(it) } ?: true, canPost = r.mayPost())
 
     /** The stale copy of a message that was sent again goes — from the chat, and from the earlier ones on screen. */
     private fun forget(id: String) {
@@ -1276,14 +1326,14 @@ class ChatActivity : AppCompatActivity() {
 
     private fun onMicTapped() {
         val r = Core.router ?: return
-        if (chatFp == null || !writable()) return
+        if (chatFp == null || !composable()) return
         if (!r.canSendFiles()) { toast(getString(R.string.files_crowd_off)); return }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startRecording()
         else micPermission.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     private fun startRecording() {
-        if (readOnly) return
+        if (readOnly || barred()) return
         VoicePlayer.stop()
         if (!VoiceRecorder.start(this)) { toast(getString(R.string.voice_failed)); return }
         b.mic.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -1316,6 +1366,8 @@ class ChatActivity : AppCompatActivity() {
         b.composerRow.isVisible = !readOnly && !b.cantWriteBar.isVisible
         b.recordDot.animate().cancel(); b.recordDot.alpha = 1f
         if (!send || readOnly) { VoiceRecorder.cancel(); return }
+        // Only admins came to be able to send while it was recording (or it ran to its full length then).
+        if (barred()) { VoiceRecorder.cancel(); return }
         val clip = VoiceRecorder.finish()
         if (clip == null) { toast(getString(R.string.voice_too_short)); return }
         val (file, seconds) = clip
@@ -1332,7 +1384,7 @@ class ChatActivity : AppCompatActivity() {
 
     private fun showAttachSheet() {
         val r = Core.router ?: return
-        if (chatFp == null || !writable()) return
+        if (chatFp == null || !composable()) return
         val sheet = BottomSheetDialog(this)
         val sb = SheetAttachBinding.inflate(layoutInflater)
         sheet.setContentView(sb.root)
@@ -1356,6 +1408,7 @@ class ChatActivity : AppCompatActivity() {
         sb.pickLocation.setOnClickListener { sheet.dismiss(); showLocationSheet() }
         sb.pickInternet.setOnClickListener { sheet.dismiss(); startActivity(Intent(this, InternetActivity::class.java)) }
         trackSheet(sheet)
+        trackComposeSheet(sheet)
         sheet.show()
     }
 
@@ -1364,7 +1417,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun showLocationSheet() {
-        if (!writable()) return
+        if (!composable()) return
         val r = Core.router ?: return
         val sheet = BottomSheetDialog(this)
         val sb = SheetLocationBinding.inflate(layoutInflater)
@@ -1387,6 +1440,7 @@ class ChatActivity : AppCompatActivity() {
         }
         sb.locPrivacy.text = if (to != null) getString(R.string.chat_loc_privacy_dm, name) else getString(R.string.loc_privacy)
         trackSheet(sheet)
+        trackComposeSheet(sheet)
         sheet.show()
     }
 
@@ -1398,7 +1452,8 @@ class ChatActivity : AppCompatActivity() {
     private fun runLocationAction(action: String?) {
         if (readOnly) return
         when (action) {
-            PENDING_LOC_FIX -> if (requireLocationOn()) showPrompt(bundleOf(P_KIND to P_FIX, P_TARGET to targetKey()))
+            // A place goes into the chat; live location rides the beacons, and only admins sending changes nothing about it.
+            PENDING_LOC_FIX -> if (!barred() && requireLocationOn()) showPrompt(bundleOf(P_KIND to P_FIX, P_TARGET to targetKey()))
             PENDING_LOC_LIVE -> if (requireLocationOn()) showPrompt(bundleOf(P_KIND to P_LIVE_FOR))
         }
     }
@@ -1499,6 +1554,11 @@ class ChatActivity : AppCompatActivity() {
         val p = prompt
         prompt = null; promptFields = emptyList(); pendingPicked = null
         hidePromptQuietly()
+        dropShot(p)
+    }
+
+    /** A question about a camera shot ([P_CAPTION]) that is gone for good takes the shot's file with it. */
+    private fun dropShot(p: Bundle?) {
         if (p?.getString(P_KIND) == P_CAPTION) p.getString("temp")?.let { File(it).delete() }
     }
 
@@ -1518,6 +1578,9 @@ class ChatActivity : AppCompatActivity() {
         // group a notification came from. Any other is a leftover of a chat on the radio (a
         // re-creation, the group left under it) and its answer would act on THAT group: dropped.
         if (readOnly && kind != P_DELETE && kind != P_SWITCH) return null
+        // A photo, file or place for the group, asked about before only admins could send: not asked again (a camera
+        // shot waiting for its caption is let go with it).
+        if (groupSendPrompt(p) && !Core.mayPost()) { dropShot(p); return null }
         return when (kind) {
             P_CAPTION -> captionDialog(p)
             P_BIGFILE -> bigFileDialog(p)
@@ -1552,7 +1615,7 @@ class ChatActivity : AppCompatActivity() {
             message = getString(R.string.loc_place_help), maxLength = listOf(MAX_PLACE_INPUT, Loc.MAX_LABEL),
             // A place that can't be read keeps the dialog open with the reason — nothing typed is lost.
             validate = { v -> if (Loc.parse(v[0]) == null) getString(R.string.loc_bad_place) else null }) { v ->
-            if (!checkTarget(p.getString(P_TARGET))) return@askFields
+            if (!checkTarget(p.getString(P_TARGET)) || barred()) return@askFields
             val r = Core.router ?: return@askFields
             val loc = Loc.parse(v[0])?.let { Loc.of(it.lat, it.lng, 0, v[1]) } ?: return@askFields
             if (r.sendLocation(loc, peer) != null) sent()
@@ -1675,6 +1738,7 @@ class ChatActivity : AppCompatActivity() {
             .setPositiveButton(R.string.send) { _, _ ->
                 val l = best ?: return@setPositiveButton
                 if (Core.router !== r || !checkTarget(target)) return@setPositiveButton   // switched groups or chats mid-fix
+                if (barred()) return@setPositiveButton
                 Loc.of(l.latitude, l.longitude, l.accuracy.toInt())?.let { if (r.sendLocation(it, peer) != null) sent() }
             }
             .setNegativeButton(R.string.cancel, null)
@@ -1715,6 +1779,12 @@ class ChatActivity : AppCompatActivity() {
     private fun trackSheet(d: Dialog) {
         sheets.removeAll { !it.isShowing }
         sheets.add(d)
+    }
+
+    /** A sheet for sending something into the chat: also one of [composeSheets]. */
+    private fun trackComposeSheet(d: Dialog) {
+        composeSheets.removeAll { !it.isShowing }
+        composeSheets.add(d)
     }
 
     // ------------------------------------------------------------------ drawing
@@ -1770,6 +1840,8 @@ class ChatActivity : AppCompatActivity() {
             // the same rows, so the list goes back to where it was instead of to the bottom.
             keepScroll?.let { (b.list.layoutManager as LinearLayoutManager).onRestoreInstanceState(it); restoring = true }
             keepScroll = null
+            // The group may have just started under this screen, and a reply kept meanwhile is in the draft now.
+            takeKeptWords()
         }
         // A reply target from a draft or a re-creation; one no longer on this phone is dropped.
         pendingReplyId?.let { id -> pendingReplyId = null; if (!readOnly) find(r, id)?.let { startReply(it, focus = false) } }
@@ -1967,10 +2039,10 @@ class ChatActivity : AppCompatActivity() {
     }
 
     /**
-     * Can the chat on screen be written in? Not a left group's, and not a private chat nothing can be
+     * May I react here? Not in a left group's chat, and not in a private chat nothing can be
      * written to (ChatRules.bottom) — one whose person left the group among them (Router.canMessage).
      * While the group is still starting there is nothing to ask yet: the composer stays, and a send
-     * waits for it.
+     * waits for it. Writing asks [composable].
      */
     private fun writable(): Boolean {
         if (readOnly) return false
@@ -1979,45 +2051,80 @@ class ChatActivity : AppCompatActivity() {
         return r.canMessage(to)
     }
 
+    /** May I write here — type, reply, attach, record, share a place? Exactly when the composer shows. Reactions ask [writable] alone. */
+    private fun composable(): Boolean = writable() && (peer != null || Core.mayPost())
+
+    /** The group chat while only admins can send and this phone isn't one: says so, and true. Every way of posting into the group asks it first. */
+    private fun barred(): Boolean {
+        if (readOnly || peer != null || Core.mayPost()) return false
+        toast(getString(R.string.chat_admins_only_not_sent)); return true
+    }
+
     /**
      * In a private chat nothing can be sealed for, one line takes the composer's place, saying why —
-     * and nothing else is offered to write, attach, record or react with. Looked at on every redraw:
-     * the person's key can arrive at any moment (or their hello, after they left the group), and
-     * the composer comes back then, with whatever words were waiting in it (a reply typed into a
-     * notification, say).
+     * and nothing else is offered to write, attach, record or react with. In the group chat while
+     * only admins can send and this phone isn't one, the same: a line saying so, with People for a
+     * private chat — reactions stay. Looked at on every redraw: the person's key can arrive at any
+     * moment (or their hello, after they left the group, or the change that lets this phone post),
+     * and the composer comes back then, with whatever words were waiting in it (a reply typed into
+     * a notification, say).
      */
     private fun renderBottom(r: Router) {
         if (readOnly) { b.cantWriteBar.isVisible = false; return }
         val to = peer
         val bottom = ChatRules.bottom(readOnly = false, peer = to, canWrite = to == null || r.canWriteTo(to),
-            peerLeft = to != null && r.people[to]?.left == true)
+            peerLeft = to != null && r.people[to]?.left == true, canPost = to != null || r.mayPost())
         val shut = bottom != ChatRules.Bottom.COMPOSER
-        if (shut && to != null) {
-            b.cantWriteText.text = Ui.cantWriteLine(r, to).orEmpty()
-            b.cantWritePeople.isVisible = bottom == ChatRules.Bottom.FROM_BEFORE
-        }
-        // A chat from before the update keeps no composer to bring words back to: any that were
-        // waiting in it are shown here, to copy into the person's new chat.
-        val waiting = if (bottom == ChatRules.Bottom.FROM_BEFORE) chatFp?.let { fp ->
-            ChatDrafts.get(this, fp, chatKey)?.text?.replace('\n', ' ')?.trim()?.ifEmpty { null }
-        } else null
+        val admins = bottom == ChatRules.Bottom.ADMINS_ONLY
+        if (shut) b.cantWriteText.text = Ui.bottomLine(r, bottom, to).orEmpty()
+        b.cantWritePeople.isVisible = bottom == ChatRules.Bottom.FROM_BEFORE || admins
+        b.cantWritePeople.contentDescription = if (admins) getString(R.string.chat_admins_only_people_desc) else null
+        // Words waiting: a chat from before the update keeps them in its saved draft (no composer, ever); the group chat
+        // while only admins can send keeps them in its hidden composer, to come back with it.
+        val waiting = when (bottom) {
+            ChatRules.Bottom.FROM_BEFORE -> chatFp?.let { fp -> ChatDrafts.get(this, fp, chatKey)?.text }
+            ChatRules.Bottom.ADMINS_ONLY -> b.input.text?.toString()
+            else -> null
+        }?.replace('\n', ' ')?.trim()?.ifEmpty { null }
         b.cantWriteDraftRow.isVisible = waiting != null
         if (waiting != null) b.cantWriteDraft.text = getString(R.string.chat_old_draft, waiting)
         if (shut) {
             if (!b.cantWriteBar.isVisible) {
-                // Just shut: a recording, or the keyboard, has nowhere to go.
-                if (VoiceRecorder.recording) finishRecording(send = false)
+                // Just shut: a recording, the keyboard, and anything half-way to the group have nowhere to go.
+                if (VoiceRecorder.recording) { finishRecording(send = false); if (admins) toast(getString(R.string.chat_admins_only_recording)) }
                 b.input.clearFocus()
                 Ui.hideKeyboard(this, b.input)
+                if (admins) dropGroupSends()
+                // Said once to TalkBack when it happens under the person's eyes (not when a barred chat is opened).
+                if (admins && bottomShown == ChatRules.Bottom.COMPOSER) b.cantWriteBar.announceForAccessibility(b.cantWriteText.text)
             }
             // Every time: a draft's reply, brought back with the chat, waits out of sight too.
             for (v in listOf(b.composerRow, b.recordBar, b.replyBar, b.mentionBar)) v.isVisible = false
         } else if (b.cantWriteBar.isVisible) {
             b.composerRow.isVisible = true
             b.replyBar.isVisible = replyTo != null
+            if (bottomShown == ChatRules.Bottom.ADMINS_ONLY) b.composerRow.announceForAccessibility(getString(R.string.chat_can_send_again))
         }
         b.cantWriteBar.isVisible = shut
+        bottomShown = bottom
     }
+
+    /**
+     * The group chat just shut: the attach and location sheets close, and a photo, file or place
+     * still being asked about is dropped — said once, if anything was.
+     */
+    private fun dropGroupSends() {
+        var dropped = false
+        for (d in composeSheets) if (d.isShowing) { d.dismiss(); dropped = true }
+        composeSheets.clear()
+        val p = prompt
+        if (p != null && groupSendPrompt(p)) { abandonPrompt(); dropped = true }
+        if (dropped) toast(getString(R.string.chat_admins_only_dropped))
+    }
+
+    /** Is [p] a question on the way to posting a photo, file or place in the group chat ([GROUP_SEND_PROMPTS])? */
+    private fun groupSendPrompt(p: Bundle): Boolean =
+        p.getString(P_KIND) in GROUP_SEND_PROMPTS && p.getString(P_TARGET)?.endsWith("|${Core.GROUP}") == true
 
     private fun renderHeader(r: Router) {
         val to = peer
@@ -2104,7 +2211,8 @@ class ChatActivity : AppCompatActivity() {
         if (to == null) {
             b.awayBanner.isVisible = false
             val alone = r.authedLinks().isEmpty() && r.peopleInRange() == 0
-            b.hint.isVisible = alone && warn.isEmpty() && shown.isEmpty()
+            // Lines alone ("You started this group") still make an empty chat. The hint is about sending: not while the composer is shut.
+            b.hint.isVisible = alone && warn.isEmpty() && shown.all { it.isNotice } && composable()
             b.hint.text = getString(if (r.people.isEmpty()) R.string.invite_hint else R.string.alone_hint)
         } else {
             b.hint.isVisible = false
@@ -2224,6 +2332,9 @@ class ChatActivity : AppCompatActivity() {
         }
         var order = 0
         if (peer == null) popup.menu.add(0, M_INFO, order++, R.string.chat_group_info)
+        // Live location isn't something only admins may do, and its way in (the attach sheet) went with the composer.
+        if (bottomShown == ChatRules.Bottom.ADMINS_ONLY)
+            popup.menu.add(0, M_LIVE, order++, if (Core.liveLocationActive()) R.string.live_stop else R.string.live_share)
         // A private chat with someone on 2.4 or later: the number to compare with them.
         if (peer?.let { ChatRules.listed(it) } == true) popup.menu.add(0, M_VERIFY, order++, R.string.chat_verify)
         popup.menu.add(0, M_MUTE, order++, if (Core.isMuted(chatKey)) R.string.chat_unmute else R.string.chat_mute_title)
@@ -2235,6 +2346,7 @@ class ChatActivity : AppCompatActivity() {
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 M_INFO -> startActivity(Intent(this, GroupInfoActivity::class.java))
+                M_LIVE -> if (Core.liveLocationActive()) showPrompt(bundleOf(P_KIND to P_LIVE_STOP)) else withLocationPermission(PENDING_LOC_LIVE)
                 M_VERIFY -> verifyPeer()
                 M_MUTE -> toggleMute()
                 M_CLEAR -> showPrompt(bundleOf(P_KIND to P_CLEAR, P_TARGET to targetKey()))
@@ -2302,7 +2414,7 @@ class ChatActivity : AppCompatActivity() {
         val mine = m.from == r.me.id
         // A left group's chat keeps what works without the radio: copy, save, share, details, delete.
         // So does a private chat that can't be written in — nothing in it can be answered.
-        if (m.isPersonal && writable()) out.add(MessageMenu.Action(R.drawable.ic_reply, getString(R.string.reply)) { startReply(m) })
+        if (m.isPersonal && composable()) out.add(MessageMenu.Action(R.drawable.ic_reply, getString(R.string.reply)) { startReply(m) })
         // Privately only to someone on 2.4 or later, still in the group: any other private chat could never be written in.
         if (m.isPersonal && m.isGroup && !mine && !readOnly && ChatRules.replyPrivately(m.from, r.people[m.from]?.left == true))
             out.add(MessageMenu.Action(R.drawable.ic_chat_private, getString(R.string.chat_reply_privately)) { replyPrivately(m) })
@@ -2383,10 +2495,15 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun copy(m: Message) {
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText(getString(R.string.chat_clip_label), m.text))
+        toClipboard(m.text)
         // Android 13+ shows its own "copied" confirmation; a toast on top would say it twice.
         if (Build.VERSION.SDK_INT < 33) toast(getString(R.string.copied))
+    }
+
+    /** Words from the chat on the clipboard, under the chat's own label. */
+    private fun toClipboard(words: String) {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText(getString(R.string.chat_clip_label), words))
     }
 
     /** Plain-English answer to "did it get there?", in a sheet that follows the mesh while open. */
@@ -2463,6 +2580,7 @@ class ChatActivity : AppCompatActivity() {
         private const val M_REJOIN = 8
         private const val M_DELETE_GROUP = 9
         private const val M_VERIFY = 10
+        private const val M_LIVE = 11
 
         private const val S_CHAT = "chat"
         private const val S_FP = "chatFp"
@@ -2493,5 +2611,7 @@ class ChatActivity : AppCompatActivity() {
         private const val P_LIVE_STOP = "liveStop"
         private const val P_FIX = "fix"
         private const val P_SWITCH = "switch"
+        /** Questions on the way to posting a photo, file or place: for the group, they go when only admins may send. */
+        private val GROUP_SEND_PROMPTS = setOf(P_CAPTION, P_BIGFILE, P_PLACE, P_FIX)
     }
 }

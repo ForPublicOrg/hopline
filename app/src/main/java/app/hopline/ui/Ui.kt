@@ -212,10 +212,15 @@ object Ui {
     private fun stoppedEarly(r: Router, m: Message, now: Long): Boolean =
         m.from == r.me.id && m.isPersonal && m.status == Message.QUEUED && !r.carries(m.id) && now - m.ts <= Router.CARRY_MS
 
-    /** Why a ◷ of mine that [gaveUp] stopped trying — the one story of these that is true of it. */
-    enum class NotSent { TIMED_OUT, LEFT, UPDATE, UPDATE_PRIVATE, LET_GO }
+    /**
+     * Why a ◷ of mine that [gaveUp] stopped trying — the one story of these that is true of it.
+     * [ADMINS_ONLY] comes first: a post withdrawn for that is never blamed on a leaving after it.
+     */
+    enum class NotSent { ADMINS_ONLY, TIMED_OUT, LEFT, UPDATE, UPDATE_PRIVATE, LET_GO }
 
     fun notSent(r: Router, m: Message, now: Long = System.currentTimeMillis()): NotSent = when {
+        // Withdrawn because only admins could send by the time it would have gone out (Router.postBarred).
+        stoppedEarly(r, m, now) && r.postBarred(m) -> NotSent.ADMINS_ONLY
         // Back in the group after leaving it: the wait wasn't for a phone in range.
         unsentByLeaving(r, m, now) -> NotSent.LEFT
         // Hadn't gone out when Hopline was updated, whatever its age; a private one's person has a new id, found in People.
@@ -247,7 +252,7 @@ object Ui {
     fun statusDetail(ctx: Context, r: Router, m: Message, leftAt: Long = 0): String {
         val now = System.currentTimeMillis()
         if (leftAt > 0) {
-            if (m.status == Message.QUEUED) return ctx.getString(R.string.chat_status_left_unsent)
+            if (m.status == Message.QUEUED) return ctx.getString(if (r.postBarred(m)) R.string.chat_status_admins_unsent else R.string.chat_status_left_unsent)
             if (m.to != null && m.status == Message.DELIVERED) return ctx.getString(R.string.chat_status_delivered, nameOf(r, m.to))
             val settled = settledBeforeLeaving(m, leftAt)
             if (settled && m.to != null) return ctx.getString(R.string.chat_status_left_dm_not_delivered, nameOf(r, m.to))
@@ -259,11 +264,13 @@ object Ui {
         if (m.to != null && m.status != Message.DELIVERED && r.people[m.to]?.left == true)
             return ctx.getString(if (gaveUp(r, m, now)) R.string.chat_status_dm_left_gave_up else R.string.chat_status_dm_left, nameOf(r, m.to))
         if (gaveUp(r, m, now)) {
-            // A private message to someone nothing can be sealed for has no "Send again" to point at.
-            val again = ChatRules.sendAgain(gaveUp = true, to = m.to, canWrite = m.to?.let { r.canMessage(it) } ?: true)
+            // A private message to someone nothing can be sealed for has no "Send again" to point at,
+            // nor a group one while only admins may send.
+            val again = ChatRules.sendAgain(gaveUp = true, to = m.to, canWrite = m.to?.let { r.canMessage(it) } ?: true, canPost = r.mayPost())
             if (m.status != Message.QUEUED) return ctx.getString(if (again) R.string.chat_status_dm_not_delivered else R.string.chat_status_dm_not_delivered_final,
                 nameOf(r, m.to ?: ""))
             return when (notSent(r, m, now)) {
+                NotSent.ADMINS_ONLY -> ctx.getString(if (again) R.string.chat_status_admins_unsent_again else R.string.chat_status_admins_unsent)
                 NotSent.LEFT -> ctx.getString(R.string.chat_status_left_unsent)
                 NotSent.UPDATE_PRIVATE -> ctx.getString(R.string.chat_status_update_unsent_dm, nameOf(r, m.to ?: ""))
                 NotSent.UPDATE -> ctx.getString(if (again) R.string.chat_status_update_unsent else R.string.chat_status_update_unsent_final)
@@ -285,16 +292,18 @@ object Ui {
             return ctx.getString(R.string.chat_status_sent) +
                 if (got.isEmpty()) "" else "\n\n" + ctx.getString(R.string.chat_status_got, got.joinToString(", "))
         }
+        // Sent while (as this phone knows now) only admins could send: updated phones that knew it don't show it.
+        val note = if (r.postBarred(m)) ctx.getString(R.string.chat_status_admins_hidden) + "\n\n" else ""
         // The group as it is now (heard from within 48 h) — plus anyone who confirmed, so the
         // count can never read "3 of 2".
         val active = r.activePeopleList()
         val totalIds = active.mapTo(LinkedHashSet()) { it.id }.apply { addAll(m.reached) }
         val total = totalIds.size
-        if (total == 0) return ctx.getString(R.string.chat_status_sent)
-        if (active.size >= Router.RECEIPT_GROUP_LIMIT) return ctx.getString(R.string.chat_status_big_group)
+        if (total == 0) return note + ctx.getString(R.string.chat_status_sent)
+        if (active.size >= Router.RECEIPT_GROUP_LIMIT) return note + ctx.getString(R.string.chat_status_big_group)
         val got = m.reached.map { nameOf(r, it, "") }.sorted()
         val waiting = active.filter { it.id !in m.reached }.mapNotNull { it.name.ifEmpty { null } }.sorted()
-        return buildString {
+        return note + buildString {
             append(ctx.resources.getQuantityString(R.plurals.chat_status_reached, total, m.reached.size, total))
             if (got.isNotEmpty()) append("\n\n").append(ctx.getString(R.string.chat_status_got, got.joinToString(", ")))
             if (waiting.isNotEmpty()) {
@@ -325,11 +334,45 @@ object Ui {
      */
     fun cantWriteLine(r: Router, id: String, fallback: String = ""): String? {
         val name = nameOf(r, id, fallback.ifEmpty { r.messages.lastOrNull { it.from == id }?.fromName.orEmpty() })
-        return when (ChatRules.bottom(readOnly = false, peer = id, canWrite = r.canWriteTo(id), peerLeft = r.people[id]?.left == true)) {
+        // canPost: private chats don't ask.
+        return when (ChatRules.bottom(readOnly = false, peer = id, canWrite = r.canWriteTo(id), peerLeft = r.people[id]?.left == true, canPost = true)) {
             ChatRules.Bottom.FROM_BEFORE -> res.getString(R.string.chat_cant_write_old, name)
             ChatRules.Bottom.PEER_LEFT -> res.getString(R.string.chat_cant_write_left, name)
             ChatRules.Bottom.NOT_SEEN -> res.getString(R.string.chat_cant_write_unseen, name)
             else -> null
+        }
+    }
+
+    /** The line in the composer's place ([ChatRules.bottom]); null where there is a composer, or the left-group bar. */
+    fun bottomLine(r: Router, bottom: ChatRules.Bottom, peer: String?): String? = when (bottom) {
+        ChatRules.Bottom.ADMINS_ONLY -> res.getString(R.string.chat_admins_only_bar)
+        ChatRules.Bottom.COMPOSER, ChatRules.Bottom.LEFT -> null
+        else -> peer?.let { cantWriteLine(r, it) }
+    }
+
+    /**
+     * A role line's words ([AdminRules.line]); people are named through [name] (id, fallback) — the
+     * chat's cached uniqueName, or Home's. Null for a line this phone doesn't word: it isn't shown.
+     */
+    fun roleLine(ctx: Context, r: Router, m: Message, name: (String, String) -> String): String? {
+        val line = AdminRules.line(m.kind, m.from, m.text, r.me.id) ?: return null
+        fun actor() = name(m.from, m.fromName)
+        fun target() = name(m.text, "")
+        return when (line) {
+            AdminRules.Line.YOU_STARTED -> ctx.getString(R.string.chat_notice_started_you)
+            AdminRules.Line.YOU_MADE -> ctx.getString(R.string.chat_notice_admin_you_made, target())
+            AdminRules.Line.MADE_YOU -> ctx.getString(R.string.chat_notice_admin_made_you, actor())
+            AdminRules.Line.MADE -> ctx.getString(R.string.chat_notice_admin_made, actor(), target())
+            AdminRules.Line.YOU_STEPPED_DOWN -> ctx.getString(R.string.chat_notice_stepped_down_you)
+            AdminRules.Line.STEPPED_DOWN -> ctx.getString(R.string.chat_notice_stepped_down, actor())
+            AdminRules.Line.YOU_DISMISSED -> ctx.getString(R.string.chat_notice_admin_you_dismissed, target())
+            AdminRules.Line.DISMISSED_YOU -> ctx.getString(R.string.chat_notice_admin_dismissed_you, actor())
+            AdminRules.Line.DISMISSED -> ctx.getString(R.string.chat_notice_admin_dismissed, actor(), target())
+            AdminRules.Line.YOU_ONLY_ADMINS -> ctx.getString(R.string.chat_notice_admins_only_you)
+            AdminRules.Line.ONLY_ADMINS -> ctx.getString(R.string.chat_notice_admins_only, actor())
+            AdminRules.Line.YOU_EVERYONE -> ctx.getString(R.string.chat_notice_everyone_you)
+            AdminRules.Line.EVERYONE -> ctx.getString(R.string.chat_notice_everyone, actor())
+            AdminRules.Line.UNSEEN -> ctx.getString(R.string.chat_notice_unseen)
         }
     }
 

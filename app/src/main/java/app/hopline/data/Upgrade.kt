@@ -25,8 +25,8 @@ import org.json.JSONObject
  *
  * Message ids, file ids and everything else stay exactly as they were. Running it again on what
  * it gave back changes nothing. The same id swap runs on a 2.4 state whose "me" is one of my
- * former ids (a phone that had to make a new key pair): its carry is left as it is, signed as
- * it stands.
+ * former ids (a phone that had to make a new key pair): its carry and its role ops are left as
+ * they are, signed as they stand — so that phone stays an admin under its old id only.
  */
 object Upgrade {
     /** Keys whose values are words people wrote: nothing in them is ever an id to swap. */
@@ -44,8 +44,8 @@ object Upgrade {
         val out = JSONObject()
         for (key in state.keys()) {
             if (old && (key == "carry" || key == "born" || key == "reissue")) continue
-            // A 2.4 carry is signed as it is: a changed id would make every phone refuse it.
-            out.put(key, if (key == "carry") state.get(key) else swap.of(state.get(key), key))
+            // A 2.4 carry, and the role ops, are signed as they are: a changed id would make every phone refuse them.
+            out.put(key, if (key == "carry" || key == "roles") state.get(key) else swap.of(state.get(key), key))
         }
         if (old && !left) out.put("reissue", JSONArray(reissue(state, formerIds - me, now)))
         out.put("fmt", Router.FMT)

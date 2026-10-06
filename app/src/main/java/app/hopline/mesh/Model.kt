@@ -382,12 +382,14 @@ class Message(
     /** True for a group-chat-visible message (not a DM). */
     val isGroup: Boolean get() = to == null
     /** A centred line about the chat itself ("Asha renamed the group", "You left"), not something someone said. */
-    val isNotice: Boolean get() = kind == NOTICE || kind == LEFT || kind == REJOINED || isMembership
+    val isNotice: Boolean get() = kind == NOTICE || kind == LEFT || kind == REJOINED || isMembership || isRole
     /** The one notice that came over the air: a group rename, with the new name as its text.
      *  [LEFT] and [REJOINED] are this phone's own notes and carry no text. */
     val isRename: Boolean get() = kind == NOTICE
     /** "Asha left" / "Asha joined": what someone told the group about themselves. No text. */
     val isMembership: Boolean get() = kind == MEMBER_LEFT || kind == MEMBER_JOINED
+    /** A line about the group's admins ([ROLE_KINDS]): made on this phone, never on the air. */
+    val isRole: Boolean get() = kind in ROLE_KINDS
     /** Internet answers and notices: no reply, no reactions, no ticks, no unread badge for notices. */
     val isPersonal: Boolean get() = kind != SYSTEM && !isNotice
 
@@ -471,6 +473,16 @@ class Message(
          *  came over the air like any group message — the line's id is that envelope's. */
         const val MEMBER_LEFT = "member_left"
         const val MEMBER_JOINED = "member_joined"
+        /** Lines about the group's admins. The first four come from role ops (id "role.<op id>"): [ROLE_STARTED]
+         *  only on the founder's own phone; [text] holds the target's node id ([ROLE_ADMIN], [ROLE_DISMISSED]) or
+         *  "admins"/"all" ([ROLE_SEND]). [ROLE_UNSEEN] is this phone's own note under posts of mine that others
+         *  won't show (id "role.unseen.<ms>"). None of them ever goes on the air. */
+        const val ROLE_STARTED = "role_started"
+        const val ROLE_ADMIN = "role_admin"
+        const val ROLE_DISMISSED = "role_dismissed"
+        const val ROLE_SEND = "role_send"
+        const val ROLE_UNSEEN = "role_unseen"
+        val ROLE_KINDS = setOf(ROLE_STARTED, ROLE_ADMIN, ROLE_DISMISSED, ROLE_SEND, ROLE_UNSEEN)
         /** The chat key of the group chat (a private chat's key is the other person's id). */
         const val GROUP_CHAT = "*"
         const val QUEUED = "queued"        // nobody has taken it off my phone yet
@@ -512,6 +524,9 @@ class Message(
     }
 }
 
+/** What asking for an admin change came to (Router.grantAdmin and the rest; Core adds STARTING and ELSEWHERE). */
+enum class RoleChange { DONE, UNCHANGED, NOT_ADMIN, CREATOR, NOT_MEMBER, FULL, STARTING, ELSEWHERE }
+
 class Person(val id: String) {
     var name: String = ""
     /** The sender-clock time of the envelope that set [name]; older envelopes never overwrite it. */
@@ -551,6 +566,10 @@ class Person(val id: String) {
      *  From presence only — a capability from before a restart is stale, so not persisted. */
     var ev: Int = 0
     var cap: Int = 0
+    /** Their phone knows about group admins: a beacon of theirs said so ("ra"), or a link with them did ("rd" or a roles
+     *  frame). Never goes back. Persisted ("ra", only when true): an admin counts as around for the hand-over on leaving
+     *  only once this is known. */
+    var rolesAware: Boolean = false
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id); put("name", name); put("nameAt", nameAt); put("lastSeen", lastSeen); put("hasInternet", hasInternet)
@@ -559,6 +578,7 @@ class Person(val id: String) {
         if (liveQ > 0) put("liveQ", liveQ)
         if (leftQ > 0) put("leftQ", leftQ)
         if (locAt > 0) put("locAt", locAt)
+        if (rolesAware) put("ra", true)
     }
     companion object {
         fun fromJson(j: JSONObject): Person = Person(j.getString("id")).also {
@@ -570,6 +590,7 @@ class Person(val id: String) {
             // Never ahead of the counter it was the newest of: a goodbye a later beacon outdated is no goodbye.
             it.leftQ = j.optLong("leftQ", 0).takeIf { q -> q in 1..it.liveQ } ?: 0L
             it.locAt = j.optLong("locAt", 0)
+            it.rolesAware = j.optBoolean("ra", false)
         }
     }
 }

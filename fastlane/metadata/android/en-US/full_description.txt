@@ -1,41 +1,44 @@
 Hopline is group chat for places with no mobile signal and no WiFi: treks, camps, festivals, fairs, rallies, power cuts.
 
-Phones link to each other directly over Bluetooth and WiFi, and every phone passes messages along for the others. A message can travel down a whole line of hikers or across a packed ground, far beyond the reach of any single phone.
+Phones link directly over Bluetooth and WiFi, and every phone passes messages along, so a message can travel down a line of hikers or across a packed ground, far beyond one phone's range.
 
 No internet. No mobile signal. No account. No server. No hotspot to set up.
 
 HOW IT WORKS
 - One person starts a group and gets a 4-word code, like "tiger river lamp hat".
 - Everyone else types the four words (or scans the QR). Done.
-- Phones find each other on their own. Walk away and come back - the chat catches up by itself.
-- The group chat is encrypted with a key made from the code: anyone with the code can read it. Private chats are end-to-end encrypted, for the two of you only - compare security codes to be sure who is who.
+- Phones find each other on their own. Walk away, come back: the chat catches up.
+- The group chat is encrypted with a key made from the code: anyone with the code can read it. Private chats are end-to-end encrypted - compare security codes to be sure who is who.
 
 PHOTOS, FILES, VOICE NOTES
-Tap the paperclip. Photos are shrunk to about 0.3 MB so they hop in seconds; files up to 2 MB travel in pieces and are rebuilt on every phone, even ones out of range when you sent them. Or tap the mic for a voice note.
+Tap the paperclip. Photos shrink to about 0.3 MB to hop in seconds; files up to 2 MB travel in pieces, even to phones out of range at the time. Or tap the mic for a voice note.
 
 LOCATION - EVEN LIVE
 Send where you are (GPS works with no signal) or a meeting point from coordinates or a Google Maps link. Everyone sees how far the pin is and which way. Or share live location for up to 8 hours.
 
 REPLIES, REACTIONS, MENTIONS
-Swipe a message to reply with a quote. Long-press for reactions (any emoji), double-tap for a heart. Type @ to mention someone - it always buzzes.
+Swipe to reply with a quote. Long-press to react with any emoji, double-tap for a heart. Type @ to mention someone - it always buzzes.
 
 NAMES, MUTE, TIDY CHATS
-Change your name any time; everyone sees it, on your old messages too. Rename the group for everyone. Mute a chat, delete a message for yourself, clear a chat, reply privately or straight from the notification. Chats open at the first unread message.
+Change your name any time, even on old messages. Rename the group for everyone. Mute or clear a chat, delete a message for yourself, reply privately or from the notification. Chats open at the first unread message.
+
+GROUP ADMINS
+Whoever starts a group is its admin and can make others admins. Admins choose who can send: everyone, or only admins.
 
 MORE THAN ONE GROUP
 Keep a group for the trek and one for the family. Switching is one tap; each keeps its own history and files.
 
 LEAVING KEEPS THE CHAT
-Leave a group and its chat, photos and files stay on your phone to read. Rejoin with one tap. Nothing is deleted until you delete it.
+Leave a group and its chat, photos and files stay on your phone to read. If you're connected, the group is told. Rejoin with one tap.
 
 HONEST TICKS
 A clock while it waits for a phone in range, one tick on its way, two when phones confirm. Tap your own message to see who has it, by name.
 
 SHARED INTERNET
-If anyone in the group gets signal, everyone can use a sliver of it: the weather where you are, a text home ("I'm OK", with your location) sent by any phone with one bar of mobile service, a quick look-up, or a web page as readable text. Ask even with no signal - the request travels with the group. Answers come back only to you. Your phone helps only while "Share my internet" is on, within a daily allowance, and never while roaming unless you allow it.
+If anyone in the group gets signal, everyone can use a sliver of it: the weather where you are, a text home ("I'm OK", with your location) sent by any phone with one bar of service, a look-up, or a web page as text. Ask even with no signal - the request travels with the group, and only you get the answer. Your phone helps only while "Share my internet" is on, within a daily allowance, never while roaming unless you allow it.
 
 PAY WITHOUT INTERNET (INDIA)
-No data, but a bar of phone signal? Hopline opens your Phone app on *99#, the banks' own UPI service, and explains each step. You type the UPI ID, amount and PIN there - Hopline never sees them. Not on Jio; up to Rs 5,000 at a time.
+No data, but a bar of signal? Hopline opens your Phone app on *99#, the banks' own UPI service, and explains each step. You type the UPI ID, amount and PIN there - Hopline never sees them. Not on Jio; up to Rs 5,000 at a time.
 
 UPDATES, NEVER FORCED
 With internet, Hopline asks GitHub for a newer version (nothing about you is sent) and fetches it on WiFi. It installs only when you tap Install.
@@ -43,10 +46,12 @@ With internet, Hopline asks GitHub for a newer version (nothing about you is sen
 LIMITS, STATED PLAINLY
 - Each hop is Bluetooth range: about 20-40 m in the open.
 - Android only. iPhones cannot join.
-- A four-word code keeps out bystanders. Someone who spends about a week of graphics-card time once can afterwards work out any four-word code from the radio signal, and with it read the group chat (an older three-word code: under an hour).
-- Private chats have no forward secrecy; phones that carry them see who wrote to whom, and when. Chats are encrypted on the air, not on your phone.
-- Phones on Hopline 2.3.1 or older cannot join updated phones. Private chats start fresh after the update.
+- A four-word code keeps out bystanders, but about a week of graphics-card time, spent once, lets someone work out any four-word code from the radio signal and read the group chat (three words: under an hour).
+- Private chats have no forward secrecy; phones carrying them see who wrote to whom, and when. Chats are encrypted on the air, not on your phone.
+- Phones on 2.3.1 or older can't join updated phones; private chats start fresh after the update.
 - Bluetooth is flaky; links can take up to a minute to form.
 - Messages are passed along for 48 hours. Chats live only on your phone: no backup.
+- Leaving with nobody from the group connected tells nobody.
+- 2.4 phones don't know about admins; most older groups have none.
 
 Open source (MIT). Install it on every phone before you need it.

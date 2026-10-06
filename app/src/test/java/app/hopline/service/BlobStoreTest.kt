@@ -9,6 +9,7 @@ import app.hopline.mesh.Envelope
 import app.hopline.mesh.FakeNet
 import app.hopline.mesh.MemoryChunkStore
 import app.hopline.mesh.Message
+import app.hopline.mesh.Roles
 import app.hopline.mesh.Router
 import app.hopline.mesh.Transport
 import app.hopline.ui.Ui
@@ -781,6 +782,75 @@ class BlobStoreTest {
         assertArrayEquals(view, out.readBytes())
         assertEquals(Message.SENT, m.status)
         assertNull(b.fileMessage(theTent.att!!.fid))
+    }
+
+    // ---------------------------------------------------------------- a group only admins may send in
+
+    /**
+     * [r] hears, from a phone linked by hand ("L"), that A started the group an hour ago and let only admins send:
+     * [r]'s phone, not an admin, may no longer post in the group.
+     */
+    private fun onlyAdmins(r: Router) {
+        val atA = Roles(FakeNet.group().airTag, FakeNet.keysOf("A"))
+        atA.found(true, now - hour); atA.setOnlyAdmins(true, now - hour + 1)
+        r.onLinkUp("L", FakeNet.idOf("A"), "A", "tok"); FakeNet.prove(r, "L", "A", "tok")
+        r.onBytes("L", FakeNet.roles(atA.wire(), atA.digest))
+        assertFalse(r.mayPost())
+    }
+
+    @Test fun aGroupFileRefusedBecauseOnlyAdminsMaySendSaysSoNotNoRoom() {
+        val dir = tmp.newFolder("pieces")
+        val s = store(dir)
+        val b = phone("B", s)
+        s.servedBy(b)
+        onlyAdmins(b)
+        val (att, pieces) = sealedFile(b, ByteArray(30_000) { 6 })
+        // the reason, whether or not the copy here could be kept: nothing would have gone either way
+        assertTrue(send(b, att, pieces) is BlobRules.Sent.AdminsOnly)
+        assertTrue(send(b, att, pieces, kept = false) is BlobRules.Sent.AdminsOnly)
+        assertTrue(s.ids().isEmpty())
+        assertTrue(b.messages.none { it.from == b.me.id }); assertNull(b.fileMessage(att.fid)); assertFalse(b.isMine(att.fid))
+        // to A alone it goes (A's key came with the link)
+        assertTrue(send(b, att, pieces, to = FakeNet.idOf("A")) is BlobRules.Sent.Ok)
+    }
+
+    @Test fun aResendRefusedForTheSameReasonKeepsTheOldMessage() {
+        val held = MemoryChunkStore()
+        val b = phone("B", held)
+        val bytes = ByteArray(20_000) { 2 }
+        val (att0, p0) = sealedFile(b, bytes)
+        val old = (send(b, att0, p0, caption = "the view") as BlobRules.Sent.Ok).m
+        assertEquals(Message.QUEUED, old.status)
+        onlyAdmins(b)
+        val deleted = ArrayList<String>()
+        val (att1, p1) = sealedFile(b, bytes)
+        val again = BlobRules.resend(b, old, att1, true, p1) { deleted.add(it); b.hideMessages(listOf(it)) }
+        assertTrue(again is BlobRules.Sent.AdminsOnly)
+        assertEquals(emptyList<String>(), deleted)
+        assertEquals(listOf(old.id), b.messages.filter { it.isPersonal }.map { it.id })
+        assertSame(old, b.fileMessage(att0.fid)); assertNull(b.fileMessage(att1.fid))
+        for (i in 0 until att1.chunks) assertFalse(held.has(Envelope.chunkId(att1.fid, i)))
+    }
+
+    @Test fun piecesOfAHeldPostAreKeptAsAKnownFilesNotTurnedAwayAsStrays() {
+        val s = store(tmp.newFolder("pieces"), orphanCap = 2)
+        val b = phone("B", s)
+        s.servedBy(b)
+        onlyAdmins(b)
+        // M, who may not post, sends a photo: its message is held here, and carried for the others
+        val (att, envs) = incoming(bytes(60_000), from = "M")
+        assertTrue(envs.size > 2)
+        val meta = FakeNet.envelope("M", Envelope.FILE, JSONObject().put("text", "").put("att", att.json), now)
+        b.onBytes("L", FakeNet.frame(meta))
+        assertTrue(b.carries(meta.id)); assertNull(b.fileMessage(att.fid))
+        assertTrue(b.holdsFile(att.fid))
+        for (e in envs) b.onBytes("L", FakeNet.frame(e))
+        for (e in envs) assertTrue("kept: a file this phone knows", s.has(e.id))
+        // the pieces of a file nobody has sent a message for are strays: only orphanCap of them are kept
+        val (stray, strayEnvs) = incoming(bytes(60_000), from = "M")
+        for (e in strayEnvs) b.onBytes("L", FakeNet.frame(e))
+        assertEquals(2, strayEnvs.count { s.has(it.id) })
+        assertFalse(b.holdsFile(stray.fid))
     }
 
     // ---------------------------------------------------------------- putting a received file together

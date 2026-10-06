@@ -161,7 +161,7 @@ class ProtocolTest {
 
     @Test fun `quotes remember who wrote the original`() {
         val net = FakeNet(); net.line("A", "B")
-        val original = net.nodes["A"]!!.router.sendChat("meet at 5"); net.pump()
+        val original = net.nodes["A"]!!.router.sendChat("meet at 5")!!; net.pump()
         net.nodes["B"]!!.router.sendChat("ok", Quote.of(net.nodes["B"]!!.router.message(original.id)!!)); net.pump()
         val reply = net.nodes["A"]!!.router.messages.first { it.text == "ok" }
         assertEquals(net.id("A"), reply.quote!!.origin)
@@ -342,7 +342,7 @@ class ProtocolTest {
 
     @Test fun `delete for me sticks through gap-fill but the phone still carries it for others`() {
         val net = FakeNet(); net.line("A", "B")
-        val m = net.nodes["A"]!!.router.sendChat("oops"); net.pump()
+        val m = net.nodes["A"]!!.router.sendChat("oops")!!; net.pump()
         val b = net.nodes["B"]!!.router
         assertEquals(1, b.hideMessages(listOf(m.id)).size)
         assertTrue(net.texts("B").isEmpty())
@@ -357,7 +357,7 @@ class ProtocolTest {
 
     @Test fun `an unsent message deleted before it left is never sent`() {
         val net = FakeNet(); val a = net.node("A")
-        val m = a.router.sendChat("never mind")
+        val m = a.router.sendChat("never mind")!!
         a.router.hideMessages(listOf(m.id))
         net.node("B"); net.connect("A", "B")
         assertTrue(net.texts("B").isEmpty())
@@ -391,7 +391,7 @@ class ProtocolTest {
 
     @Test fun `someone reacting to my message tells me, a restore does not`() {
         val net = FakeNet(); net.line("A", "B")
-        val m = net.nodes["A"]!!.router.sendChat("summit!"); net.pump()
+        val m = net.nodes["A"]!!.router.sendChat("summit!")!!; net.pump()
         net.nodes["B"]!!.router.sendReaction(net.nodes["B"]!!.router.message(m.id)!!, "🔥"); net.pump()
         assertEquals(listOf(Triple(m.id, net.id("B"), "🔥")), net.nodes["A"]!!.rec.reactions)
         val fresh = FakeNet(); val a2 = fresh.node("A"); a2.router.restore(JSONObject(net.nodes["A"]!!.router.snapshot().toString()))
@@ -401,7 +401,7 @@ class ProtocolTest {
 
     @Test fun `my next reaction wins even if my clock went backwards`() {
         val net = FakeNet(); net.line("A", "B")
-        val m = net.nodes["A"]!!.router.sendChat("x"); net.pump()
+        val m = net.nodes["A"]!!.router.sendChat("x")!!; net.pump()
         val onB = net.nodes["B"]!!.router.message(m.id)!!
         net.nodes["B"]!!.router.sendReaction(onB, "👍"); net.pump()
         net.now -= 3600_000L                                          // clock corrected backwards

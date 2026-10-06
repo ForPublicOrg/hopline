@@ -18,6 +18,7 @@ import androidx.core.app.RemoteInput
 import app.hopline.R
 import app.hopline.mesh.Errand
 import app.hopline.mesh.Message
+import app.hopline.mesh.RoleOp
 import app.hopline.ui.ChatActivity
 import app.hopline.ui.HomeActivity
 import app.hopline.ui.InternetActivity
@@ -94,6 +95,17 @@ object Notifications {
             // Someone's goodbye or hello: worded with their name where the name is known (Home).
             m.kind == Message.MEMBER_LEFT -> ctx.getString(R.string.notice_left_short)
             m.kind == Message.MEMBER_JOINED -> ctx.getString(R.string.notice_joined_short)
+            // A line about the group's admins: Home words it in full (Ui.roleLine); these short forms are for safety.
+            m.kind == Message.ROLE_STARTED -> ctx.getString(R.string.chat_notice_started_you)
+            m.kind == Message.ROLE_ADMIN -> ctx.getString(R.string.notice_admin_made_short, roleName(ctx, m.text))
+            m.kind == Message.ROLE_DISMISSED -> if (m.from == m.text) ctx.getString(R.string.notice_stepped_down_short)
+                else ctx.getString(R.string.notice_admin_dismissed_short, roleName(ctx, m.text))
+            m.kind == Message.ROLE_SEND -> when (m.text) {
+                RoleOp.ADMINS -> ctx.getString(R.string.notice_admins_only_short)
+                RoleOp.ALL -> ctx.getString(R.string.notice_everyone_short)
+                else -> ""
+            }
+            m.kind == Message.ROLE_UNSEEN -> ctx.getString(R.string.chat_notice_unseen)
             m.loc != null -> ctx.getString(R.string.location_label) + if (m.loc.label.isNotEmpty()) " — ${m.loc.label}" else ""
             att == null -> m.text
             att.isAudio && att.dur > 0 -> ctx.getString(R.string.voice_label) + " (${att.dur / 60}:${"%02d".format(att.dur % 60)})"
@@ -104,6 +116,9 @@ object Notifications {
         }
         return if (m.kind == Message.SYSTEM) "🌐 $body" else body
     }
+
+    /** Whom a role line is about, as the group tells them apart; "Someone" while the group isn't running. */
+    private fun roleName(ctx: Context, id: String) = Core.router?.let { app.hopline.ui.Ui.uniqueName(it, id) } ?: ctx.getString(R.string.someone)
 
     private fun chatIntent(ctx: Context, fp: String, chat: String): Intent =
         Intent(ctx, ChatActivity::class.java).apply {
@@ -190,6 +205,8 @@ object Notifications {
         val k = key(fp, chat)
         val list = lines[k] ?: return
         val private = chat != Core.GROUP
+        // A group this phone may not post in gets no Reply: there would be nothing it could do.
+        val canReply = private || Core.router?.takeIf { it.group.fingerprint == fp }?.mayPost() != false
         val groupName = Core.store.findGroup(fp)?.name?.ifEmpty { null } ?: "Hopline"
         val me = Person.Builder().setName(ctx.getString(R.string.reply_you)).setKey("me").build()
         val style = NotificationCompat.MessagingStyle(me)
@@ -233,7 +250,7 @@ object Notifications {
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(open(ctx, chatIntent(ctx, fp, chat).setData(target(fp, chat, "open")), reqBase))
-            .addAction(reply)
+            .also { if (canReply) it.addAction(reply) }
             .addAction(read)
             .build()
         try { NotificationManagerCompat.from(ctx).notify(k, ID_CHAT, n) } catch (e: Exception) { }
@@ -248,6 +265,16 @@ object Notifications {
         counts[k] = 0
         pending.remove(k)
         post(ctx, fp, chat, silent = true, alertAgain = false)
+    }
+
+    /** A reply typed in the shade, kept while the group started, then refused: its line comes out, quietly. */
+    fun unsent(ctx: Context, fp: String, chat: String, text: String) {
+        val k = key(fp, chat)
+        val list = lines[k] ?: return
+        val i = list.indexOfLast { it.mine && it.text == text }
+        if (i < 0) return
+        list.removeAt(i)
+        if (list.isEmpty()) clearChat(ctx, fp, chat) else post(ctx, fp, chat, silent = true, alertAgain = false)
     }
 
     /** The chat was opened — its notification and count go away (even after a process restart). */
@@ -435,11 +462,13 @@ object Notifications {
                     }
                     val mine = if (chat == Core.GROUP) r.sendChat(text, mentions = app.hopline.ui.Ui.mentionsIn(r, text)) else r.sendDm(chat, text)
                     if (mine == null) {
-                        // A private chat nothing can be written to (Router.canMessage): nothing went, so nothing
-                        // shows as sent; the words wait in that chat (Core.keepAsDraft), the notification is
-                        // put back as it was, and the chat's own line says why (the same one its screen shows).
+                        // A private chat nothing can be written to (Router.canMessage), or a group only admins may
+                        // send in (Router.mayPost): nothing went, so nothing shows as sent; the words wait in that
+                        // chat (Core.keepAsDraft), the notification is put back as it was, and a toast says why.
                         Core.keepAsDraft(fp, chat, text)
-                        app.hopline.ui.Ui.cantWriteLine(r, chat)?.let { android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_LONG).show() }
+                        // Never Ui.cantWriteLine(r, "*"): for the group chat it would say "This chat is from before the update…".
+                        val why = if (chat == Core.GROUP) ctx.getString(R.string.notif_admins_only) else app.hopline.ui.Ui.cantWriteLine(r, chat)
+                        why?.let { android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_LONG).show() }
                         post(ctx, fp, chat, silent = true, alertAgain = false)
                         return
                     }

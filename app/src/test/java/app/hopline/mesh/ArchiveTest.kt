@@ -50,15 +50,15 @@ class ArchiveTest {
         val a = net.nodes["A"]!!.router; val b = net.nodes["B"]!!.router; val c = net.nodes["C"]!!.router
         val d = Day(net)
         a.setCaps(Errand.CAP_SMS); b.setCaps(Errand.CAP_WX); net.pump()
-        d.fromB = b.sendChat("hello from B"); net.pump()
+        d.fromB = b.sendChat("hello from B")!!; net.pump()
         net.now += 1_000
-        d.mine = a.sendChat("hi all"); net.pump()
+        d.mine = a.sendChat("hi all")!!; net.pump()
         net.now += 1_000
         d.theirDm = c.sendDm(B, "private between C and B")!!; net.pump()    // A only carries this one
         d.dm = a.sendDm(B, "just you")!!; net.pump()
         b.sendReaction(b.message(d.mine.id)!!, "👍"); net.pump()
         net.now += 1_000
-        d.oops = b.sendChat("oops"); net.pump()
+        d.oops = b.sendChat("oops")!!; net.pump()
         assertEquals(1, a.hideMessages(listOf(d.oops.id)).size)            // deleted for me
         // a request of mine that was answered, one of mine still open, and one of B's my phone is on
         d.answered = a.requestErrand(Errand.WX, JSONObject().put("lat", 1_000_000L).put("lng", 2_000_000L), selfCaps = 0); net.pump()
@@ -73,7 +73,7 @@ class ArchiveTest {
         // off the air — and one more message that never leaves this phone
         net.disconnect("A", "B")
         net.now += 1_000
-        d.unsent = a.sendChat("never left my phone")
+        d.unsent = a.sendChat("never left my phone")!!
         assertEquals(Message.QUEUED, d.unsent.status)
         d.leftAt = net.now
         d.before = a.snapshot()
@@ -289,6 +289,63 @@ class ArchiveTest {
         assertEquals(listOf("keep me", ""), net.texts("A"))
         assertEquals(listOf(Envelope.CHAT, Message.LEFT), a.router.messages.map { it.kind })
         assertEquals("Bea", a.router.people["B"]!!.name)
+    }
+
+    @Test fun theRolesKeyPassesThroughAStripUntouched() {
+        val net = FakeNet(); net.node("A"); net.nodes["A"]!!.router.foundIfDue(sure = true, ts = net.now)
+        net.node("B"); net.connect("A", "B")
+        val a = net.nodes["A"]!!.router
+        assertEquals(RoleChange.DONE, a.grantAdmin(B)); assertEquals(RoleChange.DONE, a.setOnlyAdmins(true)); net.pump()
+        // the posts held back while only admins may send, as a later part of this version saves them
+        val state = copy(a.snapshot()).put("held", JSONObject().put(FakeNet.newId("B"), "").put(FakeNet.newId("B"), "${B}abcdefgh"))
+        val roles = state.getJSONObject("roles").toString(); val held = state.getJSONObject("held").toString()
+        val archive = Archive.strip(state, A, "A", net.now, net.now)
+        assertEquals(roles, archive.getJSONObject("roles").toString())
+        assertEquals(held, archive.getJSONObject("held").toString())
+        assertEquals(roles, Archive.strip(archive, A, "A", net.now, net.now).getJSONObject("roles").toString())
+        // the carriers go with the rest of the backlog: they were never a message the chat shows
+        assertEquals(0, archive.getJSONArray("carry").length())
+        // and a router opened on it knows the admins as they were
+        val r = FakeNet().also { it.now = net.now }.node("A").router
+        r.restore(copy(archive))
+        assertEquals(listOf(A, B), r.admins())
+        assertTrue(r.onlyAdminsSend())
+    }
+
+    @Test fun aKeptChatHoldsNothingBackAndShowsNothingLate() {
+        val net = FakeNet(); net.node("A"); net.nodes["A"]!!.router.foundIfDue(sure = true, ts = net.now)
+        net.node("B"); net.connect("A", "B")
+        val a = net.nodes["A"]!!.router; val b = net.nodes["B"]!!.router
+        assertEquals(RoleChange.DONE, a.setOnlyAdmins(true)); net.pump()
+        net.now += 10 * 60_000L
+        val said = a.sendChat("only admins from now on")!!; net.pump()
+        // a member's post, held on B, and carried for the others
+        val post = FakeNet.envelope("C", Envelope.CHAT, JSONObject().put("text", "may I?"), net.now)
+        b.onBytes("B>A", FakeNet.frame(post)); net.pump()
+        assertTrue(b.carries(post.id)); assertNull(b.message(post.id))
+        val state = copy(b.snapshot())
+        assertTrue(state.getJSONObject("held").has(post.id))
+        // B leaves: the held post's envelope goes with the rest of the backlog; the list itself passes through
+        val archive = Archive.strip(state, B, "B", net.now, net.now)
+        assertFalse(ids(archive.getJSONArray("carry")).contains(post.id))
+        assertTrue(archive.getJSONObject("held").similar(state.getJSONObject("held")))
+        // a router opened on it holds nothing back — even with roles that would let the post in now
+        assertEquals(RoleChange.DONE, a.setOnlyAdmins(false)); net.pump()
+        val lifted = copy(archive).put("roles", copy(a.snapshot().getJSONObject("roles")))
+        for (kept in listOf(archive, lifted)) {
+            val frames = ArrayList<String>()
+            val rec = net.Recorder()
+            val r = Router(FakeNet.identity("B"), FakeNet.group(), object : Transport {
+                override fun send(linkId: String, bytes: ByteArray): Long { frames.add(String(bytes, Charsets.UTF_8)); return frames.size.toLong() }
+                override fun disconnect(linkId: String) {}
+            }, rec) { net.now }
+            r.restore(copy(kept))
+            assertFalse(r.snapshot().has("held"))
+            assertNull(r.message(post.id))
+            assertNotNull(r.message(said.id))
+            assertTrue(rec.shown.isEmpty()); assertTrue(frames.isEmpty())
+            assertFalse(r.takeDirty())
+        }
     }
 
     // ---------------------------------------------------------------- a router opened on an archive
@@ -640,7 +697,7 @@ class ArchiveTest {
     @Test fun aMessageOfMineDeletedHereComesBackOnlyAsBacklogNeverAsAMessage() {
         val net = FakeNet(); net.line("A", "B")
         val a = net.nodes["A"]!!.router; val b = net.nodes["B"]!!
-        val regret = a.sendChat("said too much"); net.pump()
+        val regret = a.sendChat("said too much")!!; net.pump()
         assertEquals(Message.SENT, regret.status)
         assertEquals(1, a.hideMessages(listOf(regret.id)).size)
         assertTrue("deleted here, still carried for the others", a.carries(regret.id))
@@ -667,7 +724,7 @@ class ArchiveTest {
         // The radio delivered it, but the phone left before it heard so: saved as unsent, envelope dropped.
         val net = FakeNet(); net.line("A", "B", "C")
         val a = net.nodes["A"]!!.router
-        val m = a.sendChat("made it out after all"); net.pump()
+        val m = a.sendChat("made it out after all")!!; net.pump()
         val state = copy(a.snapshot())
         objects(state.getJSONArray("messages")).single { it.getString("id") == m.id }.put("status", Message.QUEUED).put("reached", JSONArray())
         val envelope = Envelope(objects(state.getJSONArray("carry")).single { it.getString("id") == m.id })
@@ -807,7 +864,7 @@ class ArchiveTest {
 
     @Test fun restoreDropsCarryPastItsTimeEvenBeforeTheFirstTick() {
         val net = FakeNet(); net.line("A", "B")
-        val m = net.nodes["B"]!!.router.sendChat("old news"); net.pump()
+        val m = net.nodes["B"]!!.router.sendChat("old news")!!; net.pump()
         val full = net.nodes["A"]!!.router.snapshot().toString()         // saved whole: nothing stripped
         assertEquals(setOf(Envelope.CHAT, Envelope.RECEIPT), kinds(JSONObject(full).getJSONArray("carry")))
 
@@ -880,7 +937,7 @@ class ArchiveTest {
             override fun send(linkId: String, bytes: ByteArray): Long { frames.add(JSONObject(String(bytes, Charsets.UTF_8))); return frames.size.toLong() }
             override fun disconnect(linkId: String) {}
         }, rec) { now }
-        val real = r.sendChat("a real message")
+        val real = r.sendChat("a real message")!!
         val left = r.addLocalNotice(Message.LEFT)!!
         now += 1_000
         val back = r.addLocalNotice(Message.REJOINED)!!

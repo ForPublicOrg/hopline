@@ -163,13 +163,14 @@ object Blobs {
         @Volatile var isMine: (Envelope) -> Boolean = { false }
 
         /**
-         * Hold pieces for [r]: which files it knows and which are mine is what IT knows — a file
-         * this phone sent (Router.isMine) — never what a piece claims. A piece signed with my id for
-         * a file I never sent is a stranger's, under the reserve and the orphan cap like any other.
+         * Hold pieces for [r]: which files it knows (shown, or held back for the others: Router.holdsFile)
+         * and which are mine is what IT knows — a file this phone sent (Router.isMine) — never what a
+         * piece claims. A piece signed with my id for a file I never sent is a stranger's, under the
+         * reserve and the orphan cap like any other.
          * Asked from put(), which runs on the router's thread.
          */
         fun servedBy(r: Router) {
-            isKnownFile = { fid -> r.fileMessage(fid) != null }
+            isKnownFile = { fid -> r.fileMessage(fid) != null || r.holdsFile(fid) }
             isMine = { env -> BlobRules.chunkFid(env.id)?.let { r.isMine(it) } == true }
         }
 

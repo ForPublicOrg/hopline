@@ -11,6 +11,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import app.hopline.R
 import app.hopline.core.Words
+import app.hopline.data.GroupRules
 import app.hopline.data.SavedGroup
 import app.hopline.databinding.ActivityGroupInfoBinding
 import app.hopline.databinding.ItemPersonBinding
@@ -23,9 +24,10 @@ import app.hopline.service.Permissions
 import java.util.Locale
 
 /**
- * Group info: the group's name (rename for everyone), its code, mute, its members, clear and leave.
- * Opened by tapping the group chat's header, WhatsApp-style. It belongs to the group that was on
- * the radio when it opened — if that changes, it closes instead of showing another group.
+ * Group info: the group's name (rename for everyone), its code, mute, who can send (an admin's
+ * Group permissions), its members, clear and leave. Opened by tapping the group chat's header,
+ * WhatsApp-style. It belongs to the group that was on the radio when it opened — if that changes,
+ * it closes instead of showing another group.
  *
  * Opened with [EXTRA_CODE] it is about a group this phone LEFT instead, and shows what is still
  * true of one: its name, when it was left, its code (which still gets back in), the private chats
@@ -88,6 +90,7 @@ class GroupInfoActivity : AppCompatActivity() {
         b.clearChat.setOnClickListener { Asks.clear(this, null, currentName()) }
         b.leave.setOnClickListener { shownGroup()?.let { Asks.leave(this, it) } }
         b.viewAll.setOnClickListener { startActivity(Intent(this, PeopleActivity::class.java)) }
+        b.permsRow.setOnClickListener { Asks.sendPolicy(this) }
         // TalkBack hears the mute row as the switch it looks like: "Mute notifications, switch, off".
         ViewCompat.setAccessibilityDelegate(b.muteRow, object : AccessibilityDelegateCompat() {
             override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfoCompat) {
@@ -106,7 +109,7 @@ class GroupInfoActivity : AppCompatActivity() {
     private fun setUpLeft() {
         // The pencil keeps its place, unseen, so the name stays centred against the spacer opposite.
         b.editName.visibility = View.INVISIBLE
-        for (v in listOf(b.namedLine, b.codeActions, b.muteRow, b.membersHeader, b.membersCard, b.clearChat, b.leave)) v.visibility = View.GONE
+        for (v in listOf(b.namedLine, b.codeActions, b.muteRow, b.permsRow, b.membersHeader, b.membersCard, b.clearChat, b.leave)) v.visibility = View.GONE
         b.rejoin.visibility = View.VISIBLE
         b.deleteGroup.visibility = View.VISIBLE
         b.rejoin.setOnClickListener { shownGroup()?.let { Asks.rejoin(this, it) } }
@@ -155,9 +158,12 @@ class GroupInfoActivity : AppCompatActivity() {
             b.subtitle.text = getString(R.string.people_starting)
             b.namedLine.visibility = View.GONE
             b.membersHeader.text = getString(R.string.people)
-            ensureRows(1); bindMe(rows[0])
+            ensureRows(1); bindMe(rows[0], null)
             b.membersNote.visibility = View.GONE
             b.viewAll.visibility = View.GONE
+            // Who can send, and who the admins are, aren't known until the group has started.
+            b.permsRow.visibility = View.GONE
+            b.noAdminsNote.visibility = View.GONE
             return
         }
         // "The group" is everyone heard from in the last two days, plus me — not everyone ever.
@@ -170,12 +176,15 @@ class GroupInfoActivity : AppCompatActivity() {
 
         val inRange = others.count { r.isInRange(it) }
         b.membersHeader.text = getString(R.string.members_header, resources.getQuantityString(R.plurals.members_count, total, total), inRange)
-        val sorted = others.sortedWith(compareByDescending<Person> { r.isInRange(it) }
+        // The admins first, as WhatsApp lists them.
+        val sorted = others.sortedWith(compareByDescending<Person> { r.isAdmin(it.id) }.thenByDescending { r.isInRange(it) }
             .thenBy { Ui.nameOf(r, it.id, it.name).lowercase(Locale.getDefault()) })
         val shown = sorted.take(MAX_ROWS - 1)
         ensureRows(shown.size + 1)
-        bindMe(rows[0])
-        shown.forEachIndexed { i, p -> PeopleActivity.bindPerson(rows[i + 1], r, p, onVerify = { verify(r, p) }) { openChat(p) } }
+        bindMe(rows[0], r)
+        shown.forEachIndexed { i, p ->
+            PeopleActivity.bindPerson(rows[i + 1], r, p, onVerify = { verify(r, p) }, onOptions = { Asks.member(this, p.id) }) { Asks.openChat(this, p.id) }
+        }
         // A group that has been quiet for two days (every rejoin starts this way) isn't a group
         // nobody joined: its people are in the chat, just not heard from lately — unless every one
         // of them said goodbye.
@@ -188,6 +197,36 @@ class GroupInfoActivity : AppCompatActivity() {
         b.membersNote.visibility = if (others.isEmpty()) View.VISIBLE else View.GONE
         b.viewAll.text = getString(R.string.view_all, total)
         b.viewAll.visibility = if (sorted.size > shown.size) View.VISIBLE else View.GONE
+        refreshRoles(r)
+    }
+
+    /**
+     * Who can send ([AdminRules.roleArea]): for an admin, the way to change it; for anyone else,
+     * only while only admins can send — that plain fact, and that private chats still work (or that
+     * no admin has been around lately). And, quietly, when this phone knows of no admin at all.
+     */
+    private fun refreshRoles(r: Router) {
+        val meAdmin = r.isAdmin(r.me.id)
+        val only = r.onlyAdminsSend()
+        // Heard from in two days, not left, and known to know about admins (Router.presentAdmins).
+        val around = r.presentAdmins().any { it != r.me.id }
+        when (AdminRules.roleArea(ready = true, meAdmin = meAdmin, onlyAdmins = only, adminAround = around)) {
+            AdminRules.RoleArea.NONE -> b.permsRow.visibility = View.GONE
+            AdminRules.RoleArea.PERMISSIONS -> {
+                b.permsRow.visibility = View.VISIBLE; b.permsRow.isClickable = true; b.permsChevron.visibility = View.VISIBLE
+                b.permsTitle.text = getString(R.string.group_perms)
+                b.permsState.text = getString(if (only) R.string.group_perms_only_admins else R.string.group_perms_everyone)
+                ViewCompat.replaceAccessibilityAction(b.permsRow, AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK,
+                    getString(R.string.action_group_perms), null)
+            }
+            AdminRules.RoleArea.ONLY_ADMINS, AdminRules.RoleArea.ONLY_ADMINS_NOBODY -> {
+                b.permsRow.visibility = View.VISIBLE; b.permsRow.isClickable = false; b.permsChevron.visibility = View.GONE
+                b.permsTitle.text = getString(R.string.group_perms_only_admins)
+                b.permsState.text = getString(if (around) R.string.group_perms_note_sub else R.string.group_perms_nobody_sub)
+                ViewCompat.replaceAccessibilityAction(b.permsRow, AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK, null, null)
+            }
+        }
+        b.noAdminsNote.visibility = if (AdminRules.noAdminsNote(true, r.founder() != null, Ui.othersKnown(r))) View.VISIBLE else View.GONE
     }
 
     /** A left group, from its saved entry alone: grey like its row on Home, with when it was left. */
@@ -252,6 +291,7 @@ class GroupInfoActivity : AppCompatActivity() {
             row.status.text = c.time
             row.dot.visibility = View.GONE
             row.badge.visibility = View.GONE
+            row.adminBadge.visibility = View.GONE
             // The chat screen is told which group by its fingerprint, and shows it read-only.
             row.root.setOnClickListener {
                 startActivity(Intent(this, ChatActivity::class.java).putExtra(Notifications.EXTRA_FP, fp).putExtra(Notifications.EXTRA_PEER, c.id))
@@ -269,8 +309,10 @@ class GroupInfoActivity : AppCompatActivity() {
             notice != null && notice.text == r.group.name ->
                 if (notice.from == r.me.id) getString(R.string.renamed_by_you, whenText(notice.ts))
                 else getString(R.string.renamed_by, Ui.uniqueName(r, notice.from, notice.fromName), whenText(notice.ts))
-            // Starting a group stamps its name the moment it is saved; a joiner learns an older stamp.
-            at > 0 && g.joinedAt - at in 0L..2_000L ->getString(R.string.started_by_you, whenText(at))
+            // Starting a group stamps its name as Start is tapped. The phone that founded it knows, until a rename; for a group from
+            // before admins, its saved times tell, by the very rule that decided whether this phone claimed it (GroupRules.legacyClaim).
+            at > 0 && ((r.group.nameV == 0 && r.founder() == r.me.id) || GroupRules.legacyClaim(at, g.joinedAt, r.group.nameV)) ->
+                getString(R.string.started_by_you, whenText(at))
             at > 0 -> getString(R.string.named_at, whenText(minOf(at, System.currentTimeMillis())))
             else -> null
         }
@@ -284,9 +326,7 @@ class GroupInfoActivity : AppCompatActivity() {
         while (rows.size > n) b.members.removeView(rows.removeAt(rows.size - 1).root)
     }
 
-    private fun bindMe(row: ItemPersonBinding) = PeopleActivity.bindMe(row) { Asks.myName(this) }
-
-    private fun openChat(p: Person) = startActivity(Intent(this, ChatActivity::class.java).putExtra("peer", p.id))
+    private fun bindMe(row: ItemPersonBinding, r: Router?) = PeopleActivity.bindMe(row, r) { Asks.myName(this) }
 
     private fun verify(r: Router, p: Person) = SecurityCodeDialog.show(this, p.id, Ui.nameOf(r, p.id, p.name))
 

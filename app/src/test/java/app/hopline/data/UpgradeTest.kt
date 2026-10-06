@@ -8,6 +8,8 @@ import app.hopline.mesh.Loc
 import app.hopline.mesh.Message
 import app.hopline.mesh.Person
 import app.hopline.mesh.Quote
+import app.hopline.mesh.RoleOp
+import app.hopline.mesh.Roles
 import app.hopline.mesh.Router
 import org.json.JSONArray
 import org.json.JSONObject
@@ -198,6 +200,51 @@ class UpgradeTest {
         assertTrue(u.getJSONObject("born").has("m1"))
         assertFalse(u.has("reissue"))
         assertNull(Upgrade.state(u, me, setOf(old, before), now, left = false))
+    }
+
+    @Test fun rolesAreNeverRewritten() {
+        // a 2.4 state of a phone that started the group, made a friend an admin and let only admins send — and then
+        // had to make a new key pair: its role ops name the id it had, and are signed by it
+        val keys = FakeNet.keysOf("upgrade-before")
+        val before = keys.nodeId
+        val tag = FakeNet.group().airTag
+        val roles = Roles(tag, keys)
+        roles.found(true, now - hour)
+        roles.grant(FakeNet.idOf("upgrade-friend"), now - hour + 1)
+        roles.setOnlyAdmins(true, now - hour + 2)
+        val saved = roles.toJson().put("noticed", JSONArray(roles.wire().map { it.id }))
+        val text = saved.toString()
+        assertTrue(text.contains(before))
+        val s = JSONObject().put("fmt", Router.FMT).put("me", before)
+            .put("messages", JSONArray().put(msg("m1", from = before)))
+            .put("roles", saved)
+        val u = Upgrade.state(s, me, setOf(old, before), now, left = false)!!
+        assertEquals("everything else is swapped as ever", me, u.getJSONArray("messages").getJSONObject(0).getString("from"))
+        assertEquals(text, u.getJSONObject("roles").toString())
+        // and every op still checks: the same bytes, the same signatures
+        val r = u.getJSONObject("roles")
+        val ops = listOf(r.getJSONObject("pin")) + r.getJSONArray("ops").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+        assertEquals(3, ops.size)
+        for (o in ops) assertTrue(RoleOp.parse(o)!!.verify(tag))
+        assertNull(Upgrade.state(u, me, setOf(old, before), now, left = false))
+    }
+
+    @Test fun heldIdsPassThroughAnUpgradeUntouched() {
+        // the posts a 2.4 state of a former id holds back: envelope ids -> file ids, its own former id's among them
+        val before = FakeNet.idOf("upgrade-before")
+        val friend = FakeNet.idOf("upgrade-friend")
+        val held = JSONObject().put("$friend.abcdefghij", "").put("$friend.klmnpqrstu", "${friend}abcdefgh")
+            .put("$before.vwxyzabcde", "${before}fghijkmn").put("$old.abcdefghij", "")
+        val s = JSONObject().put("fmt", Router.FMT).put("me", before)
+            .put("messages", JSONArray().put(msg("m1", from = before))).put("held", held)
+        val u = Upgrade.state(s, me, setOf(old, before), now, left = false)!!
+        assertEquals("everything else is swapped as ever", me, u.getJSONArray("messages").getJSONObject(0).getString("from"))
+        val out = u.getJSONObject("held")
+        assertEquals(held.keySet(), out.keySet())
+        for (id in held.keySet()) assertEquals(id, held.getString(id), out.getString(id))
+        // and in a state from before 2.4 (which never had any): whatever is there is left alone
+        val older = up(state(listOf(msg("m2"))).put("held", JSONObject(held.toString())))
+        assertTrue(held.similar(older.getJSONObject("held")))
     }
 
     // ---------------------------------------------------------------- the history

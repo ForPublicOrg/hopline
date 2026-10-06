@@ -2,6 +2,7 @@ package app.hopline.data
 
 import app.hopline.core.Crypto
 import app.hopline.core.Words
+import app.hopline.mesh.FakeNet
 import app.hopline.mesh.Group
 import org.json.JSONArray
 import org.json.JSONObject
@@ -395,5 +396,148 @@ class GroupRulesTest {
         val list = listOf(g(trek, leftAt = now - 3 * day), g(family), g(fest, leftAt = now - day), g(old, leftAt = now - 2 * day))
         assertEquals(listOf(fest, old, trek), GroupRules.left(list).codes())
         assertEquals(listOf(family), GroupRules.members(list).codes())
+    }
+
+    // ---------------------------------------------------------------- who started it (admins)
+
+    private val me = FakeNet.idOf("A")
+    private val newMe = FakeNet.idOf("A after a new key")
+
+    @Test fun aStartedGroupIsMarkedStartedHere() {
+        val made = GroupRules.add(listOf(g(trek)), trek, fest, "Fest", 777, now, made = true).groups.of(fest)
+        assertEquals(SavedGroup.START_MADE, made.start)
+        assertEquals("not bound to an id until it first goes on the radio", "", made.startId)
+        val back = JSONArray(GroupRules.encode(listOf(made))).getJSONObject(0)
+        assertEquals(SavedGroup.START_MADE, back.getString("start")); assertFalse(back.has("startId"))
+        assertEquals(SavedGroup.START_MADE, saved(listOf(made)).single().start)
+    }
+
+    @Test fun aJoinedGroupIsMarkedJoined() {
+        val joined = GroupRules.add(listOf(g(trek)), trek, fest, "", 0, now).groups.of(fest)
+        assertEquals(SavedGroup.START_JOINED, joined.start); assertEquals("", joined.startId)
+        assertEquals(SavedGroup.START_JOINED, saved(listOf(joined)).single().start)
+        assertFalse(GroupRules.founds(joined, me))
+    }
+
+    @Test fun aGroupFromBeforeAdminsHasNoMarkUntilDecided() {
+        val raw = """[{"code":"tiger-river-lamp","name":"Trek","joinedAt":11,"lastActive":22,"nameAt":33,"sid":"abcdefgh2345"}]"""
+        val g = GroupRules.parse(raw).single()
+        assertEquals("", g.start); assertEquals("", g.startId)
+        assertEquals(setOf("code", "name", "joinedAt", "lastActive", "nameAt", "sid"), JSONArray(GroupRules.encode(listOf(g))).getJSONObject(0).keySet())
+        // adding its code again (a link tapped) leaves it undecided: that is for its next start
+        assertEquals("", GroupRules.add(listOf(g), trek, trek, "", 0, now, made = true).groups.single().start)
+        val decided = GroupRules.decideStart(listOf(g), trek, SavedGroup.START_CLAIM, me).single()
+        assertEquals(SavedGroup.START_CLAIM, decided.start); assertEquals(me, decided.startId)
+        val back = JSONArray(GroupRules.encode(listOf(decided))).getJSONObject(0)
+        assertEquals(SavedGroup.START_CLAIM, back.getString("start")); assertEquals(me, back.getString("startId"))
+    }
+
+    @Test fun theStartIsDecidedOnceAndNeverChanged() {
+        val list = listOf(g(trek), g(family))
+        val claimed = GroupRules.decideStart(list, "Tiger RIVER lamp", SavedGroup.START_CLAIM, me)
+        assertEquals(SavedGroup.START_CLAIM, claimed.of(trek).start); assertEquals(me, claimed.of(trek).startId)
+        assertEquals("", list.of(trek).start)                       // the list it was given is not touched
+        // decided: nothing changes it again, the very list comes back
+        assertSame(claimed, GroupRules.decideStart(claimed, trek, SavedGroup.START_JOINED, ""))
+        assertSame(claimed, GroupRules.decideStart(claimed, trek, SavedGroup.START_CLAIM, newMe))
+        assertSame(claimed, GroupRules.decideStart(claimed, trek, SavedGroup.START_MADE, newMe))
+        val joined = GroupRules.decideStart(claimed, family, SavedGroup.START_JOINED, "")
+        assertEquals(SavedGroup.START_JOINED, joined.of(family).start)
+        assertSame(joined, GroupRules.decideStart(joined, family, SavedGroup.START_CLAIM, me))
+        // nor a code this phone doesn't have
+        assertSame(list, GroupRules.decideStart(list, "wizard pirate robot", SavedGroup.START_CLAIM, me))
+    }
+
+    @Test fun aStartedGroupGetsItsIdOnceAndOnlyOnce() {
+        val list = GroupRules.add(listOf(g(trek)), trek, fest, "Fest", 777, now, made = true).groups
+        val bound = GroupRules.decideStart(list, fest, SavedGroup.START_MADE, me)
+        assertEquals(SavedGroup.START_MADE, bound.of(fest).start); assertEquals(me, bound.of(fest).startId)
+        // a new key pair later never takes it over, nor does a claim
+        assertSame(bound, GroupRules.decideStart(bound, fest, SavedGroup.START_MADE, newMe))
+        assertSame(bound, GroupRules.decideStart(bound, fest, SavedGroup.START_CLAIM, newMe))
+        // and a started group with no id yet takes nothing but its own start
+        assertSame(list, GroupRules.decideStart(list, fest, SavedGroup.START_CLAIM, me))
+        assertSame(list, GroupRules.decideStart(list, fest, SavedGroup.START_JOINED, ""))
+        assertTrue(GroupRules.founds(bound.of(fest), me)); assertFalse(GroupRules.founds(bound.of(fest), newMe))
+    }
+
+    @Test fun theMarkSurvivesEveryChangeToTheList() {
+        val list = GroupRules.decideStart(listOf(g(trek, "Trek"), g(family, "Family"), g(fest, "Fest", leftAt = now - day)),
+            trek, SavedGroup.START_CLAIM, me).let { GroupRules.decideStart(it, fest, SavedGroup.START_JOINED, "") }
+        val mk = Crypto.b64(ByteArray(32) { 4 })
+        fun check(what: String, groups: List<SavedGroup>) {
+            for (l in listOf(groups, saved(groups))) {
+                assertEquals(what, SavedGroup.START_CLAIM, l.of(trek).start); assertEquals(what, me, l.of(trek).startId)
+                l.firstOrNull { it.code == fest }?.let { assertEquals(what, SavedGroup.START_JOINED, it.start); assertEquals(what, "", it.startId) }
+            }
+        }
+        check("as it is", list)
+        check("key", GroupRules.setKey(list, trek, mk))
+        check("rename", GroupRules.rename(list, trek, "Kedarkantha", now))
+        check("leave", GroupRules.leave(list, trek, trek, now).groups)
+        check("rejoin", GroupRules.rejoin(GroupRules.leave(list, trek, trek, now).groups, family, trek, now).groups)
+        check("rejoin a left one", GroupRules.rejoin(list, trek, fest, now).groups)
+        check("seal", GroupRules.seal(GroupRules.leave(list, trek, trek, now).groups, trek))
+        check("switch", GroupRules.setActive(list, family, trek, now).groups)
+        check("add it again", GroupRules.add(list, family, trek, "A link's name", 99, now, made = true).groups)
+        check("add a left one again", GroupRules.add(list, trek, fest, "", 0, now, made = true).groups)
+        check("add another", GroupRules.add(list, trek, old, "Old", 0, now).groups)
+        check("remove another", GroupRules.remove(list, trek, family).groups)
+    }
+
+    @Test fun anUnknownMarkFromALaterVersionNeverClaims() {
+        val raw = JSONArray()
+            .put(JSONObject().put("code", trek).put("name", "Trek").put("start", "elected").put("startId", me))
+            .put(JSONObject().put("code", family).put("name", "Family").put("start", SavedGroup.START_CLAIM).put("startId", "not a node id"))
+            .put(JSONObject().put("code", fest).put("name", "Fest").put("start", 7).put("startId", 7))
+        val back = GroupRules.parse(raw.toString())
+        assertEquals(SavedGroup.START_JOINED, back.of(trek).start)
+        assertFalse(GroupRules.founds(back.of(trek), me))
+        assertEquals(SavedGroup.START_CLAIM, back.of(family).start); assertEquals("", back.of(family).startId)
+        assertFalse(GroupRules.founds(back.of(family), me))
+        assertEquals(SavedGroup.START_JOINED, back.of(fest).start); assertEquals("", back.of(fest).startId)
+    }
+
+    @Test fun aCreatorOn22Or23ClaimsItsGroup() {
+        assertTrue(GroupRules.legacyClaim(nameAt = now, joinedAt = now, nameV = 0))
+        assertTrue(GroupRules.legacyClaim(nameAt = now, joinedAt = now + 5, nameV = 0))
+        assertTrue(GroupRules.legacyClaim(nameAt = now, joinedAt = now + GroupRules.LEGACY_START_MS, nameV = 0))
+        assertEquals(500L, GroupRules.LEGACY_START_MS)
+    }
+
+    @Test fun aJoinerNeverClaims() {
+        assertFalse(GroupRules.legacyClaim(nameAt = now, joinedAt = now + GroupRules.LEGACY_START_MS + 1, nameV = 0))
+        // On 2.2 or 2.3, with the scanner already on the starter's screen as Start was tapped: the code read and the
+        // group saved a second later (no key to work out then), the name's time learned from the starter's beacon.
+        assertFalse(GroupRules.legacyClaim(nameAt = now, joinedAt = now + 1_000, nameV = 0))
+        assertFalse(GroupRules.legacyClaim(nameAt = now - day, joinedAt = now, nameV = 0))
+    }
+
+    @Test fun aRenamedGroupIsNeverClaimed() {
+        assertFalse(GroupRules.legacyClaim(nameAt = now, joinedAt = now, nameV = 1))
+        assertFalse(GroupRules.legacyClaim(nameAt = now, joinedAt = now + 500, nameV = 7))
+    }
+
+    @Test fun aGroupWithNoNameTimeIsNeverClaimed() {
+        assertFalse(GroupRules.legacyClaim(nameAt = 0, joinedAt = 0, nameV = 0))
+        assertFalse(GroupRules.legacyClaim(nameAt = 0, joinedAt = 1_000, nameV = 0))
+    }
+
+    @Test fun aClockPutBackBetweenNamingAndSavingNeverClaims() {
+        assertFalse(GroupRules.legacyClaim(nameAt = now, joinedAt = now - 1, nameV = 0))
+    }
+
+    @Test fun onlyThePhoneThatStartedOrClaimedItFoundsIt() {
+        fun marked(start: String, startId: String) = g(trek).also { it.start = start; it.startId = startId }
+        assertTrue(GroupRules.founds(marked(SavedGroup.START_MADE, me), me))
+        assertTrue(GroupRules.founds(marked(SavedGroup.START_CLAIM, me), me))
+        // the same phone with a new key pair is someone new
+        assertFalse(GroupRules.founds(marked(SavedGroup.START_MADE, me), newMe))
+        assertFalse(GroupRules.founds(marked(SavedGroup.START_CLAIM, me), newMe))
+        // joined, not looked at yet, or started but not yet bound to an id
+        assertFalse(GroupRules.founds(marked(SavedGroup.START_JOINED, ""), me))
+        assertFalse(GroupRules.founds(marked(SavedGroup.START_JOINED, me), me))
+        assertFalse(GroupRules.founds(marked("", ""), me))
+        assertFalse(GroupRules.founds(marked(SavedGroup.START_MADE, ""), me))
     }
 }

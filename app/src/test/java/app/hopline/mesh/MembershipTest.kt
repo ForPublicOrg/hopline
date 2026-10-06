@@ -14,30 +14,6 @@ class MembershipTest {
 
     private fun copy(j: JSONObject) = JSONObject(j.toString())
 
-    /**
-     * [who] leaves the group the way Core.leaveGroup does it: the requests it was on handed back,
-     * its goodbye, the radio up until that has gone, then nothing — and its kept chat, as stripped.
-     */
-    private fun leave(net: FakeNet, who: String, decline: Boolean = true): JSONObject {
-        val n = net.nodes[who]!!
-        val declined = if (decline) n.router.declineForLeaving() else emptyList()
-        n.router.sayGoodbye(declined)
-        net.pump()
-        for (peer in n.peers.values.map { it.first }.toList()) net.disconnect(who, peer)
-        net.nodes.remove(who)
-        return Archive.strip(n.router.snapshot(), n.id, n.name, net.now, net.now)
-    }
-
-    /** ...and comes back the way Core builds a rejoined group: its kept chat, "You rejoined", the hello owed. */
-    private fun rejoin(net: FakeNet, who: String, archive: JSONObject, vararg to: String): FakeNet.Node {
-        val n = net.node(who)
-        n.router.restore(copy(archive))
-        Archive.rejoined(n.router)
-        n.router.helloIfDue(firstJoin = false, joinedAt = 0)
-        for (peer in to) net.connect(who, peer)
-        return n
-    }
-
     private fun membership(r: Router, who: String): List<String> = r.messages.filter { it.from == who && it.isMembership }.map { it.kind }
 
     private fun bye(from: String, q: Long, ts: Long) =
@@ -61,7 +37,7 @@ class MembershipTest {
         // As on the screenshot: in range, a phone between them
         assertTrue(a.isInRange(a.people[c]!!)); assertFalse(a.people[c]!!.direct); assertEquals(2, a.peopleInRange())
 
-        leave(net, "C")                                                // and no time passes
+        net.leave("C")                                                 // and no time passes
         for (r in listOf(a, b)) {
             val p = r.people[c]!!
             assertTrue(p.left)
@@ -91,14 +67,14 @@ class MembershipTest {
         assertTrue(a.sayGoodbye()); net.pump()                        // A's radio is still up for a moment
         assertTrue(b.people[net.id("A")]!!.left)
         assertTrue("not a link to the group any more", b.authedLinks().isEmpty())
-        val m = b.sendChat("anyone still here?"); net.pump()
+        val m = b.sendChat("anyone still here?")!!; net.pump()
         assertEquals("nobody in the group has it", Message.QUEUED, m.status)
         assertNull(a.message(m.id))
     }
 
     @Test fun `a phone that was away hears the goodbye from whoever carries it`() {
         val net = FakeNet(); net.line("A", "B", "C"); net.tickAll()
-        leave(net, "C")
+        net.leave("C")
         net.now += 3 * 3_600_000L
         val d = net.node("D")
         net.connect("B", "D")
@@ -115,8 +91,8 @@ class MembershipTest {
         val a = net.nodes["A"]!!.router
         assertFalse(a.sayGoodbye())
         assertEquals("", a.said)
-        val archive = leave(net, "A")
-        val a2 = rejoin(net, "A", archive, "B")
+        val archive = net.leave("A").archive
+        val a2 = net.rejoin("A", archive, "B")
         assertEquals("", a2.router.said)
         assertTrue(net.nodes["B"]!!.router.messages.none { it.isMembership })
         assertFalse(net.nodes["B"]!!.router.people[net.id("A")]!!.left)
@@ -127,11 +103,11 @@ class MembershipTest {
     @Test fun `back in the group, a hello undoes the goodbye everywhere and is said only once`() {
         val net = FakeNet(); net.line("A", "B", "C"); net.tickAll()
         val c = net.id("C")
-        val archive = leave(net, "C")
+        val archive = net.leave("C").archive
         assertEquals(Router.MB_LEFT, archive.getJSONObject("said").getString("k"))
         val byeId = net.nodes["A"]!!.router.messages.single { it.kind == Message.MEMBER_LEFT }.id
         net.now += 3_600_000L
-        val c2 = rejoin(net, "C", archive, "B")
+        val c2 = net.rejoin("C", archive, "B")
         assertEquals(Router.MB_JOINED, c2.router.said)
         net.tickAll()
         for (label in listOf("A", "B")) {
@@ -154,7 +130,7 @@ class MembershipTest {
         // Killed before the hello was saved: the next start says the very same hello, which nobody shows twice
         val helloId = net.nodes["A"]!!.router.messages.single { it.kind == Message.MEMBER_JOINED }.id
         net.disconnect("B", "C"); net.nodes.remove("C")
-        val c3 = rejoin(net, "C", archive, "B")
+        val c3 = net.rejoin("C", archive, "B")
         assertTrue(c3.router.carries(helloId))
         net.tickAll()
         assertEquals(1, net.nodes["A"]!!.router.messages.count { it.kind == Message.MEMBER_JOINED })
@@ -164,15 +140,15 @@ class MembershipTest {
     @Test fun `a hello said with nobody around is owed until it gets off the phone`() {
         val net = FakeNet(); net.line("A", "B", "C"); net.tickAll()
         val c = net.id("C")
-        val first = leave(net, "C")                                    // heard: A and B count C out
-        val alone = rejoin(net, "C", first)                            // back with nobody in range: the hello waits
+        val first = net.leave("C").archive                             // heard: A and B count C out
+        val alone = net.rejoin("C", first)                             // back with nobody in range: the hello waits
         assertEquals(Router.MB_JOINED, alone.router.said)
         net.now += 3_600_000L
-        val second = leave(net, "C")                                   // and gone again, still alone: nothing said
+        val second = net.leave("C").archive                            // and gone again, still alone: nothing said
         assertEquals(Router.MB_JOINED, second.getJSONObject("said").getString("k"))
         assertTrue("still owed", second.getJSONObject("said").has("e"))
         net.now += 3_600_000L
-        val back = rejoin(net, "C", second, "B")                       // among the group at last: the same hello goes out
+        val back = net.rejoin("C", second, "B")                        // among the group at last: the same hello goes out
         net.tickAll()
         for (label in listOf("A", "B")) {
             val r = net.nodes[label]!!.router
@@ -188,9 +164,9 @@ class MembershipTest {
         val net = FakeNet(); net.line("A", "B", "C"); net.tickAll()
         val c = net.id("C")
         net.nodes["C"]!!.skew = 20 * 60_000L                          // C's clock ran 20 minutes fast when it left...
-        val archive = leave(net, "C")
+        val archive = net.leave("C").archive
         net.now += 2 * 60_000L
-        rejoin(net, "C", archive, "B")                                 // ...and was put right before it came back
+        net.rejoin("C", archive, "B")                                  // ...and was put right before it came back
         net.tickAll()
         assertEquals(listOf(Message.MEMBER_LEFT, Message.MEMBER_JOINED), membership(net.nodes["A"]!!.router, c))
         assertFalse(net.nodes["A"]!!.router.people[c]!!.left)
@@ -229,7 +205,7 @@ class MembershipTest {
         val c = net.id("C")
         val a = net.nodes["A"]!!.router
         val heard = a.people[c]!!.liveQ
-        leave(net, "C")
+        net.leave("C")
         val p = a.people[c]!!
         val byeQ = p.leftQ
         assertTrue(byeQ > heard)
@@ -282,7 +258,7 @@ class MembershipTest {
     @Test fun `a goodbye a phone kept as a message before it was updated becomes its line`() {
         val net = FakeNet(); net.line("A", "B", "C"); net.tickAll()
         val c = net.id("C")
-        leave(net, "C")
+        net.leave("C")
         val a = net.nodes["A"]!!.router
         val heard = a.people[c]!!.liveQ
         // How 2.4 kept it: an ordinary message with its words, and C still one of the group
@@ -379,7 +355,7 @@ class MembershipTest {
     @Test fun `a helper that leaves hands its request to the next phone at once`() {
         val net = FakeNet()
         val (e, first, second) = claimed(net, Errand.READ, url(), Errand.CAP_READ)
-        leave(net, first)
+        net.leave(first)
         net.advance(30_000)                                            // far inside the 90 s a quiet helper keeps it
         assertEquals(net.id(second), e.helper)
         assertEquals(1, net.nodes[second]!!.rec.errands.size)
@@ -389,7 +365,7 @@ class MembershipTest {
     @Test fun `the goodbye alone hands it on, as the helper's no may never have arrived`() {
         val net = FakeNet()
         val (e, first, second) = claimed(net, Errand.READ, url(), Errand.CAP_READ)
-        leave(net, first, decline = false)
+        net.leave(first, decline = false)
         net.advance(30_000)
         assertEquals(net.id(second), e.helper)
         assertEquals(1, net.nodes[second]!!.rec.errands.size)
@@ -400,7 +376,7 @@ class MembershipTest {
         val text = JSONObject().put("to", "+919800000000").put("text", "reached camp")
         val (e, first, second) = claimed(net, Errand.SEND, text, Errand.CAP_SMS)
         net.nodes[first]!!.router.markSendOpened(e.id)                 // their messaging app is open on it
-        leave(net, first)
+        net.leave(first)
         assertEquals("the asker decides, and is told at once", "quiet", e.why)
         assertEquals(Errand.CLAIMED, e.status)
         assertEquals(listOf(e.id), net.nodes["A"]!!.rec.answers.map { it.id })
@@ -412,7 +388,7 @@ class MembershipTest {
         val net = FakeNet()
         val text = JSONObject().put("to", "+919800000000").put("text", "reached camp")
         val (e, first, second) = claimed(net, Errand.SEND, text, Errand.CAP_SMS)
-        leave(net, first)
+        net.leave(first)
         net.advance(40_000)
         assertEquals(net.id(second), e.helper)
         assertEquals(1, net.nodes[second]!!.rec.errands.size)
@@ -424,14 +400,14 @@ class MembershipTest {
         net.nodes["B"]!!.router.setCaps(Errand.CAP_READ); net.pump()
         val e = net.nodes["A"]!!.router.requestErrand(Errand.READ, url()); net.pump()
         // A asks, and leaves before anyone picks it up; the group still owes the answer (Archive)
-        val archive = leave(net, "A")
+        val archive = net.leave("A").archive
         assertTrue(net.nodes["B"]!!.router.people[net.id("A")]!!.left)
         net.advance(40_000)
         val b = net.nodes["B"]!!
         assertEquals(listOf(e.id), b.rec.errands.map { it.id })
         assertTrue(b.router.completeErrand(e.id, true, "Page", JSONObject().put("t", "for when you are back"))); net.pump()
         // ...and it is there for A when A is back
-        val a2 = rejoin(net, "A", archive, "B")
+        val a2 = net.rejoin("A", archive, "B")
         val mine = a2.router.errands[e.id]!!
         assertEquals(Errand.DONE, mine.status)
         assertEquals("for when you are back", mine.answer()!!.getString("t"))
@@ -442,7 +418,7 @@ class MembershipTest {
         val text = JSONObject().put("to", "+919800000000").put("text", "reached camp")
         val (e, first, second) = claimed(net, Errand.SEND, text, Errand.CAP_SMS)
         net.dropEnvFrom = first; net.dropEnvFrames = 1                // the live "I can't" never arrives
-        leave(net, first)
+        net.leave(first)
         assertNotEquals("not left to its asker as maybe sent", "quiet", e.why)
         net.advance(40_000)
         assertEquals(net.id(second), e.helper)
@@ -454,18 +430,18 @@ class MembershipTest {
         val text = JSONObject().put("to", "+919800000000").put("text", "reached camp")
         val (e, first, _) = claimed(net, Errand.SEND, text, Errand.CAP_SMS)
         net.nodes[first]!!.router.markSendOpened(e.id)
-        val archive = leave(net, first)
+        val archive = net.leave(first).archive
         assertEquals("quiet", e.why)
         net.now += 3_600_000L
         // Back, able to text, and handed the request again by the group (as Core starts a router)
-        val back = rejoin(net, first, archive, "A")
+        val back = net.rejoin(first, archive, "A")
         back.router.setCaps(Errand.CAP_SMS); back.router.resumeErrands(); net.pump()
         net.advance(60_000)
         assertTrue("the family is not texted twice", back.rec.errands.isEmpty())
         // ...and it is what this phone noted on leaving that holds it back: without it, it would take it
         net.disconnect(first, "A"); net.nodes.remove(first)
         val forgot = copy(archive).also { it.remove("doneAt") }
-        val again = rejoin(net, first, forgot, "A")
+        val again = net.rejoin(first, forgot, "A")
         again.router.setCaps(Errand.CAP_SMS); again.router.resumeErrands(); net.pump()
         net.advance(60_000)
         assertEquals(listOf(e.id), again.rec.errands.map { it.id })
@@ -475,12 +451,12 @@ class MembershipTest {
         val net = FakeNet(); net.line("A", "B", "C"); net.tickAll()
         val c = net.id("C")
         net.nodes["C"]!!.skew = 10 * 60_000L                          // fast when it leaves...
-        val first = leave(net, "C")
+        val first = net.leave("C").archive
         net.now += 2 * 60_000L
-        val back = rejoin(net, "C", first, "B")                        // ...put right, back (its hello stamped after the goodbye)
+        val back = net.rejoin("C", first, "B")                         // ...put right, back (its hello stamped after the goodbye)
         net.tickAll()
         net.now += 2 * 60_000L
-        leave(net, "C")                                                // and gone again, two minutes later
+        net.leave("C")                                                 // and gone again, two minutes later
         assertEquals(listOf(Message.MEMBER_LEFT, Message.MEMBER_JOINED, Message.MEMBER_LEFT), membership(net.nodes["A"]!!.router, c))
         assertTrue(net.nodes["A"]!!.router.people[c]!!.left)
         assertNotNull(back)
@@ -490,7 +466,7 @@ class MembershipTest {
         val net = FakeNet(); net.line("A", "B")
         val b = net.nodes["B"]!!
         b.skew = 3_600_000L                                            // B's clock runs an hour fast...
-        val photo = b.router.sendChat("sent while my clock ran fast"); net.pump()
+        val photo = b.router.sendChat("sent while my clock ran fast")!!; net.pump()
         b.skew = 0L                                                    // ...and is put right before B leaves
         val q = run { b.router.sayGoodbye(); net.pump(); net.nodes["A"]!!.router.people[net.id("B")]!!.leftQ }
         assertTrue("above every stamp of B's", q > photo.ts)

@@ -201,6 +201,8 @@ object BlobRules {
         object NoRoom : Sent()
         /** Nothing can be written to [to] (Router.canMessage): nothing went out. */
         class CantWrite(val to: String) : Sent()
+        /** The group lets only admins send messages, and this phone isn't one (Router.mayPost): nothing went out. */
+        object AdminsOnly : Sent()
     }
 
     /**
@@ -212,6 +214,7 @@ object BlobRules {
     fun send(r: Router, att: Attachment, kept: Boolean, pieces: List<String>, caption: String, to: String?,
              quote: Quote?, mentions: List<String>): Sent = when {
         to != null && !r.canMessage(to) -> Sent.CantWrite(to)
+        to == null && !r.mayPost() -> Sent.AdminsOnly
         !kept -> Sent.NoRoom
         else -> r.sendFile(att, pieces, caption, to, quote, mentions)?.let { Sent.Ok(it) } ?: Sent.NoRoom
     }

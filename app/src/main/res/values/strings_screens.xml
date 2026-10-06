@@ -138,6 +138,40 @@
     <string name="left_info_subtitle">You left this group · %1$s</string>
     <string name="left_private_chats">Private chats</string>
 
+    <!-- Group admins and who can send (2.5): whoever starts a group is its admin; admins make others admins and choose
+         whether everyone or only admins can send. WhatsApp's words where it has them. -->
+    <string name="group_admin">Group admin</string>
+    <string name="group_perms">Group permissions</string>
+    <string name="group_perms_everyone">Everyone can send messages</string>
+    <string name="group_perms_only_admins">Only admins can send messages</string>
+    <string name="group_perms_note_sub">You can still message anyone in the group privately.</string>
+    <string name="group_perms_nobody_sub">No admin with the latest Hopline has been heard from in the last two days. You can still message anyone privately, or start a new group.</string>
+    <string name="action_group_perms">choose who can send messages</string>
+    <string name="no_admins_note">This phone doesn\'t know of an admin for this group, so everyone can send messages here. A group started before Hopline had admins may have none. Whoever starts a new group is its admin.</string>
+    <string name="group_perms_send_title">Send messages</string>
+    <string name="group_perms_send_body">Who can send messages in “%1$s”? Everyone can still react, and message anyone privately. Someone on an older Hopline can still write in the group, but only other older phones show it.</string>
+    <string name="group_perms_send_everyone">Everyone</string>
+    <string name="group_perms_send_admins">Only admins</string>
+    <!-- An admin taps someone in Group info or People -->
+    <string name="member_message">Message %1$s</string>
+    <string name="member_open_chat">Open chat with %1$s</string>
+    <string name="member_make_admin">Make group admin</string>
+    <string name="member_dismiss_admin">Dismiss as admin</string>
+    <string name="member_founder_note">Started this group, so always an admin</string>
+    <string name="action_message_or_make_admin">message, or make group admin</string>
+    <string name="action_message_or_dismiss_admin">message, or dismiss as admin</string>
+    <string name="action_message_or_verify">message, or verify the security code</string>
+    <string name="dismiss_admin_title">Dismiss %1$s as admin?</string>
+    <string name="dismiss_admin_body">%1$s stays in the group as a member. Everyone in the group will see that you made this change.</string>
+    <string name="dismiss_admin_body_locked">Only admins can send messages right now, so %1$s won\'t be able to send in the group.</string>
+    <!-- An admin change that couldn't be made (one someone else already made says nothing) -->
+    <string name="admin_not_any_more">You\'re not a group admin any more, so nothing was changed.</string>
+    <string name="admin_creator_stays">Whoever started the group is always an admin.</string>
+    <string name="admin_left">%1$s left the group, so nothing was changed.</string>
+    <string name="admin_too_many">This group has had too many admin changes, so only the person who started it can make more.</string>
+    <string name="admin_too_many_founder">This group has had too many admin changes, so no more can be made. A new group starts fresh.</string>
+    <string name="admin_older_phone">%1$s\'s phone has an older Hopline, so they can\'t manage the group until it\'s updated.</string>
+
     <!-- Code screen -->
     <string name="qr_desc">QR code to join %1$s</string>
 
@@ -194,5 +228,5 @@
     <!-- Settings -->
     <string name="share_internet_sub_budget">Friends can text home, check the weather and look things up through your phone when it has signal — up to %1$d MB of your data a day.</string>
     <string name="share_internet_sub_unlimited">Friends can text home, check the weather and look things up through your phone when it has signal — with no daily limit.</string>
-    <string name="how_it_works_body_v2">Phones in your group link to each other directly over Bluetooth and WiFi — no tower, no router, no internet.\n\nEvery message is passed from phone to phone, so it can travel down a line of hikers or across a crowd, far beyond one phone\'s range.\n\nEvery phone carries the group\'s messages for 48 hours and fills in anyone who was away. Walk off, come back — the chat catches up on its own. What reaches your phone stays on it — even after you leave a group — until you delete it.\n\nThe ticks never lie: ◷ waiting for a phone in range, ✓ on its way, ✓✓ phones confirmed. Tap your own message to see exactly who has it.\n\nThe group chat is encrypted with a key made from the group\'s code: anyone who has the code can read it. A four-word code keeps out bystanders. Someone who spends about a week of graphics-card time once can afterwards work out any four-word code from the radio signal, and with it read the group chat — and an older three-word code in under an hour. Treat the group chat like a walkie-talkie, not a vault.\n\nPrivate chats are end-to-end encrypted: only the two of you can read them, even though other phones carry them. Those phones can see who wrote to whom, and when — not what. To be sure who is on the other end, compare your security code with them (the private chat\'s menu → Verify security code). There is no forward secrecy: someone who records the radio and later gets the key out of a phone could read the private messages that were sent to it.\n\nChats are encrypted on the air, not on your phone: what reached it is kept as you see it, in Hopline\'s own storage.\n\nNames aren\'t checked: anyone with the code can call themselves anything. When two people share a name, Hopline adds a short tag to tell them apart.\n\nSince Hopline 2.4, phones on 2.3.1 or older can\'t join updated phones — everyone in the group needs the update. Private chats started fresh with it: the older ones are still there to read, and to keep talking you open the person again from People.</string>
+    <string name="how_it_works_body_v2">Phones in your group link to each other directly over Bluetooth and WiFi — no tower, no router, no internet.\n\nEvery message is passed from phone to phone, so it can travel down a line of hikers or across a crowd, far beyond one phone\'s range.\n\nEvery phone carries the group\'s messages for 48 hours and fills in anyone who was away. Walk off, come back — the chat catches up on its own. What reaches your phone stays on it — even after you leave a group — until you delete it.\n\nThe ticks never lie: ◷ waiting for a phone in range, ✓ on its way, ✓✓ phones confirmed. Tap your own message to see exactly who has it.\n\nThe group chat is encrypted with a key made from the group\'s code: anyone who has the code can read it. A four-word code keeps out bystanders. Someone who spends about a week of graphics-card time once can afterwards work out any four-word code from the radio signal, and with it read the group chat — and an older three-word code in under an hour. Treat the group chat like a walkie-talkie, not a vault.\n\nPrivate chats are end-to-end encrypted: only the two of you can read them, even though other phones carry them. Those phones can see who wrote to whom, and when — not what. To be sure who is on the other end, compare your security code with them (the private chat\'s menu → Verify security code). There is no forward secrecy: someone who records the radio and later gets the key out of a phone could read the private messages that were sent to it.\n\nChats are encrypted on the air, not on your phone: what reached it is kept as you see it, in Hopline\'s own storage.\n\nNames aren\'t checked: anyone with the code can call themselves anything. When two people share a name, Hopline adds a short tag to tell them apart.\n\nWhoever starts a group from now on is its first admin. Admins can make others admins, and can let only admins send messages — then phones with the latest Hopline don\'t show anyone else\'s group messages, while private chats still work. A phone still on an older Hopline doesn\'t know about admins and shows everything.\n\nSince Hopline 2.4, phones on 2.3.1 or older can\'t join updated phones — everyone in the group needs the update. Private chats started fresh with it: the older ones are still there to read, and to keep talking you open the person again from People.</string>
 </resources>

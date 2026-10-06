@@ -81,6 +81,23 @@
     <string name="chat_notice_member_left">%1$s left</string>
     <string name="chat_notice_member_joined">%1$s joined</string>
     <string name="chat_notice_joined_you">You joined</string>
+    <!-- Group admins (2.5): who made whom an admin, and who may send. Name first, no period, like the lines above.
+         "You started this group" is the starter's own phone only. -->
+    <string name="chat_notice_started_you">You started this group</string>
+    <string name="chat_notice_admin_made">%1$s made %2$s an admin</string>
+    <string name="chat_notice_admin_made_you">%1$s made you an admin</string>
+    <string name="chat_notice_admin_you_made">You made %1$s an admin</string>
+    <string name="chat_notice_admin_dismissed">%1$s dismissed %2$s as admin</string>
+    <string name="chat_notice_admin_dismissed_you">%1$s dismissed you as admin</string>
+    <string name="chat_notice_admin_you_dismissed">You dismissed %1$s as admin</string>
+    <string name="chat_notice_stepped_down">%1$s stepped down as admin</string>
+    <string name="chat_notice_stepped_down_you">You stepped down as admin</string>
+    <string name="chat_notice_admins_only">%1$s allowed only admins to send messages</string>
+    <string name="chat_notice_admins_only_you">You allowed only admins to send messages</string>
+    <string name="chat_notice_everyone">%1$s allowed everyone to send messages</string>
+    <string name="chat_notice_everyone_you">You allowed everyone to send messages</string>
+    <!-- Under posts of mine that went out while (as this phone knows now) only admins could send -->
+    <string name="chat_notice_unseen">Only admins could send messages when you sent the messages above — phones that knew it don\'t show them</string>
     <string name="chat_system_via">🌐 Shared internet — via %1$s\'s phone</string>
     <string name="chat_system_via_you">🌐 Shared internet — via your phone</string>
     <!-- The one line at the top of a chat: never saved, never a message -->
@@ -91,6 +108,14 @@
     <string name="chat_cant_write_old">This chat is from before the update. To keep talking, open %1$s from People.</string>
     <string name="chat_cant_write_unseen">%1$s hasn\'t been seen for a while. You can write once their phone has been in range.</string>
     <string name="chat_cant_write_left">%1$s left the group. You can write again if they rejoin.</string>
+    <!-- Only admins can send messages in the group (2.5) -->
+    <string name="chat_admins_only_not_sent">Only admins can send messages in this group — not sent.</string>
+    <string name="chat_admins_only_bar">Only admins can send messages. You can still message anyone privately.</string>
+    <string name="chat_admins_only_people_desc">People: message someone privately</string>
+    <string name="chat_admins_only_recording">Only admins can send messages now, so your recording was discarded.</string>
+    <string name="chat_admins_only_dropped">Only admins can send messages in this group now. Nothing was sent.</string>
+    <string name="chat_admins_only_copied">Copied. You can paste it into a private chat.</string>
+    <string name="chat_can_send_again">You can send messages here again.</string>
     <!-- Words that were waiting to be sent in a chat from before the update (its composer never comes back): copied out, they go -->
     <string name="chat_name_before_update">%1$s · before the update</string>
     <string name="chat_old_draft">Not sent: “%1$s”</string>
@@ -149,6 +174,11 @@
     <!-- Mine, let go of before its 48 hours for no reason above (a very full phone) -->
     <string name="chat_status_let_go">Not sent — this phone let it go before any phone in range took it. Tap Send again to try once more.</string>
     <string name="chat_status_let_go_final">Not sent — this phone let it go before any phone in range took it.</string>
+    <!-- Mine, withdrawn because only admins could send by the time it would have gone out (2.5) -->
+    <string name="chat_status_admins_unsent">Not sent — only admins could send messages by the time it would have gone out.</string>
+    <string name="chat_status_admins_unsent_again">Not sent — only admins could send messages by the time it would have gone out. Tap Send again to send it now.</string>
+    <!-- Mine, sent while (as this phone knows now) only admins could send: updated phones that knew it don't show it (2.5) -->
+    <string name="chat_status_admins_hidden">Only admins could send messages when this was sent, so some phones with the latest Hopline won\'t show it.</string>
     <string name="chat_status_left_sent">Sent. You left before Hopline could confirm who got it.</string>
     <!-- In a left group's chat: it had already gone unconfirmed for 48 hours before the leaving. No "Send again" there. -->
     <string name="chat_status_left_dm_not_delivered">Not delivered — %1$s\'s phone didn\'t confirm within 48 hours.</string>

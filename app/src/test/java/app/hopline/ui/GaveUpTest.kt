@@ -5,11 +5,13 @@ import app.hopline.mesh.Archive
 import app.hopline.mesh.Envelope
 import app.hopline.mesh.FakeNet
 import app.hopline.mesh.Message
+import app.hopline.mesh.RoleChange
 import app.hopline.mesh.Router
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,7 +21,7 @@ class GaveUpTest {
 
     @Test fun aWaitingMessageStillCarriedKeepsTryingForItsTwoDays() {
         val net = FakeNet(); val a = net.node("A")
-        val m = a.router.sendChat("anyone?")
+        val m = a.router.sendChat("anyone?")!!
         assertEquals(Message.QUEUED, m.status)
         assertFalse(Ui.gaveUp(a.router, m, net.now + hour))
         assertFalse(Ui.gaveUp(a.router, m, net.now + Router.CARRY_MS - hour))
@@ -32,7 +34,7 @@ class GaveUpTest {
 
     @Test fun aMessageThatWasWaitingWhenILeftReadsNotSentAtOnce() {
         val net = FakeNet(); val a = net.node("A")
-        val m = a.router.sendChat("never left my phone")
+        val m = a.router.sendChat("never left my phone")!!
         val whenILeft = net.now + hour
         val archive = Archive.strip(a.router.snapshot(), a.id, "A", whenILeft, whenILeft)
         // in the kept chat, a minute after leaving…
@@ -50,7 +52,7 @@ class GaveUpTest {
 
     @Test fun whyAMessageWasNotSentIsToldApartLeavingFromTimingOut() {
         val net = FakeNet(); val a = net.node("A")
-        val m = a.router.sendChat("still trying")
+        val m = a.router.sendChat("still trying")!!
         // waiting and still carried: it hasn't stopped at all
         assertFalse(Ui.unsentByLeaving(a.router, m, net.now + hour))
         // its two days ran out with no phone in range: "not sent", but not because of any leaving
@@ -60,7 +62,7 @@ class GaveUpTest {
         assertFalse(Ui.unsentByLeaving(a.router, m, net.now))
         // one that was waiting when I left is let go at once — and says so, in the kept chat and after a rejoin
         val net2 = FakeNet(); val a2 = net2.node("A")
-        val waiting = a2.router.sendChat("never left my phone")
+        val waiting = a2.router.sendChat("never left my phone")!!
         val whenILeft = net2.now + hour
         val kept = FakeNet().also { it.now = whenILeft }.node("A")
         kept.router.restore(JSONObject(Archive.strip(a2.router.snapshot(), a2.id, "A", whenILeft, whenILeft).toString()))
@@ -90,7 +92,7 @@ class GaveUpTest {
         assertEquals(Ui.NotSent.UPDATE_PRIVATE, Ui.notSent(a.router, dm, net.now))
         assertEquals(Ui.NotSent.UPDATE, Ui.notSent(a.router, gm, net.now))
         // one written since, waiting when I left: that one is the leaving's doing, and so are the old ones now
-        val m = a.router.sendChat("written on 2.4")
+        val m = a.router.sendChat("written on 2.4")!!
         assertFalse(Ui.unsentByUpdate(a.router, m, net.now))
         val whenILeft = net.now + hour
         val back = FakeNet().also { it.now = whenILeft }.node("A")
@@ -130,7 +132,7 @@ class GaveUpTest {
 
     @Test fun aMessageOfMineLetGoOfForNoReasonAboveIsSaidToBeJustThat() {
         val net = FakeNet(); val a = net.node("A")
-        val m = a.router.sendChat("still trying")
+        val m = a.router.sendChat("still trying")!!
         // no "You left" after it, written on this version, and no envelope any more (a phone too full to carry it)
         val state = a.router.snapshot().put("carry", JSONArray()).put("born", JSONObject())
         val again = FakeNet().also { it.now = net.now }.node("A"); again.router.restore(JSONObject(state.toString()))
@@ -147,7 +149,7 @@ class GaveUpTest {
         val saved = JSONObject().put("messages", JSONArray(listOf(before.toJson())))
         a.router.restore(JSONObject(Upgrade.state(saved, a.id, setOf(old), net.now, left = false)!!.toString()))
         assertTrue(Ui.beforeUpdate(a.router, a.router.message(before.id)!!))
-        assertFalse(Ui.beforeUpdate(a.router, a.router.sendChat("made it again")))
+        assertFalse(Ui.beforeUpdate(a.router, a.router.sendChat("made it again")!!))
         // someone else's message is never "mine from before"
         net.node("B"); net.connect("A", "B"); net.nodes["B"]!!.router.sendChat("hi"); net.pump()
         assertFalse(Ui.beforeUpdate(a.router, a.router.messages.first { it.from == net.id("B") }))
@@ -157,7 +159,7 @@ class GaveUpTest {
         val net = FakeNet(); net.line("A", "B")
         val a = net.nodes["A"]!!.router
         net.nodes["B"]!!.router.sendChat("hello"); net.pump()
-        val sent = a.sendChat("got through"); net.pump()
+        val sent = a.sendChat("got through")!!; net.pump()
         assertEquals(Message.SENT, sent.status)
         val whenILeft = net.now + hour
         val kept = FakeNet().also { it.now = whenILeft }.node("A")
@@ -213,5 +215,90 @@ class GaveUpTest {
         val far = net.now + 400 * 24 * hour
         assertFalse(Ui.gaveUp(a, theirs, far))
         assertFalse(Ui.gaveUp(a, left, far))
+    }
+
+    // ---------------------------------------------------------------- only admins may send
+
+    /** A started the group and B joined it: they met, so B knows who started it, and aren't linked now. */
+    private fun group(): FakeNet {
+        val net = FakeNet(); val a = net.node("A"); net.node("B")
+        a.router.foundIfDue(sure = true, ts = net.now)
+        net.connect("A", "B"); net.disconnect("A", "B")
+        return net
+    }
+
+    @Test fun aQueuedGroupMessageWithdrawnWhenOnlyAdminsCouldSendSaysSoNotLetGo() {
+        val net = group(); val a = net.nodes["A"]!!.router; val b = net.nodes["B"]!!.router
+        val restriction = FakeNet.newlyCarried(a) { assertEquals(RoleChange.DONE, a.setOnlyAdmins(true)) }
+        net.now += 10 * 60_000
+        val m = b.sendChat("anyone around?")!!          // nobody linked: waiting
+        FakeNet.hand(b, restriction)
+        // withdrawn the moment B learns: still ◷, and nothing of it is carried any more
+        assertEquals(Message.QUEUED, m.status)
+        assertFalse(b.carries(m.id))
+        assertTrue(Ui.gaveUp(b, m, net.now))
+        // "this phone let it go" is true, and not why: only admins could send by the time it would have gone out
+        assertEquals(Ui.NotSent.ADMINS_ONLY, Ui.notSent(b, m, net.now))
+        assertEquals(Ui.NotSent.ADMINS_ONLY, Ui.notSent(b, m, m.ts + Router.CARRY_MS))
+        // and it isn't offered again while that holds
+        assertFalse(ChatRules.sendAgain(Ui.gaveUp(b, m, net.now), m.to, canWrite = true, canPost = b.mayPost()))
+    }
+
+    @Test fun onlyAdminsIsToldBeforeLeavingWhenItCameFirst() {
+        val net = group(); val a = net.nodes["A"]!!.router; val b = net.nodes["B"]!!.router
+        val early = b.sendChat("before the change")!!   // allowed: it waits on, as any post does
+        net.now += 10 * 60_000
+        val restriction = FakeNet.newlyCarried(a) { assertEquals(RoleChange.DONE, a.setOnlyAdmins(true)) }
+        net.now += 10 * 60_000
+        val late = b.sendChat("after it")!!
+        FakeNet.hand(b, restriction)
+        assertTrue(b.carries(early.id)); assertFalse(b.carries(late.id))
+        // then I leave, both still ◷: the leaving lets go of the one that was still waiting
+        val whenILeft = net.now + hour
+        val kept = FakeNet().also { it.now = whenILeft }.node("B")
+        kept.router.restore(JSONObject(Archive.strip(b.snapshot(), b.me.id, "B", whenILeft, whenILeft).toString()))
+        val keptLate = kept.router.message(late.id)!!
+        val keptEarly = kept.router.message(early.id)!!
+        assertTrue("…and there is a \"You left\" after the withdrawn one too", Ui.unsentByLeaving(kept.router, keptLate, whenILeft + 60_000))
+        assertEquals(Ui.NotSent.ADMINS_ONLY, Ui.notSent(kept.router, keptLate, whenILeft + 60_000))
+        assertEquals(Ui.NotSent.LEFT, Ui.notSent(kept.router, keptEarly, whenILeft + 60_000))
+    }
+
+    @Test fun aMessageThatLeftThePhoneBeforeTheChangeIsNeverCalledWithdrawn() {
+        val net = group(); val a = net.nodes["A"]!!.router; val b = net.nodes["B"]!!.router
+        net.node("C"); net.connect("B", "C")
+        val restriction = FakeNet.newlyCarried(a) { assertEquals(RoleChange.DONE, a.setOnlyAdmins(true)) }
+        net.now += 10 * 60_000
+        val m = b.sendChat("on its way")!!; net.pump()
+        assertEquals(Message.SENT, m.status)
+        FakeNet.hand(b, restriction)
+        // only admins could send when it was written, as B knows now — but it had already gone
+        assertTrue(b.postBarred(m))
+        assertEquals(Message.SENT, m.status)
+        assertTrue(b.carries(m.id))
+        for (later in listOf(0L, Router.CARRY_MS + hour, 30 * 24 * hour)) {
+            assertFalse("+$later", Ui.gaveUp(b, m, net.now + later))
+            assertNotEquals("+$later", Ui.NotSent.ADMINS_ONLY, Ui.notSent(b, m, net.now + later))
+        }
+    }
+
+    @Test fun aPrivateMessageIsNeverWithdrawnForTheGroupsSetting() {
+        val net = group(); val a = net.nodes["A"]!!.router; val b = net.nodes["B"]!!.router
+        net.know("B", "C")
+        val restriction = FakeNet.newlyCarried(a) { assertEquals(RoleChange.DONE, a.setOnlyAdmins(true)) }
+        net.now += 10 * 60_000
+        val dm = b.sendDm(net.id("C"), "just you")!!          // nobody linked: waiting
+        FakeNet.hand(b, restriction)
+        assertFalse(b.mayPost())
+        assertEquals(Message.QUEUED, dm.status)
+        assertTrue("still on its way to C", b.carries(dm.id))
+        assertFalse(b.postBarred(dm))
+        assertFalse(Ui.gaveUp(b, dm, net.now))
+        assertTrue("one written now goes too", b.carries(b.sendDm(net.id("C"), "still here")!!.id))
+        // let go early for another reason (a phone too full to carry it): that, and not the group's setting, is why
+        val state = b.snapshot().put("carry", JSONArray()).put("born", JSONObject())
+        val again = FakeNet().also { it.now = net.now }.node("B"); again.router.restore(JSONObject(state.toString()))
+        assertFalse(again.router.mayPost())
+        assertEquals(Ui.NotSent.LET_GO, Ui.notSent(again.router, again.router.message(dm.id)!!, net.now + hour))
     }
 }

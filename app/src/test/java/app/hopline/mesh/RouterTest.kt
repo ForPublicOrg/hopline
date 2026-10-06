@@ -25,11 +25,18 @@ class FakeNet {
     var dropEnvFrom: String? = null
     /** When set, every frame any phone sends is kept here as text, for tests that look for what must never be on the air. */
     var frames: ArrayList<String>? = null
+    /**
+     * Phones that act like 2.4 on the link: their inventory says nothing of a role set ("rd"), and a roles frame to or
+     * from one is taken by the radio and ignored. They still run today's Router, so they relay carriers as 2.4 does.
+     */
+    val legacy = HashSet<String>()
     val nodes = LinkedHashMap<String, Node>()
     private val pending = ArrayDeque<Delivery>()
     private var payloadSeq = 0L
 
-    class Delivery(val from: String, val pid: Long, val to: String, val toLink: String, val bytes: ByteArray, val failed: Boolean = false)
+    /** [swallowed]: the radio took it, and the phone at the other end ignores it (a roles frame and a 2.4 phone). */
+    class Delivery(val from: String, val pid: Long, val to: String, val toLink: String, val bytes: ByteArray, val failed: Boolean = false,
+                   val swallowed: Boolean = false)
 
     inner class Recorder : RouterListener {
         val shown = ArrayList<Message>(); val errands = ArrayList<Errand>(); val log = ArrayList<String>()
@@ -47,8 +54,8 @@ class FakeNet {
         override fun onLog(text: String) { log.add(text) }
     }
 
-    /** [label] is the test's name for the phone (and its links: "A>B"); [name] its display name. */
-    inner class Node(val label: String, val name: String, code: String) {
+    /** [label] is the test's name for the phone (and its links: "A>B"); [name] its display name; [joinedAt] when it joined the group (0: unknown). */
+    inner class Node(val label: String, val name: String, code: String, joinedAt: Long = 0L) {
         val id: String = idOf(label)
         val peers = HashMap<String, Pair<String, String>>()  // my linkId -> (peer node, peer's linkId)
         val rec = Recorder()
@@ -56,22 +63,28 @@ class FakeNet {
             override fun send(linkId: String, bytes: ByteArray): Long {
                 val (peer, peerLink) = peers[linkId] ?: return -1
                 val pid = ++payloadSeq
-                if (bytes.size > maxFrameBytes) maxFrameBytes = bytes.size
-                frames?.add(String(bytes, Charsets.UTF_8))
-                val isEnv = dropEnvFrames > 0 && (dropEnvFrom == null || dropEnvFrom == label) &&
-                    (try { JSONObject(String(bytes, Charsets.UTF_8)).optString("t") } catch (e: Exception) { "" }) == "env"
-                if (isEnv) { dropEnvFrames--; pending.addLast(Delivery(label, pid, peer, peerLink, bytes, failed = true)); return pid }
-                pending.addLast(Delivery(label, pid, peer, peerLink, bytes))
+                var out = bytes
+                // The frame's type, read once, and only when something here depends on it.
+                val frame = if (dropEnvFrames > 0 || legacy.isNotEmpty()) (try { JSONObject(String(bytes, Charsets.UTF_8)) } catch (e: Exception) { null }) else null
+                val t = frame?.optString("t") ?: ""
+                if (t == "inv" && label in legacy && frame!!.has("rd")) { frame.remove("rd"); out = frame.toString().toByteArray(Charsets.UTF_8) }
+                if (out.size > maxFrameBytes) maxFrameBytes = out.size
+                frames?.add(String(out, Charsets.UTF_8))
+                if (t == "roles" && (label in legacy || peer in legacy)) { pending.addLast(Delivery(label, pid, peer, peerLink, out, swallowed = true)); return pid }
+                val isEnv = dropEnvFrames > 0 && (dropEnvFrom == null || dropEnvFrom == label) && t == "env"
+                if (isEnv) { dropEnvFrames--; pending.addLast(Delivery(label, pid, peer, peerLink, out, failed = true)); return pid }
+                pending.addLast(Delivery(label, pid, peer, peerLink, out))
                 return pid
             }
             override fun disconnect(linkId: String) { cut(label, linkId) }
         }
         /** How far this phone's clock runs ahead of the others'. */
         var skew = 0L
-        val router = Router(identity(label, name), group(code), transport, rec) { now + skew }
+        val router = Router(identity(label, name), group(code), transport, rec, joinedAt = joinedAt) { now + skew }
     }
 
-    fun node(label: String, name: String = label, code: String = CODE): Node = Node(label, name, code).also { nodes[label] = it }
+    fun node(label: String, name: String = label, code: String = CODE, joinedAt: Long = 0L): Node =
+        Node(label, name, code, joinedAt).also { nodes[label] = it }
 
     /** The node id of the phone this test calls [label]. */
     fun id(label: String): String = idOf(label)
@@ -113,6 +126,7 @@ class FakeNet {
         while (pending.isNotEmpty() && guard++ < 100_000) {
             val d = pending.removeFirst()
             if (d.failed) { nodes[d.from]?.router?.onPayloadFailed(d.pid); continue }
+            if (d.swallowed) { nodes[d.from]?.router?.onPayloadSent(d.pid); continue }
             val to = nodes[d.to] ?: continue
             if (!to.peers.containsKey(d.toLink)) { nodes[d.from]?.router?.onPayloadFailed(d.pid); continue }
             to.router.onBytes(d.toLink, d.bytes)
@@ -124,6 +138,48 @@ class FakeNet {
     fun tickAll() { for (n in nodes.values) n.router.tick(); pump() }
     fun line(vararg labels: String) { labels.forEach { node(it) }; for (i in 0 until labels.size - 1) connect(labels[i], labels[i + 1]) }
     fun texts(label: String) = nodes[label]!!.router.messages.map { it.text }
+
+    /** [label] says it started the group, as Core does at a started group's first start. */
+    fun found(label: String) = nodes[label]!!.router.foundIfDue(sure = true, ts = now)
+
+    /** [n] rounds of the periodic sync: every phone beacons and offers its inventory again. */
+    fun syncs(n: Int = 3) = repeat(n) { now += Router.SYNC_MS + 1_000; tickAll() }
+
+    /** What a phone that left keeps — its chat, as stripped ([archive]) — and whom it made admin on its way out ([handed]; null: nobody). */
+    data class Left(val archive: JSONObject, val handed: String?)
+
+    /**
+     * [who] leaves the group the way Core.letGo does it: the requests it was on handed back (unless not [decline]), admin
+     * handed on if it is the only admin around (to [heir], if that phone can take it), its goodbye, the radio up until
+     * that has gone, then nothing.
+     */
+    fun leave(who: String, heir: String? = null, decline: Boolean = true): Left {
+        val n = nodes[who]!!
+        val declined = if (decline) n.router.declineForLeaving() else emptyList()
+        val handed = n.router.handOver(heir)
+        n.router.sayGoodbye(declined)
+        pump()
+        for (peer in n.peers.values.map { it.first }.toList()) disconnect(who, peer)
+        nodes.remove(who)
+        return Left(Archive.strip(n.router.snapshot(), n.id, n.name, now, now), handed)
+    }
+
+    /** ...and comes back the way Core builds a rejoined group: its kept chat, "You rejoined", the hello owed, linked to [to]. */
+    fun rejoin(who: String, archive: JSONObject, vararg to: String): Node {
+        val n = node(who)
+        n.router.restore(JSONObject(archive.toString()))
+        Archive.rejoined(n.router)
+        n.router.helloIfDue(firstJoin = false, joinedAt = 0)
+        for (peer in to) connect(who, peer)
+        return n
+    }
+
+    /** A phone's radio that takes nothing — every frame refused, as on a link that has just gone — and keeps what it was given. */
+    class Quiet : Transport {
+        val frames = ArrayList<String>()
+        override fun send(linkId: String, bytes: ByteArray): Long { frames.add(String(bytes, Charsets.UTF_8)); return -1 }
+        override fun disconnect(linkId: String) {}
+    }
 
     companion object {
         const val CODE = "tiger river lamp hat"
@@ -206,6 +262,50 @@ class FakeNet {
         fun frame(env: Envelope): ByteArray = JSONObject().put("t", "env").put("e", JSONObject(env.json.toString())).toString().toByteArray()
         fun fill(vararg envs: Envelope): ByteArray =
             JSONObject().put("t", "fill").put("envs", JSONArray(envs.map { JSONObject(it.json.toString()) })).toString().toByteArray()
+        /** A roles frame as a phone sends one: [ops], and on the last frame of a set what the whole set adds up to ([rd]). */
+        fun roles(ops: List<RoleOp>, rd: String? = null): ByteArray =
+            JSONObject().put("t", "roles").put("ops", JSONArray(ops.map { it.toJson() })).also { if (rd != null) it.put("rd", rd) }
+                .toString().toByteArray()
+
+        /** [op] as another phone hands it over: read off the wire, its signature not checked yet. */
+        fun heard(op: RoleOp): RoleOp = RoleOp.parse(JSONObject(op.toJson().toString()))!!
+
+        /** Every order of [l], by place (equal items count apart). */
+        fun <T> permutations(l: List<T>): List<List<T>> =
+            if (l.size <= 1) listOf(l) else l.indices.flatMap { i -> permutations(l.take(i) + l.drop(i + 1)).map { listOf(l[i]) + it } }
+
+        /** [labels] in a line, every frame kept ([frames]); the first one started the group ([found]) before any of them met. */
+        fun groupOf(vararg labels: String): FakeNet {
+            val net = FakeNet(); net.frames = ArrayList()
+            for (l in labels) net.node(l)
+            net.found(labels[0])
+            for (i in 0 until labels.size - 1) net.connect(labels[i], labels[i + 1])
+            return net
+        }
+
+        /** The link a friend's phone hands things over on ([hand]). */
+        const val HAND = "hand"
+
+        /**
+         * [envs] handed to [r] by a friend's phone ("Q", on no other link) over a link of its own ([HAND]), proven like
+         * any other; nothing [r] sends on it gets anywhere. How a change or a post reaches one phone, and only that one,
+         * at the moment the test says.
+         */
+        fun hand(r: Router, vararg envs: Envelope) = hand(r, fill(*envs))
+
+        /** Any [frame] handed to [r] the same way: a set of role ops ([roles]), say. */
+        fun hand(r: Router, frame: ByteArray) {
+            if (r.links[HAND]?.authed != true) { r.onLinkUp(HAND, idOf("Q"), "Q", "tok"); prove(r, HAND, "Q", "tok") }
+            r.onBytes(HAND, frame)
+        }
+
+        /** What [r] carries after [change] that it didn't before — the carrier of a change of admins — ready to [hand] to a phone. */
+        fun newlyCarried(r: Router, change: () -> Unit): Envelope {
+            fun carried() = r.snapshot().getJSONArray("carry").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+            val before = carried().map { it.getString("id") }.toSet()
+            change()
+            return Envelope(JSONObject(carried().single { it.getString("id") !in before }.toString()))
+        }
     }
 }
 
@@ -227,7 +327,7 @@ class RouterTest {
 
     @Test fun `message crosses a line of five phones exactly once and receipts come back`() {
         val net = FakeNet(); net.line("A", "B", "C", "D", "E")
-        val m = net.nodes["A"]!!.router.sendChat("hi everyone"); net.pump()
+        val m = net.nodes["A"]!!.router.sendChat("hi everyone")!!; net.pump()
         for (id in listOf("B", "C", "D", "E")) assertEquals(listOf("hi everyone"), net.texts(id))
         assertEquals(1, net.nodes["E"]!!.rec.shown.size)
         assertEquals(net.ids("B", "C", "D", "E"), m.reached)
@@ -274,7 +374,7 @@ class RouterTest {
     @Test fun `chain breaks then heals - messages arrive exactly once`() {
         val net = FakeNet(); net.line("A", "B", "C", "D", "E")
         net.disconnect("C", "D")
-        val m = net.nodes["A"]!!.router.sendChat("where are you?"); net.pump()
+        val m = net.nodes["A"]!!.router.sendChat("where are you?")!!; net.pump()
         assertEquals(listOf("where are you?"), net.texts("C")); assertTrue(net.texts("D").isEmpty())
         assertEquals(net.ids("B", "C"), m.reached)
         net.connect("C", "D")
@@ -285,7 +385,7 @@ class RouterTest {
 
     @Test fun `message queued with nobody around goes out when someone appears`() {
         val net = FakeNet(); net.node("A"); net.node("B")
-        val m = net.nodes["A"]!!.router.sendChat("anyone?"); net.pump()
+        val m = net.nodes["A"]!!.router.sendChat("anyone?")!!; net.pump()
         assertEquals(Message.QUEUED, m.status)
         net.connect("A", "B")
         assertEquals(listOf("anyone?"), net.texts("B")); assertEquals(Message.SENT, m.status)
@@ -319,7 +419,7 @@ class RouterTest {
         (1..20).forEach { net.connect("A", "N$it") }
         net.tickAll()
         assertTrue(net.nodes["A"]!!.router.people.size >= Router.RECEIPT_GROUP_LIMIT)
-        val m = net.nodes["A"]!!.router.sendChat("crowd hello"); net.pump()
+        val m = net.nodes["A"]!!.router.sendChat("crowd hello")!!; net.pump()
         for (i in 1..20) assertEquals(listOf("crowd hello"), net.texts("N$i"))
         assertTrue("no receipts expected in a crowd", m.reached.isEmpty())
         // private messages still confirm person-to-person even in a crowd
@@ -526,7 +626,7 @@ class RouterTest {
 
     @Test fun `a reply carries its quote down the line`() {
         val net = FakeNet(); net.line("A", "B", "C")
-        val original = net.nodes["A"]!!.router.sendChat("meet at the bridge"); net.pump()
+        val original = net.nodes["A"]!!.router.sendChat("meet at the bridge")!!; net.pump()
         net.nodes["C"]!!.router.sendChat("on my way", Quote.of(original)); net.pump()
         val got = net.nodes["A"]!!.router.messages.first { it.text == "on my way" }
         assertEquals(original.id, got.quote!!.id)
@@ -536,7 +636,7 @@ class RouterTest {
 
     @Test fun `a photo sent as a reply carries the quote too`() {
         val net = FakeNet(); net.line("A", "B")
-        val original = net.nodes["B"]!!.router.sendChat("which peak is that?"); net.pump()
+        val original = net.nodes["B"]!!.router.sendChat("which peak is that?")!!; net.pump()
         val a = net.nodes["A"]!!.router
         val (att, pieces) = FakeNet.makeFile(a, ByteArray(20_000) { it.toByte() }, name = "p.jpg")
         a.sendFile(att, pieces, "this one", quote = Quote.of(a.message(original.id)!!))!!
@@ -548,7 +648,7 @@ class RouterTest {
 
     @Test fun `reactions add change and remove with last-write-wins`() {
         val net = FakeNet(); net.line("A", "B", "C")
-        val m = net.nodes["A"]!!.router.sendChat("sunset!"); net.pump()
+        val m = net.nodes["A"]!!.router.sendChat("sunset!")!!; net.pump()
         val onB = net.nodes["B"]!!.router.message(m.id)!!
         val b = net.id("B")
         net.nodes["B"]!!.router.sendReaction(onB, "👍"); net.pump()
@@ -565,7 +665,7 @@ class RouterTest {
 
     @Test fun `late joiner sees reactions through gap fill`() {
         val net = FakeNet(); net.line("A", "B")
-        val m = net.nodes["A"]!!.router.sendChat("group photo"); net.pump()
+        val m = net.nodes["A"]!!.router.sendChat("group photo")!!; net.pump()
         net.nodes["B"]!!.router.sendReaction(net.nodes["B"]!!.router.message(m.id)!!, "😂"); net.pump()
         net.node("C"); net.connect("B", "C")
         assertEquals("😂", net.nodes["C"]!!.router.message(m.id)!!.reactions[net.id("B")])
@@ -595,7 +695,7 @@ class RouterTest {
 
     @Test fun `an absurdly long reaction is clipped and reactions survive restore`() {
         val net = FakeNet(); net.line("A", "B")
-        val m = net.nodes["A"]!!.router.sendChat("hi"); net.pump()
+        val m = net.nodes["A"]!!.router.sendChat("hi")!!; net.pump()
         net.nodes["B"]!!.router.sendReaction(net.nodes["B"]!!.router.message(m.id)!!, "x".repeat(500)); net.pump()
         assertEquals(Message.MAX_EMOJI, m.reactions[net.id("B")]!!.length)
         val fresh = FakeNet(); val a2 = fresh.node("A")

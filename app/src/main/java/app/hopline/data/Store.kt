@@ -42,6 +42,15 @@ class SavedGroup(val code: String, var name: String, val joinedAt: Long, var las
      */
     var sealed: Boolean = false
     val left: Boolean get() = leftAt > 0
+    /**
+     * How this phone came to be in the group, for its admin role: [START_MADE] — started here, on a version with
+     * admins; [START_CLAIM] — from before admins, and its saved times say this phone started it; [START_JOINED] —
+     * joined, or from before admins and not started here as far as can be told; "" — from before admins, not looked
+     * at yet (decided at its next start on the radio, once). [startId]: the node id that started or claimed it — only
+     * that phone ever founds it; a phone whose key had to be made again is someone new.
+     */
+    var start: String = ""
+    var startId: String = ""
 
     /** The storage id: what every file, folder, pref and notification of the group is named by. */
     val fingerprint: String get() = sid
@@ -49,19 +58,25 @@ class SavedGroup(val code: String, var name: String, val joinedAt: Long, var las
     /** The master key, or null while it hasn't been worked out yet. */
     fun masterKey(): ByteArray? = if (mk.isEmpty()) null else Crypto.unb64(mk)?.takeIf { it.size == 32 }
 
-    fun copy(): SavedGroup = SavedGroup(code, name, joinedAt, lastActive, nameAt, sid, mk).also { it.leftAt = leftAt; it.sealed = sealed }
+    fun copy(): SavedGroup = SavedGroup(code, name, joinedAt, lastActive, nameAt, sid, mk)
+        .also { it.leftAt = leftAt; it.sealed = sealed; it.start = start; it.startId = startId }
 
-    /** The marks appear only once left; the key once it has been worked out. */
+    /** The marks appear only once left (or decided, for the start); the key once it has been worked out. */
     fun toJson(): JSONObject = JSONObject().apply {
         put("code", code); put("name", name); put("joinedAt", joinedAt); put("lastActive", lastActive); put("nameAt", nameAt)
         put("sid", sid)
         if (mk.isNotEmpty()) put("mk", mk)
         if (leftAt > 0) put("leftAt", leftAt)
         if (sealed) put("sealed", true)
+        if (start.isNotEmpty()) put("start", start)
+        if (startId.isNotEmpty()) put("startId", startId)
     }
     companion object {
         /** A storage id is a file name: plain letters and digits only. */
         private val SID = Regex("^[a-z0-9]{8,32}$")
+        const val START_MADE = "made"
+        const val START_CLAIM = "claim"
+        const val START_JOINED = "joined"
 
         /**
          * An entry saved before 2.4 has no storage id: it gets the one its files already have, and
@@ -76,6 +91,9 @@ class SavedGroup(val code: String, var name: String, val joinedAt: Long, var las
                 j.optLong("lastActive", 0), j.optLong("nameAt", 0), sid, mk).also {
                 it.leftAt = j.optLong("leftAt", 0).coerceAtLeast(0)
                 it.sealed = j.optBoolean("sealed", false)
+                // A mark from a later version is read as joined: it never claims anything here.
+                it.start = j.optString("start", "").let { s -> if (s.isEmpty() || s == START_MADE || s == START_CLAIM || s == START_JOINED) s else START_JOINED }
+                it.startId = j.optString("startId", "").takeIf { id -> Crypto.isNodeId(id) } ?: ""
             }
         }
     }
@@ -403,15 +421,20 @@ class Store(private val context: Context) {
      *
      * [mk] is the group's master key, worked out before this is called (it takes seconds). False
      * when the list did not reach the disk — and then it does not stand in memory either, exactly
-     * as for [rejoin]: the screen says so, and nothing goes on the radio.
+     * as for [rejoin]: the screen says so, and nothing goes on the radio. [made]: this phone
+     * started the group (SavedGroup.start).
      */
-    fun addGroup(code: String, name: String, mk: ByteArray, nameAt: Long = 0): Boolean = synchronized(groupLock) {
+    fun addGroup(code: String, name: String, mk: ByteArray, nameAt: Long = 0, made: Boolean = false): Boolean = synchronized(groupLock) {
         val groups = prefs.getString("groups", null)
         val active = rawActive()
-        if (change { list, a -> GroupRules.add(list, a, code, name, nameAt, System.currentTimeMillis(), Crypto.b64(mk)) }) return true
+        if (change { list, a -> GroupRules.add(list, a, code, name, nameAt, System.currentTimeMillis(), Crypto.b64(mk), made) }) return true
         putBack(groups, active)
         false
     }
+
+    /** Note how this phone came to be in [code]'s group, and as whom (GroupRules.decideStart). False when nothing changed or it didn't reach the disk. */
+    fun decideStart(code: String, start: String, startId: String): Boolean =
+        change { list, active -> GroupRules.Result(GroupRules.decideStart(list, code, start, startId), active) }
 
     /**
      * Keep a group's master key, worked out after the group was saved (a group from before 2.4).

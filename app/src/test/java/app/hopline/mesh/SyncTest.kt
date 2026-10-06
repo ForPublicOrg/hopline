@@ -75,7 +75,7 @@ class SyncTest {
     @Test fun `a message of mine a friend already lists has left my phone`() {
         val net = FakeNet()
         val x = Probe(net, "X")
-        val m = x.router.sendChat("did this get out?")
+        val m = x.router.sendChat("did this get out?")!!
         x.link("A")                                  // no word back about the frames on the way
         assertEquals(Message.QUEUED, m.status)
         x.inventory("A", m.id)
@@ -124,6 +124,32 @@ class SyncTest {
         assertFalse(again.router.snapshot().has("tombs"))
     }
 
+    @Test fun `every inventory's first part says the role set, and no other part does`() {
+        val net = FakeNet()
+        val x = Probe(net, "X")
+        // so much let go of to list that the inventory comes in several parts
+        val many = JSONObject()
+        repeat(3_000) { many.put(FakeNet.newId("C"), net.now + hour) }
+        x.router.restore(JSONObject().put("fmt", Router.FMT).put("me", x.router.me.id).put("tombs", many))
+        x.link("A")
+        fun parts() = x.sent.filter { it.first == "A" && it.second.optString("t") == "inv" }.map { it.second }
+        fun check(why: String): String {
+            val round = parts()
+            assertTrue("$why: ${round.size} parts", round.size >= 3)
+            val rd = round.single { it.getInt("i") == 0 }.getString("rd")
+            assertEquals(why, x.router.roles.digest, rd)
+            assertEquals(why, 22, rd.length)
+            assertTrue(why, round.filter { it.getInt("i") != 0 }.none { it.has("rd") })
+            return rd
+        }
+        val none = check("no roles yet: the empty set has a digest too")
+        // a change of roles: the next inventory says the new set
+        x.sent.clear()
+        x.router.foundIfDue(sure = true, ts = net.now)
+        net.now += Router.SYNC_MS; x.router.tick()
+        assertNotEquals(none, check("after founding"))
+    }
+
     @Test fun `the list of what was let go of is bounded, oldest out`() {
         val net = FakeNet()
         val many = JSONObject()
@@ -141,7 +167,7 @@ class SyncTest {
     @Test fun `an envelope's 48 hours go on from where the phone before had them, and don't start over`() {
         val net = FakeNet(); net.line("A", "C")
         val t0 = net.now
-        val m = net.nodes["C"]!!.router.sendChat("left at the pass"); net.pump()
+        val m = net.nodes["C"]!!.router.sendChat("left at the pass")!!; net.pump()
         net.disconnect("A", "C")
         net.now = t0 + 47 * hour
         net.node("W", "Late walker"); net.connect("A", "W")
@@ -252,7 +278,7 @@ class SyncTest {
 
     @Test fun `a deleted message is remembered for two weeks, so a late carrier can't bring it back`() {
         val net = FakeNet(); net.line("A", "B")
-        val m = net.nodes["B"]!!.router.sendChat("delete me"); net.pump()
+        val m = net.nodes["B"]!!.router.sendChat("delete me")!!; net.pump()
         val a = net.nodes["A"]!!.router
         a.hideMessages(listOf(m.id))
         net.now += 4 * 24 * hour; a.tick()

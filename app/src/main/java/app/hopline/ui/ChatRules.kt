@@ -36,17 +36,23 @@ object ChatRules {
         else -> Chip.NONE
     }
 
-    /** [LEFT]: this phone left the group (its kept chat). [PEER_LEFT]: the other person of a private chat did. */
-    enum class Bottom { COMPOSER, LEFT, FROM_BEFORE, NOT_SEEN, PEER_LEFT }
+    /**
+     * [LEFT]: this phone left the group (its kept chat). [PEER_LEFT]: the other person of a private chat did.
+     * [ADMINS_ONLY]: the group chat, while only admins can send and this phone isn't one.
+     */
+    enum class Bottom { COMPOSER, LEFT, FROM_BEFORE, NOT_SEEN, PEER_LEFT, ADMINS_ONLY }
 
     /**
      * What sits where the composer would be. [canWrite]: the router can seal for [peer]
      * (Router.canWriteTo); for the group chat it is not asked. [peerLeft]: [peer] told the group
      * they left it — said in so many words, not as "hasn't been seen", whatever [canWrite] says.
+     * [canPost]: may this phone post in the group chat now (Router.mayPost). Asked only for the
+     * group chat: private chats stay open to someone who may not post in the group, which is the
+     * point of them. No default — every caller decides.
      */
-    fun bottom(readOnly: Boolean, peer: String?, canWrite: Boolean, peerLeft: Boolean): Bottom = when {
+    fun bottom(readOnly: Boolean, peer: String?, canWrite: Boolean, peerLeft: Boolean, canPost: Boolean): Bottom = when {
         readOnly -> Bottom.LEFT
-        peer == null -> Bottom.COMPOSER
+        peer == null -> if (canPost) Bottom.COMPOSER else Bottom.ADMINS_ONLY
         !Crypto.isNodeId(peer) -> Bottom.FROM_BEFORE
         peerLeft -> Bottom.PEER_LEFT
         canWrite -> Bottom.COMPOSER
@@ -55,9 +61,28 @@ object ChatRules {
 
     /**
      * May a message of mine that stopped trying ([gaveUp]) be offered "Send again"? Not when it was
-     * private ([to]) and nothing can be sealed for that person ([canWrite]): it would only fail.
+     * private ([to]) and nothing can be sealed for that person ([canWrite]), nor when it was for the
+     * group and this phone may not post there now ([canPost]): either would only fail.
      */
-    fun sendAgain(gaveUp: Boolean, to: String?, canWrite: Boolean): Boolean = gaveUp && (to == null || canWrite)
+    fun sendAgain(gaveUp: Boolean, to: String?, canWrite: Boolean, canPost: Boolean): Boolean =
+        gaveUp && (if (to == null) canPost else canWrite)
+
+    /**
+     * What the composer holds once its chat's saved draft changed while the screen showed the chat: [stored] is the
+     * draft now, [seen] the draft as the screen last read or wrote it, [typed] what the composer holds. A reply typed
+     * into a notification that couldn't go is put after the draft (Core.keepAsDraft, while the group was starting):
+     * it joins what is typed, after it, the way keepAsDraft puts it. Null when nothing was added that way — then the
+     * composer stays as it is, and what is typed is never traded for the older words on disk.
+     */
+    fun withKeptWords(typed: String, seen: String, stored: String): String? {
+        if (stored == seen) return null
+        val added = when {
+            seen.isBlank() -> stored
+            stored.startsWith("$seen\n") -> stored.substring(seen.length + 1)
+            else -> return null
+        }
+        return if (added.isBlank()) null else listOfNotNull(typed.ifBlank { null }, added).joinToString("\n")
+    }
 
     /**
      * Is "Reply privately" worth offering on a group message from [from]? Only for a 2.4 id, and

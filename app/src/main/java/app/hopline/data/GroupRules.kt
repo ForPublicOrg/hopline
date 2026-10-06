@@ -58,9 +58,11 @@ object GroupRules {
      * A new group gets a storage id of its own from [newSid], never one another saved group has:
      * two codes can share their old 8-hex fingerprint, and must never share a chat file. [mk] is
      * its master key (base64url), worked out beforehand; an entry that has none yet takes it.
+     * [made]: this phone started it — a new entry is marked started here, or else joined
+     * ([SavedGroup.start]); an entry already here keeps its marks.
      */
     fun add(list: List<SavedGroup>, active: String?, code: String, name: String, nameAt: Long, now: Long, mk: String = "",
-            newSid: () -> String = { Crypto.randomId(SID_LENGTH) }): Result {
+            made: Boolean = false, newSid: () -> String = { Crypto.randomId(SID_LENGTH) }): Result {
         val norm = Words.normalise(code)
         if (norm.isEmpty()) return Result(list, active)
         val clean = Names.clean(name, Names.MAX_GROUP)
@@ -71,6 +73,7 @@ object GroupRules {
                 var sid = newSid()
                 while (sid in taken) sid = newSid()
                 list + SavedGroup(norm, clean, now, now, if (clean.isEmpty()) 0 else nameAt, sid, mk)
+                    .also { it.start = if (made) SavedGroup.START_MADE else SavedGroup.START_JOINED }
             }
             existing.left -> list.changing(norm) { it.leftAt = 0; it.sealed = false; it.lastActive = now; if (it.mk.isEmpty()) it.mk = mk }
             else -> list.changing(norm) {
@@ -152,6 +155,41 @@ object GroupRules {
         if (list.none { it.code == norm }) return list
         return list.changing(norm) { it.name = Names.clean(name, Names.MAX_GROUP); it.nameAt = at }
     }
+
+    /**
+     * Note how this phone came to be in [code]'s group, and as whom — only for one not decided yet (no mark; or started
+     * here and never yet on the radio). Anything else, or a code this phone doesn't have: the very list back.
+     */
+    fun decideStart(list: List<SavedGroup>, code: String, start: String, startId: String): List<SavedGroup> {
+        val norm = Words.normalise(code)
+        val g = list.firstOrNull { it.code == norm } ?: return list
+        val open = g.start.isEmpty() || (g.start == SavedGroup.START_MADE && g.startId.isEmpty() && start == SavedGroup.START_MADE)
+        if (!open) return list
+        return list.changing(norm) { it.start = start; it.startId = startId }
+    }
+
+    /**
+     * Do this phone's saved times say it STARTED a group from before admins? A creator's name is stamped as it taps Start
+     * and the group saved a moment later (2.2/2.3: the same call, a few ms; 2.4: after working out the key). A joiner
+     * learns the name's time from a beacon, and saves the group only once the code has come up on the starter's screen
+     * and been read off it — on 2.2/2.3, which work out no key, in as little as a second. A rename rewrites the name's
+     * time on every phone, so a renamed group can't tell.
+     */
+    fun legacyClaim(nameAt: Long, joinedAt: Long, nameV: Int): Boolean = nameV == 0 && nameAt > 0 && joinedAt - nameAt in 0..LEGACY_START_MS
+
+    /**
+     * How long after its name was stamped a group from before admins may have been saved and still count as started here:
+     * ample for every 2.2/2.3 starter (and a 2.4 one whose key took less), too short for a joiner, who reads the code off the
+     * starter's screen first.
+     */
+    const val LEGACY_START_MS = 500L
+
+    /** Does this phone ([me]) found [g]? Only the phone that started or claimed it, under the id it had then. */
+    fun founds(g: SavedGroup, me: String): Boolean = founds(g.start, g.startId, me)
+
+    /** The same for a group whose marks are [start] and [startId]. */
+    fun founds(start: String, startId: String, me: String): Boolean =
+        (start == SavedGroup.START_MADE || start == SavedGroup.START_CLAIM) && startId == me
 
     /**
      * The per-group preference keys: read marks, mutes, the unread count kept while paused, and

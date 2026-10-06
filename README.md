@@ -122,18 +122,38 @@ whole group you've left (*Delete group*).
 time; tap a paused group to switch. Nothing is deleted when you switch — each group keeps its
 own history, unread counts and files.
 
+**Admins** — whoever starts a group is its admin, and can't be dismissed. An admin can make anyone
+in the group an admin too, or dismiss an admin other than the starter: tap the person in Group info
+or People. Group info → *Group permissions* lets an admin choose who can send messages: *Everyone*
+(the default) or *Only admins*. With only admins, everyone else sees "Only admins can send
+messages" where they would type; they can still react, reply privately, message anyone, use shared
+internet and share their live location. Each change shows in the chat as a line — "Asha made Ravi
+an admin", "Vikas allowed only admins to send messages" — and on a phone still on 2.4 as a 👑
+message from the admin. A group's admin changes travel with the group, so a phone that joins weeks
+later still learns them. If the only admin leaves while linked to the group, their phone first
+makes one linked member an admin, and the Leave dialog says who. Admins can't remove anyone
+or lock the group's name: anyone with the code is in the group, and anyone can still rename it.
+
 **Leaving keeps the chat** — *Leave group* (in Group info or Settings, or press and hold a paused
 group on Home) takes your phone off that group: it stops getting the group's messages and stops
 passing them along. Everything already on the phone stays — the group chat, your private chats,
 photos, files and voice notes — under **Groups you left** on Home. You can read it, copy from it,
 save and share its photos and files, and delete messages for yourself; you can't write in it.
-Nobody is told that you left: to the group, your phone has simply walked away.
+
+If your phone is linked to anyone in the group when you leave, the group is told: the others see
+"Asha left" in the chat straight away, stop listing you as a member or counting you as in range,
+and stop offering you for @mentions; a private chat with you says "Asha left the group. You can
+write again if they rejoin". Shared-internet requests your phone was working on go to the next
+phone at once. Leave while linked to nobody from the group, or leave a paused group, and nobody can
+be told: to them your phone has simply gone quiet. The Leave dialog says which it will be, and the
+note after leaving says which it was.
 
 - **Rejoin** is one tap and one confirm — the phone still knows the code (typing or
   scanning it again asks the same question). The chat carries on under a "You left" / "You
-  rejoined" line, and nearby phones fill in whatever the group is still carrying. A message of
-  yours that hadn't gone out when you left is *not* sent behind your back: it reads "Not sent",
-  with *Send again* if you still mean it.
+  rejoined" line, and nearby phones fill in whatever the group is still carrying. If the group was
+  told you left, it is told you're back the same way: "Asha joined", and you're a member to them
+  again. A message of yours that hadn't gone out when you left is *not* sent behind your back: it
+  reads "Not sent", with *Send again* if you still mean it.
 - **Delete group** is a separate step, offered only for a group you have already left. It is the
   one thing that takes a whole group — every message, photo and file — off the phone, and it asks
   first. Copies you saved to Pictures or Downloads are yours, and stay.
@@ -215,12 +235,24 @@ the group grows, and every phone follows the same rules on its own:
   it, but it stays in the chat on every phone that got it. A phone keeps a group's latest 2,000
   messages at hand and files older ones in plain numbered files on its own storage; the chat reads
   them back, a page at a time, as you scroll up.
-- Leaving a group puts nothing on the air — no goodbye, no new kind of message — so the other
-  phones see a leaver exactly as a phone that walked away. The leaver's phone keeps the chat and
-  lets go of what it only held for the others: the backlog, other people's requests, the pieces of
-  files it was relaying. On a rejoin the group hands that backlog back, and the phone carries it
-  again — its own old receipts and requests included — without showing or announcing any of it a
-  second time.
+- Leaving says goodbye. The last thing a leaving phone sends is a signed goodbye, on the links it
+  has at that moment, its radio staying up a few seconds for it; the others carry it on for 48
+  hours like any message, so a phone that was away hears it later. A phone still on 2.4 shows it
+  as a plain "👋 left the group" message and passes it on. Joining, or rejoining after a goodbye,
+  says hello the same way. Only a goodbye or hello newer than anything else that phone has signed
+  decides whether it is in the group, so one carried in late can't undo a later one. The leaver's
+  phone keeps the chat and lets go of what it only held for the others: the backlog, other people's
+  requests, the pieces of files it was relaying. On a rejoin the group hands that backlog back, and
+  the phone carries it again — its own old receipts and requests included — without showing any of
+  it a second time.
+- Admins are a set of signed changes ("Asha made Ravi an admin", "only admins may send"). Every
+  phone checks each one, counts it only if whoever signed it was an admin at that point, and folds
+  the set the same way in the same fixed order, so all phones agree on the admins and the setting
+  whatever order the changes reached them in. A short digest of the set rides every sync: phones
+  whose sets differ swap changes until they match, so a phone that joins weeks later gets them all,
+  and the 👑 message carries a change through phones still on 2.4. A group message is judged by the
+  rules at the time it was written. The one thing no phone can check is who started the group —
+  nothing in four typed words can prove it — so each phone trusts the starter it first hears of.
 - In small groups, delivery receipts flow back the same way, so "Reached 7 of 9" is real, not a guess.
 - Names are last-writer-wins on the writer's own clock, so a rename can never be undone by old
   messages arriving late through gap-fill. A group rename also counts the renames before it, so a
@@ -286,9 +318,28 @@ one, and more.
   and nothing said after; a photo or file that hadn't fully arrived stays missing. Rejoining brings
   back only what the group is still carrying — the last 48 hours — so a longer absence leaves a
   gap, marked by the "You left" line.
-- **Leaving is silent.** There is no member list anywhere to take you off: the others aren't told,
-  what you sent stays on their phones, and anyone who has the code can join again. Groups
-  you left on Hopline 2.2 or earlier were deleted at the time and can't be brought back.
+- **Leaving is told only if you're linked to the group.** Leave while linked to nobody from the
+  group, or leave a paused group, and nobody can be told: the others see your phone go quiet, and
+  stop listing it after 48 hours. Either way, what you sent stays on their phones, and anyone who
+  has the code can join again. Groups you left on Hopline 2.2 or earlier were deleted at the time
+  and can't be brought back.
+- **Phones still on 2.4 don't know about admins.** They show everyone's group messages and let
+  anyone write. What a 2.4 member writes while only admins can send is never shown on phones with
+  2.5, even after everyone may send again. An admin whose phone is on 2.4 can't manage the group
+  from it.
+- **Most older groups have no admin.** Only a group started on Hopline 2.2 or 2.3 and never renamed
+  gets its starter back as admin; in any other group from before 2.5, everyone can send, as before.
+  For admin controls, start a new group.
+- **Admins can't remove anyone or lock the group's name**, and they rest on trust. Anyone with the
+  code can still read and pass on everything, and rename the group. Nothing in a typed code can
+  prove who started a group, so a modified app shown to a brand-new member before they meet anyone
+  else can claim to be the starter, and that newcomer would follow it (in a group from before 2.5,
+  every updated phone would). A phone that loses its data — a reinstall, cleared data, a new phone —
+  loses its admin role for good, the starter's included.
+- **Admin changes take time to spread.** Messages that cross a change in flight may show on some
+  phones and not others; nothing already shown is taken back. If the only admin disappears without
+  leaving while linked to the group, nobody becomes admin, and an only-admins group stays that way:
+  members can still message privately, or start a new group.
 
 ## Build from source
 
@@ -315,7 +366,8 @@ app/src/main/java/app/hopline/
              Update (reading GitHub's release, which version is newer, is the download the published one),
              Upi (the only two codes Hopline may dial, and which phones *99# works on)
   mesh/      Model, Router (flooding, carry, receipts, files, errands, the live window), ChunkStore, NearbyTransport,
-             Archive (what a group's saved state becomes when you leave it)
+             Archive (what a group's saved state becomes when you leave it), Roles (the group's admins and
+             who may send, from its signed changes)
   data/      Store (name, saved groups, read marks, per-group state), GroupRules (the groups you're in, the ones
              you left, which one the radio serves), History (a chat's older messages, on disk)
   service/   Core (glue), MeshService (foreground), Blobs (photo shrinking, chunk disk store),
@@ -327,6 +379,7 @@ app/src/main/java/app/hopline/
              Settings, onboarding
 app/src/test/ RouterTest, ProtocolTest, ErrandTest, ArchiveTest, SpillTest — the simulated group;
               GroupRulesTest, HistoryTest, HistoryRulesTest, EarlierPagesTest — leaving, rejoining and long chats;
+              MembershipTest — goodbyes and hellos; RolesTest, RolesMeshTest, AdminSendTest, AdminRulesTest — admins;
               CoreTextTest — the engines on saved pages; UpdateTest — the updater's rules on a saved GitHub answer;
               UpiTest — only *99# itself is ever dialled
 ```

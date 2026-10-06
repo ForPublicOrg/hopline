@@ -26,6 +26,7 @@ import app.hopline.core.GroupKeys
 import app.hopline.core.HelperLimits
 import app.hopline.core.Names
 import app.hopline.core.Words
+import app.hopline.data.GroupRules
 import app.hopline.data.History
 import app.hopline.data.SavedGroup
 import app.hopline.data.StateRules
@@ -38,6 +39,7 @@ import app.hopline.mesh.Loc
 import app.hopline.mesh.Message
 import app.hopline.mesh.NearbyTransport
 import app.hopline.mesh.Quote
+import app.hopline.mesh.RoleChange
 import app.hopline.mesh.Router
 import app.hopline.mesh.RouterListener
 import app.hopline.mesh.Transport
@@ -180,7 +182,7 @@ object Core {
         }
         val t = NearbyTransport(app, group, me)
         val chunks = Blobs.chunkStore(app, fp)
-        var restored = Router(me, group, t, listener, chunks)
+        var restored = Router(me, group, t, listener, chunks, joinedAt = saved.joinedAt)
         if (read.state != null) {
             var failed = 0
             while (true) try { restored.restore(read.state); break } catch (e: Throwable) {
@@ -189,7 +191,7 @@ object Core {
                 // one more try; otherwise the file is set aside for a second look — for good, so
                 // the person is told ([Store.takeAsideNotes]) — and the group starts clean.
                 Log.w(TAG, "state restore failed", e)
-                restored = Router(me, group, t, listener, chunks)
+                restored = Router(me, group, t, listener, chunks, joinedAt = saved.joinedAt)
                 if (StateRules.onRestoreFailure(e, failed++) == StateRules.Failed.RETRY) continue
                 if (!moveStateAsideOrdered(fp)) return false
                 break
@@ -200,6 +202,8 @@ object Core {
         r.liveQAbove(store.liveQMark())
         // Mine and known by what this router knows — from the first piece on, a reissued file's included.
         chunks.servedBy(r)
+        // Before anything is saved below: on an upgrade the founding is in the state that goes to disk before the start.
+        try { foundIfDue(r, saved, me.id) } catch (e: Exception) { Log.w(TAG, "founding skipped", e) }
         // Right after an upgrade: what this phone had not got off it yet in the old format goes out
         // again in the new one — and the state that says so is on disk before the radio starts, or
         // the group doesn't start (a kill in between would send the same messages twice, under two ids).
@@ -241,6 +245,24 @@ object Core {
         sendKeptReplies(r)
         changed()
         return true
+    }
+
+    /**
+     * The group's founding, if this phone has it to say (GroupRules.founds): started here (sure), or — for a group
+     * from before admins — claimed from the saved times (GroupRules.legacyClaim), decided once and remembered with
+     * the group under this phone's id. Stamped with the moment the group was saved here, which never changes.
+     */
+    private fun foundIfDue(r: Router, saved: SavedGroup, me: String) {
+        var start = saved.start; var startId = saved.startId
+        if (start.isEmpty()) {
+            start = if (GroupRules.legacyClaim(saved.nameAt, saved.joinedAt, r.group.nameV)) SavedGroup.START_CLAIM else SavedGroup.START_JOINED
+            startId = if (start == SavedGroup.START_CLAIM) me else ""
+            store.decideStart(saved.code, start, startId)
+        } else if (start == SavedGroup.START_MADE && startId.isEmpty()) {
+            startId = me
+            store.decideStart(saved.code, start, startId)
+        }
+        if (GroupRules.founds(start, startId, me)) r.foundIfDue(sure = start == SavedGroup.START_MADE, ts = saved.joinedAt)
     }
 
     /**
@@ -318,8 +340,8 @@ object Core {
     /**
      * Replies typed into a notification while the group was still starting (Store.keepReply): they
      * go now that its router is up, and are forgotten once the state that holds them is on disk.
-     * One for a private chat nothing can be written to (Router.canMessage) is not lost either: it
-     * waits in that chat ([keepAsDraft]).
+     * One for a private chat nothing can be written to (Router.canMessage), or for a group only
+     * admins may send in (Router.mayPost), is not lost either: it waits in that chat ([keepAsDraft]).
      */
     private fun sendKeptReplies(r: Router) {
         val fp = r.group.fingerprint
@@ -327,7 +349,14 @@ object Core {
         if (kept.isEmpty()) return
         for (k in kept) {
             val mine = if (k.chat == GROUP) r.sendChat(k.text, mentions = Ui.mentionsIn(r, k.text)) else r.sendDm(k.chat, k.text)
-            if (mine == null) keepAsDraft(fp, k.chat, k.text)
+            if (mine == null) {
+                keepAsDraft(fp, k.chat, k.text)
+                // The shade showed it as sent; it wasn't — only admins may send in the group. Said now, and its line leaves the notification.
+                if (k.chat == GROUP && !r.mayPost()) {
+                    Notifications.unsent(app, fp, k.chat, k.text)
+                    Toast.makeText(app, R.string.notif_admins_only, Toast.LENGTH_LONG).show()
+                }
+            }
         }
         saveNow()
         writer.execute { if (fp !in unsaved) handler.post { store.dropKeptReplies(fp, kept) } }
@@ -449,7 +478,7 @@ object Core {
         adding = a
         deriveKey(a.code) { mk ->
             if (adding !== a) return@deriveKey
-            if (mk == null || !store.addGroup(a.code, a.name, mk, a.nameAt)) {
+            if (mk == null || !store.addGroup(a.code, a.name, mk, a.nameAt, made = a.made)) {
                 Log.w(TAG, "a new group could not be saved")
                 a.state = Adding.FAILED
             } else {
@@ -599,18 +628,31 @@ object Core {
      * False — and nothing at all has changed — when the group on the radio could not be saved
      * first ([StateRules.leave]): its router holds the only whole copy of the chat, and is not let
      * go until that copy is on disk. The phone stays in the group; the screen says why.
+     *
+     * Leaving as the only admin around hands admin on first ([Router.handOver]): to [heir], the
+     * one the Leave question named, if it can still take it, else to whoever the pick is now.
      */
-    fun leaveGroup(code: String): Boolean {
+    fun leaveGroup(code: String, heir: String? = null): Boolean {
         val g = store.allGroups().firstOrNull { it.code == Words.normalise(code) && !it.left } ?: return false
         val r = router?.takeIf { it.group.fingerprint == g.fingerprint }
         // The goodbye is noted before the chat is saved whole, so the saved chat knows it was said.
         r?.aboutToLeave()
         // A paused group's chat is on disk already, as its router saved it when the radio moved off.
-        val left = StateRules.leave(saveWhole = { r == null || savedNow(r) }) { letGo(g, r) }
+        val left = StateRules.leave(saveWhole = { r == null || savedNow(r) }) { letGo(g, r, heir) }
         // Refused: no goodbye after all — and the chat on disk must stop saying there was one, now
         // rather than at the next save (a kill in between would have the next start say hello).
         if (!left && r != null) { r.stayed(); if (router === r) flushSave() }
         return left
+    }
+
+    /** What the Leave question says about admins for [g]: null unless [g] is the group on the radio and this phone is its only admin around (Router.soleAdmin). */
+    class LeaveAdmin(val heir: String?, val heirName: String?, val locked: Boolean)
+
+    fun leaveAdmin(g: SavedGroup): LeaveAdmin? {
+        val r = router?.takeIf { it.group.code == g.code } ?: return null
+        if (!r.soleAdmin()) return null
+        val heir = r.handoverPick()
+        return LeaveAdmin(heir, heir?.let { Ui.uniqueName(r, it) }, r.onlyAdminsSend())
     }
 
     /**
@@ -631,10 +673,13 @@ object Core {
     /** Whether the last group left was told so (Router.sayGoodbye): a paused one never is, nor one with nobody linked. */
     var toldLeaving = false; private set
 
-    /** The leaving itself, once the chat is safely on disk ([r] is null for a paused group). */
-    private fun letGo(g: SavedGroup, r: Router?) {
+    /** The name, as the group tells them apart, of whoever the last leave made a group admin on its way out (Router.handOver); null when nobody. */
+    var handedAdminName: String? = null; private set
+
+    /** The leaving itself, once the chat is safely on disk ([r] is null for a paused group). [heir]: see [leaveGroup]. */
+    private fun letGo(g: SavedGroup, r: Router?, heir: String?) {
+        handedAdminName = null
         val fp = g.fingerprint
-        val now = System.currentTimeMillis()
         val wasActive = r != null || store.activeCode == g.code
         if (r != null) {
             // What is still on its way is called off, so what is said on the way out (below) isn't
@@ -644,6 +689,9 @@ object Core {
             for (e in r.errands.values) stopFetch(e.id)
             // Requests this phone was on for others go back to the group at once ...
             val declined = r.declineForLeaving()
+            // ... the only admin around hands admin on to someone linked now (its grant goes out on
+            // the links up now, before the goodbye) ...
+            handedAdminName = r.handOver(heir)?.let { Ui.uniqueName(r, it) }
             // ... and the group hears that this phone is leaving — from the phones linked now, and
             // through them everyone else — while the radio is still up. Last of all that it sends:
             // anything numbered after the goodbye would put it back in the group. Its state
@@ -652,6 +700,8 @@ object Core {
             toldLeaving = r.sayGoodbye(declined)
             handler.removeCallbacks(saveRunnable); savePosted = false
         } else toldLeaving = false
+        // Taken after all of the above: "You left" sorts after the hand-over's line.
+        val now = System.currentTimeMillis()
         val full = r?.snapshot()
         // Files whose every piece is here but which were never put together: now is their last
         // chance, before the pieces go.
@@ -862,7 +912,7 @@ object Core {
         // Reading a left group's chat needs no key: it never seals, opens or checks anything. The
         // saved one is used when there is one; otherwise a stand-in nothing is ever sealed with.
         val group = store.groupOf(g) ?: Group(g.code, g.name, g.nameAt, keys = GroupKeys(ByteArray(32)), fingerprint = g.fingerprint)
-        val r = Router(me, group, noRadio, archiveListener)
+        val r = Router(me, group, noRadio, archiveListener, joinedAt = g.joinedAt)
         if (read.state != null) try { r.restore(read.state) } catch (e: Throwable) {
             Log.w(TAG, "a left group's chat could not be opened", e)
             return null
@@ -954,6 +1004,27 @@ object Core {
         return m.text.isNotEmpty()
     }
 
+    // ------------------------------------------------------------------ admins
+
+    /** The group chat's composer: open while the router is starting (a send then waits), the router's word otherwise. */
+    fun mayPost(): Boolean = router?.mayPost() ?: true
+
+    /** Make [id] an admin of the group whose fingerprint is [fp] (Router.grantAdmin). */
+    fun makeAdmin(fp: String, id: String): RoleChange = roleChange(fp) { it.grantAdmin(id) }
+
+    /** Dismiss [id] as admin of the group whose fingerprint is [fp] (Router.dismissAdmin). */
+    fun dismissAdmin(fp: String, id: String): RoleChange = roleChange(fp) { it.dismissAdmin(id) }
+
+    /** Let only admins send in the group whose fingerprint is [fp] ([on]), or everyone again (Router.setOnlyAdmins). */
+    fun setOnlyAdminsSend(fp: String, on: Boolean): RoleChange = roleChange(fp) { it.setOnlyAdmins(on) }
+
+    /** [act] on [fp]'s router: STARTING while that group's router isn't up yet, ELSEWHERE when another group is on the radio. */
+    private inline fun roleChange(fp: String, act: (Router) -> RoleChange): RoleChange {
+        val r = router ?: return if (store.activeGroup()?.fingerprint == fp) RoleChange.STARTING else RoleChange.ELSEWHERE
+        if (r.group.fingerprint != fp) return RoleChange.ELSEWHERE
+        return act(r).also { if (it == RoleChange.DONE) { saveNow(); changed() } }   // this phone may be the only holder: on disk now
+    }
+
     // ------------------------------------------------------------------ live location
 
     /** Until when I share my position (0 = not sharing). It rides presence beacons. */
@@ -1013,6 +1084,8 @@ object Core {
                   cleanup: (() -> Unit)? = null, done: (String?) -> Unit) {
         val r0 = router ?: run { cleanup?.invoke(); return done("Hopline is starting — try again in a moment.") }
         if (to != null && !r0.canMessage(to)) { cleanup?.invoke(); return done(cantWriteTo(r0, to)) }
+        // Before any of the work below: a photo that can't go is never shrunk, sealed or kept.
+        if (to == null && !r0.mayPost()) { cleanup?.invoke(); return done(adminsOnly()) }
         val fp = r0.group.fingerprint
         val fid = r0.newFid()
         Thread {
@@ -1040,6 +1113,7 @@ object Core {
         val r0 = router ?: return done("Hopline is starting — try again in a moment.")
         if (picked.bytes.isEmpty()) return done("That file is empty.")
         if (to != null && !r0.canMessage(to)) return done(cantWriteTo(r0, to))
+        if (to == null && !r0.mayPost()) return done(adminsOnly())
         val fp = r0.group.fingerprint
         val fid = r0.newFid()
         Thread {
@@ -1064,6 +1138,7 @@ object Core {
         val r0 = router ?: return done("Hopline is starting — try again in a moment.")
         val a = old.att ?: return done("That file isn't on this phone any more.")
         old.to?.let { if (!r0.canMessage(it)) return done(cantWriteTo(r0, it)) }
+        if (old.to == null && !r0.mayPost()) return done(adminsOnly())
         val fp = r0.group.fingerprint
         val src = Blobs.fileFor(app, fp, a)
         val fid = r0.newFid()
@@ -1093,9 +1168,13 @@ object Core {
         }
         BlobRules.Sent.NoRoom -> { dropOwnCopy(fp, att); NO_ROOM }
         is BlobRules.Sent.CantWrite -> { dropOwnCopy(fp, att); cantWriteTo(r, s.to) }
+        BlobRules.Sent.AdminsOnly -> { dropOwnCopy(fp, att); adminsOnly() }
     }
 
     private const val NO_ROOM = "Not enough free space on this phone — not sent."
+
+    /** Why a photo or file for the group isn't sent while only admins may send there, in the words the chat uses for it. */
+    private fun adminsOnly(): String = app.getString(R.string.chat_admins_only_not_sent)
 
     /** Why nothing can be sent to [to] (Router.canMessage), in the words the chat uses for it. */
     private fun cantWriteTo(r: Router, to: String): String = when {

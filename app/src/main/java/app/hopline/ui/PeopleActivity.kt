@@ -20,8 +20,9 @@ import app.hopline.service.Core
 import java.util.Locale
 
 /**
- * Everyone the mesh has heard of in this group, me first. Tap a person for a private chat; press
- * and hold one to verify the security code with them.
+ * Everyone the mesh has heard of in this group, me first, then the group's admins. Tap a person
+ * for a private chat (an admin's tap offers what they can do, the chat first); press and hold one
+ * to verify the security code with them.
  *
  * Only people on 2.4 or later are listed. Someone heard from before the update had an 8-letter id
  * no phone uses any more: they are here again under their new one, and the old entry stays only so
@@ -31,8 +32,9 @@ class PeopleActivity : AppCompatActivity() {
     private lateinit var b: ActivityPeopleBinding
     private val adapter = PeopleAdapter(
         onMe = { Asks.myName(this) },
-        onPerson = { p -> startActivity(Intent(this, ChatActivity::class.java).putExtra("peer", p.id)) },
+        onPerson = { p -> Asks.openChat(this, p.id) },
         onVerify = { p -> Core.router?.let { r -> SecurityCodeDialog.show(this, p.id, Ui.nameOf(r, p.id, p.name)) } },
+        onOptions = { p -> Asks.member(this, p.id) },
     )
     private var query = ""
 
@@ -72,9 +74,9 @@ class PeopleActivity : AppCompatActivity() {
 
         val q = query.lowercase(Locale.getDefault())
         val matches = if (q.isEmpty()) others else others.filter { Ui.uniqueName(r, it.id, it.name).lowercase(Locale.getDefault()).contains(q) }
-        // Who left the group stays listed — their chat is still here — but last, and saying so.
-        val sorted = matches.sortedWith(compareBy<Person> { it.left }.thenByDescending { r.isInRange(it) }.thenBy { it.hops }
-            .thenBy { Ui.nameOf(r, it.id, it.name).lowercase(Locale.getDefault()) })
+        // Who left the group stays listed — their chat is still here — but last, and saying so. The admins come first.
+        val sorted = matches.sortedWith(compareBy<Person> { it.left }.thenByDescending { r.isAdmin(it.id) }.thenByDescending { r.isInRange(it) }
+            .thenBy { it.hops }.thenBy { Ui.nameOf(r, it.id, it.name).lowercase(Locale.getDefault()) })
         if (q.isEmpty() || Core.store.name.lowercase(Locale.getDefault()).contains(q)) rows += PeopleAdapter.Row.Me
         sorted.forEach { rows += PeopleAdapter.Row.P(it) }
         when {
@@ -89,7 +91,7 @@ class PeopleActivity : AppCompatActivity() {
     }
 
     class PeopleAdapter(private val onMe: () -> Unit, private val onPerson: (Person) -> Unit,
-                        private val onVerify: (Person) -> Unit) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+                        private val onVerify: (Person) -> Unit, private val onOptions: (Person) -> Unit) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         sealed class Row {
             object Me : Row()
             class P(val p: Person) : Row()
@@ -111,8 +113,9 @@ class PeopleActivity : AppCompatActivity() {
         }
         override fun onBindViewHolder(h: RecyclerView.ViewHolder, i: Int) {
             when (val row = items[i]) {
-                is Row.Me -> bindMe((h as PersonVH).b, onMe)
-                is Row.P -> bindPerson((h as PersonVH).b, router ?: return, row.p, onVerify = { onVerify(row.p) }) { onPerson(row.p) }
+                is Row.Me -> bindMe((h as PersonVH).b, router, onMe)
+                is Row.P -> bindPerson((h as PersonVH).b, router ?: return, row.p, onVerify = { onVerify(row.p) },
+                    onOptions = { onOptions(row.p) }) { onPerson(row.p) }
                 is Row.Note -> (h as NoteVH).b.note.text = row.text
             }
         }
@@ -121,9 +124,11 @@ class PeopleActivity : AppCompatActivity() {
     companion object {
         /**
          * One person's row — shared with Group info so both lists look and read the same. A shield
-         * after the name: their security code was verified on this phone. Press and hold: [onVerify].
+         * after the name: their security code was verified on this phone; "Group admin" at its end:
+         * they are one. A tap is [onClick] (their private chat) — or, when I'm an admin, [onOptions]
+         * (AdminRules.tapOpensOptions). Press and hold: [onVerify].
          */
-        fun bindPerson(h: ItemPersonBinding, r: Router, p: Person, onVerify: () -> Unit, onClick: () -> Unit) {
+        fun bindPerson(h: ItemPersonBinding, r: Router, p: Person, onVerify: () -> Unit, onOptions: () -> Unit, onClick: () -> Unit) {
             val ctx = h.root.context
             val name = Ui.nameOf(r, p.id, p.name)
             val shown = Ui.uniqueName(r, p.id, p.name)
@@ -138,17 +143,30 @@ class PeopleActivity : AppCompatActivity() {
             h.dot.visibility = View.VISIBLE
             h.dot.background.mutate().setTint(ctx.getColor(if (inRange) R.color.online else R.color.offline))
             h.badge.visibility = if (p.hasInternet && inRange) View.VISIBLE else View.GONE
-            h.root.setOnClickListener { onClick() }
+            val admin = r.isAdmin(p.id)
+            // A left admin keeps the tag: still one, and one again on rejoin.
+            h.adminBadge.visibility = if (admin) View.VISIBLE else View.GONE
+            val viewerAdmin = r.isAdmin(r.me.id)
+            // An admin's tap offers what they can do; anyone else's tap is the private chat, as always.
+            val options = AdminRules.tapOpensOptions(viewerAdmin, p.id, r.me.id)
+            h.root.setOnClickListener { if (options) onOptions() else onClick() }
             h.root.setOnLongClickListener { onVerify(); true }
-            // Someone who left can't be written to: their chat is only there to read.
+            val acts = AdminRules.memberActions(viewerAdmin, admin, p.id == r.founder(), p.left)
+            val label = when {
+                // Someone who left can't be written to: their chat is only there to read.
+                !options -> if (p.left) R.string.action_open_chat else R.string.action_private_chat
+                AdminRules.MemberAction.MAKE_ADMIN in acts -> R.string.action_message_or_make_admin
+                AdminRules.MemberAction.DISMISS_ADMIN in acts -> R.string.action_message_or_dismiss_admin
+                else -> R.string.action_message_or_verify
+            }
             ViewCompat.replaceAccessibilityAction(h.root, androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK,
-                ctx.getString(if (p.left) R.string.action_open_chat else R.string.action_private_chat), null)
+                ctx.getString(label), null)
             ViewCompat.replaceAccessibilityAction(h.root, androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_LONG_CLICK,
                 ctx.getString(R.string.action_verify), null)
         }
 
-        /** My own row: "Vikas (you) · Tap to change your name". */
-        fun bindMe(h: ItemPersonBinding, onClick: () -> Unit) {
+        /** My own row: "Vikas (you) · Tap to change your name", with "Group admin" when I'm one in [r]'s group (none while it starts). */
+        fun bindMe(h: ItemPersonBinding, r: Router?, onClick: () -> Unit) {
             val ctx = h.root.context
             val name = Core.store.name
             h.name.text = ctx.getString(R.string.you_suffix, name)
@@ -159,6 +177,7 @@ class PeopleActivity : AppCompatActivity() {
             h.status.text = ctx.getString(R.string.you_change_name)
             h.dot.visibility = View.GONE
             h.badge.visibility = View.GONE
+            h.adminBadge.visibility = if (r?.let { it.isAdmin(it.me.id) } == true) View.VISIBLE else View.GONE
             h.root.setOnClickListener { onClick() }
             h.root.setOnLongClickListener(null); h.root.isLongClickable = false
             ViewCompat.replaceAccessibilityAction(h.root, androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK,

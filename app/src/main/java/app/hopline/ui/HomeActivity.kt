@@ -207,7 +207,8 @@ class HomeActivity : AppCompatActivity() {
         if (payOffered && r == null) rows += HomeAdapter.Row.Pay
         if (r != null) addActiveGroup(r, rows, connected)
         addOtherGroups(rows)
-        if (r != null && r.messages.isEmpty() && r.people.isEmpty()) rows += HomeAdapter.Row.Invite
+        // Lines only ("You started this group") still leave a group nobody else has joined: the card stays.
+        if (r != null && r.messages.all { it.isNotice } && r.people.isEmpty()) rows += HomeAdapter.Row.Invite
         addLeftGroups(rows)
         // A row that turns up above the first one would stay hidden just off the top of a list
         // that is showing its start: when the banner arrives, bring it into view.
@@ -235,6 +236,8 @@ class HomeActivity : AppCompatActivity() {
         val reacted = HashMap<String, Reacted>()
         for (m in r.messages) {
             val chat = when { m.isGroup -> Core.GROUP; m.from == r.me.id -> m.to ?: continue; else -> m.from }
+            // "…the messages above…" is said under my posts, in the chat: the row shows the post itself.
+            if (m.kind == Message.ROLE_UNSEEN) continue
             last[chat] = m   // r.messages is in chat order
             if (!m.isGroup && m.from != r.me.id) partnerName[chat] = m.fromName
             if (m.reactions.isEmpty() || !m.isPersonal) continue
@@ -317,6 +320,8 @@ class HomeActivity : AppCompatActivity() {
     private fun previewOf(r: Router, m: Message, inGroup: Boolean): String {
         val body = Notifications.preview(this, m).replace('\n', ' ')
         return when {
+            // A line about the group's admins, worded as the chat words it ("You started this group").
+            m.isRole -> Ui.roleLine(this, r, m) { id, fb -> Ui.uniqueName(r, id, fb) } ?: body
             m.isRename -> if (m.from == r.me.id) getString(R.string.notice_renamed_by_you, m.text)
                 else getString(R.string.notice_renamed_by, Ui.uniqueName(r, m.from, m.fromName), m.text)
             // Who left or joined the group, told apart from a namesake who didn't.

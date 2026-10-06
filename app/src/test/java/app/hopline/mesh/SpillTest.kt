@@ -197,7 +197,7 @@ class SpillTest {
     @Test fun aMessageOfMineStillWaitingToLeaveIsNotMovedOut() {
         // Typed with nobody around, long before the group got busy: it is the oldest message of all.
         val lonely = FakeNet(); lonely.now -= 20_000_000L
-        val waiting = lonely.node("A").router.sendChat("still trying to reach you")
+        val waiting = lonely.node("A").router.sendChat("still trying to reach you")!!
         val saved = lonely.nodes["A"]!!.router.snapshot()
         assertEquals(Message.QUEUED, waiting.status)
         // the same words, but with no envelope left to send (as after leaving and rejoining)

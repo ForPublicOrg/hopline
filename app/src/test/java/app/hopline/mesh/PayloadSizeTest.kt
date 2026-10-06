@@ -1,6 +1,7 @@
 package app.hopline.mesh
 
 import app.hopline.core.Crypto
+import app.hopline.core.Names
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -41,7 +42,7 @@ class PayloadSizeTest {
         val worst = "\u0001".repeat(Router.MAX_TEXT)
         val quote = Quote(FakeNet.newId("B"), "B".repeat(40), "\u0001".repeat(Quote.MAX_SNIPPET), net.id("B"))
         val mentions = (1..Message.MAX_MENTIONS).map { "m".repeat(40) }
-        val chat = a.sendChat(worst, quote, mentions)
+        val chat = a.sendChat(worst, quote, mentions)!!
         val dm = a.sendDm(net.id("B"), worst, quote)!!
         val place = a.sendLocation(Loc.of(1.0, 2.0, 5, "\u0001".repeat(Loc.MAX_LABEL))!!, to = net.id("B"))!!
         val (att, pieces) = FakeNet.makeFile(a, ByteArray(3 * Router.CHUNK_RAW) { it.toByte() }, name = "n".repeat(200), thumb = "t".repeat(Router.MAX_THUMB_B64))
@@ -183,7 +184,7 @@ class PayloadSizeTest {
     @Test fun `the carry keeps to its byte budget, and the phone sending the most is the one cut back`() {
         val net = FakeNet(); net.line("A", "B")
         val b = net.nodes["B"]!!.router
-        val words = (1..5).map { net.nodes["A"]!!.router.sendChat("honest $it") }
+        val words = (1..5).map { net.nodes["A"]!!.router.sendChat("honest $it")!! }
         net.pump()
         // M floods envelopes of almost the biggest size a phone takes, far past the budget
         val big = "y".repeat(19_500)
@@ -202,5 +203,39 @@ class PayloadSizeTest {
         assertFalse("the flood's oldest went first", b.carries(flood.first()))
         assertTrue(b.carries(flood.last()))
         assertNotNull(b.message(words.last().id))
+    }
+
+    @Test fun `the biggest carrier and the biggest roles frame fit the radio`() {
+        val net = FakeNet(); net.frames = ArrayList(); net.line("A", "B")
+        val a = net.nodes["A"]!!.router
+        a.foundIfDue(sure = true, ts = net.now)
+        // someone whose name is as long as a name can be, every character four bytes
+        val t = net.id("T")
+        net.know("A", "T"); a.people[t]!!.name = "𝔸".repeat(Names.MAX_PERSON)
+        // a set just short of what a carrier takes whole: X made an admin and dismissed, over and over
+        val x = net.id("X")
+        fun setBytes() = a.roles.wire().sumOf { it.toJson().toString().length + 1 }
+        while (setBytes() < Router.CARRIER_SET_BYTES - 600) { net.now += 1_000; a.roles.grant(x, net.now) ?: a.roles.revoke(x, net.now)!! }
+        assertEquals(RoleChange.DONE, a.grantAdmin(t)); net.pump()
+        assertTrue("${setBytes()} bytes of ops", setBytes() in Router.CARRIER_SET_BYTES - 600..Router.CARRIER_SET_BYTES)
+        val tag = FakeNet.group().airTag
+        val carried = a.snapshot().getJSONArray("carry").let { c -> (0 until c.length()).map { c.getJSONObject(it) } }.single { it.getString("k") == Envelope.CHAT }
+        val p = JSONObject(String(Crypto.open(FakeNet.group().keys.env, Envelope(carried).header(tag), Envelope(carried).sealed)!!, Charsets.UTF_8))
+        assertEquals("the whole set rode it", a.roles.wire().size, p.getJSONArray("ro").length())
+        assertTrue(p.getString("text").contains(a.people[t]!!.name))
+        val size = carried.toString().toByteArray().size
+        assertTrue("the carrier is $size bytes", size <= Router.MAX_ENVELOPE_OUT)
+
+        // the biggest roles frame: the founder's ops as big as an op may be (a later version's type, every field full), sent whole
+        val full = (1..6).associate { "${'a' + it}${'a' + it}" to "z".repeat(100) as Any }
+        repeat(60) { a.roles.accept(listOf(RoleOp.make(FakeNet.keysOf("A"), tag, a.roles.nextN()!!, net.now, "later", full))) }
+        val biggest = a.roles.wire().maxOf { it.toJson().toString().length }
+        assertTrue("an op of $biggest bytes", biggest > 900)
+        net.frames!!.clear()
+        net.node("C"); net.connect("A", "C")
+        val frames = net.frames!!.filter { JSONObject(it).optString("t") == "roles" }.map { it.toByteArray().size }
+        assertTrue("${frames.size} frames", frames.size >= 3)
+        for (n in frames) assertTrue("a roles frame of $n bytes", n <= Router.ROLES_FRAME_BYTES + 1_200 + 60 && n <= 32_768)
+        assertEquals(a.roles.digest, net.nodes["C"]!!.router.roles.digest)
     }
 }

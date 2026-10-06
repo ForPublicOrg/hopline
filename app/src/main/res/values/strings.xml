@@ -187,6 +187,12 @@
     <string name="left_toast_untold">You left “%1$s”. Nobody from it was connected, so they weren\'t told. Its chat is still on this phone.</string>
     <!-- Leaving was refused: the chat must be safely saved before the phone lets go of the group -->
     <string name="leave_not_saved">Couldn\'t leave — storage may be full. Nothing was changed.</string>
+    <!-- Leaving as the only group admin (2.5): who takes over, or that nobody can -->
+    <string name="leave_admin_heir">No other admin with the latest Hopline has been heard from in the last two days, so %1$s will be made a group admin when you leave. To pick someone else, make them a group admin first.</string>
+    <string name="leave_admin_nobody">No other admin with the latest Hopline has been heard from in the last two days, and nobody connected right now can take over. Until you rejoin, nobody can make admins or change who can send messages.</string>
+    <string name="leave_admin_nobody_locked">No other admin with the latest Hopline has been heard from in the last two days, and nobody connected right now can take over. Only admins can send messages, so until you rejoin the others can only message privately. To let the group keep talking, let everyone send messages first (Group info → Group permissions).</string>
+    <string name="leave_admin_paused">You started this group. Leaving it while Hopline isn\'t connected to it can\'t make anyone else an admin — switch to it first if you\'d like to hand that on.</string>
+    <string name="left_toast_handed">You left “%1$s” and made %2$s a group admin. Its chat is still on this phone.</string>
     <string name="cancel">Cancel</string>
     <string name="about">About</string>
     <string name="how_it_works">How Hopline works</string>
@@ -225,6 +231,12 @@
     <string name="notice_renamed_short">renamed the group to “%1$s”</string>
     <string name="notice_left_short">left the group</string>
     <string name="notice_joined_short">joined the group</string>
+    <!-- A change of admins, or of who can send (2.5) -->
+    <string name="notice_admin_made_short">made %1$s an admin</string>
+    <string name="notice_admin_dismissed_short">dismissed %1$s as admin</string>
+    <string name="notice_stepped_down_short">stepped down as admin</string>
+    <string name="notice_admins_only_short">allowed only admins to send messages</string>
+    <string name="notice_everyone_short">allowed everyone to send messages</string>
     <string name="reacted_line">Reacted %1$s to “%2$s”</string>
     <string name="n_new">%1$d new</string>
     <string name="mark_read">Mark as read</string>
@@ -240,6 +252,8 @@
     <string name="cant_send">Can\'t</string>
     <string name="notif_other_group">That\'s from a group that isn\'t on the radio right now — open Hopline to switch to it.</string>
     <string name="notif_left_group">You left that group, so your reply wasn\'t sent.</string>
+    <!-- A reply from the shade to a group only admins can send in (2.5) -->
+    <string name="notif_admins_only">Only admins can send messages in that group, so your reply wasn\'t sent. It\'s waiting in the chat.</string>
 
     <!-- Notifications -->
     <string name="notif_service">Hopline is on</string>

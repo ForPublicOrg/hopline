@@ -87,7 +87,27 @@
                     android:clickable="false" android:focusable="false" android:importantForAccessibility="no" />
             </LinearLayout>
 
-            <!-- Members: me, then who is in range, then everyone else heard from lately -->
+            <!-- Who can send. An admin: the way to change it. Anyone else, while only admins can send: that plain fact, and
+                 that private chats still work (or that no admin has been around). Otherwise not shown. -->
+            <LinearLayout android:id="@+id/perms_row" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginStart="16dp" android:layout_marginEnd="16dp" android:layout_marginTop="12dp"
+                android:background="@drawable/bg_card" android:foreground="?attr/selectableItemBackground"
+                android:orientation="horizontal" android:gravity="center_vertical" android:minHeight="64dp"
+                android:paddingStart="16dp" android:paddingEnd="16dp" android:focusable="true" android:visibility="gone">
+                <ImageView android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_group_perms"
+                    android:importantForAccessibility="no" />
+                <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                    android:orientation="vertical" android:layout_marginStart="16dp" android:paddingTop="10dp" android:paddingBottom="10dp">
+                    <TextView android:id="@+id/perms_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:textSize="16sp" android:textColor="@color/text" />
+                    <TextView android:id="@+id/perms_state" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp" android:textSize="13sp" android:textColor="@color/text_muted" />
+                </LinearLayout>
+                <ImageView android:id="@+id/perms_chevron" android:layout_width="24dp" android:layout_height="24dp"
+                    android:src="@drawable/ic_chevron" android:importantForAccessibility="no" />
+            </LinearLayout>
+
+            <!-- Members: me, then the admins, then who is in range, then everyone else heard from lately -->
             <TextView android:id="@+id/members_header" android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:layout_marginStart="20dp" android:layout_marginEnd="20dp" android:layout_marginTop="20dp"
                 android:textAppearance="@style/Text.Section" android:textSize="12sp" />
@@ -103,6 +123,10 @@
                     android:minHeight="48dp" android:gravity="center_vertical" android:paddingStart="16dp" android:paddingEnd="16dp"
                     android:background="?attr/selectableItemBackground" android:textColor="@color/ember" android:textSize="15sp"
                     android:textStyle="bold" android:visibility="gone" />
+                <!-- No admin known to this phone (a group started before Hopline had admins, or not synced yet): said quietly -->
+                <TextView android:id="@+id/no_admins_note" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="4dp" android:paddingBottom="12dp"
+                    android:text="@string/no_admins_note" android:textAppearance="@style/Text.Muted" android:visibility="gone" />
             </LinearLayout>
 
             <!-- A group this phone left: the private chats kept with its chat, each opened to read -->

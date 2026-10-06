@@ -60,6 +60,8 @@ class Router(
     private val transport: Transport,
     private val listener: RouterListener,
     val chunks: ChunkStore = MemoryChunkStore(),
+    /** When this phone joined the group (SavedGroup.joinedAt): role changes from well before it are state, not chat lines. 0 = unknown. */
+    private val joinedAt: Long = 0L,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     /**
@@ -90,6 +92,12 @@ class Router(
         /** Chunk ids still owed to this link from the last inventory swap, streamed a few at a time. */
         val fillQueue = ArrayDeque<String>()
         var fillInFlight = 0
+        /** The role-set digest from the peer's last inventory or last roles frame; null = none yet (or a 2.4 phone). */
+        var peerRd: String? = null
+        /** Null until its first inventory; true = it said what role set it holds ("rd"), so it knows about admins; false = a 2.4 phone. */
+        var rolesAware: Boolean? = null
+        /** Ops of a role set still arriving from this phone: taken in whole when the frame that ends it ("rd") is in. */
+        val rolesIn = LinkedHashMap<String, RoleOp>()
     }
 
     val links = LinkedHashMap<String, Link>()
@@ -114,6 +122,11 @@ class Router(
     private val filesByFid = HashMap<String, Message>()
     /** Files whose onFileReady already fired (or that this phone originated). */
     private val fileReadyFired = HashSet<String>()
+    /**
+     * Files shown quietly, let in late or at restore ([showAllowed]): their sender isn't told, whenever the last piece
+     * lands. Memory only, for as long as the message is in the live chat.
+     */
+    private val quietFids = HashSet<String>()
     /** Files this phone sent (rebuilt on restore from my file messages): their pieces are mine to keep. */
     private val ownFids = HashSet<String>()
     /** Files of mine whose message came back from a friend ([rebuildMine]) and whose pieces are still coming back. */
@@ -187,6 +200,25 @@ class Router(
     /** Reactions that arrived before the message they belong to (links deliver in any order). */
     private val pendingReactions = LinkedHashMap<String, ArrayList<HeldReaction>>()
 
+    /** The group's admins and who may send (see Roles). */
+    val roles = Roles(group.airTag, me.keys)
+    /** Role ops whose chat line this chat already got, or chose not to make: never a second one ([roleLines]). Saved in "roles". */
+    private val noticed = LinkedHashSet<String>()
+    /** The last role set sent to each phone that didn't come round to it: node id -> ("<my digest>|<theirs>", when). Forgotten
+     *  once they agree, so a phone that comes back without its roles is told again. Memory only ([rolesSync]). */
+    private val rolesTold = HashMap<String, Pair<String, Long>>()
+    /** "roles" frames in flight: payload id -> the node id they went to. */
+    private val rolesPayloads = HashMap<Long, String>()
+    /**
+     * Group posts from others the rules don't let this phone show — yet: envelope id -> its file id ("" for a chat
+     * message). Carried and passed on like any envelope ([receive]); shown the moment a change lets them in, while
+     * still carried, never after ([showAllowed]). Saved ("held").
+     */
+    private val held = LinkedHashMap<String, String>()
+    private val heldFids = HashSet<String>()
+    /** More held posts are let in than one pass showed: the next tick shows more. */
+    private var showDue = false
+
     /** One of those: who, which emoji, when, and whether it was sealed for one person (see [reactionFits]). */
     private class HeldReaction(val origin: String, val emoji: String, val ts: Long, val isPrivate: Boolean)
 
@@ -214,10 +246,13 @@ class Router(
         val link = links.remove(linkId) ?: return
         // Payloads still in flight on a dead link will never be acked — forget them.
         fillPayloads.entries.removeAll { it.value == link.id }
+        // A role set that may not have got there is not one they were told: the next link hands it over again.
+        if (rolesPayloads.entries.removeAll { it.value == link.nodeId }) rolesTold.remove(link.nodeId)
         refreshDirect(); listener.onLog("link down $linkId"); listener.onChanged()
     }
 
     fun onPayloadSent(payloadId: Long) {
+        rolesPayloads.remove(payloadId)
         fillPayloads.remove(payloadId)?.let { linkId ->
             links[linkId]?.let { it.fillInFlight = maxOf(0, it.fillInFlight - 1); pumpFill(it) }
         }
@@ -228,11 +263,13 @@ class Router(
             if (m.from == me.id && m.status == Message.QUEUED) { m.status = Message.SENT; changed = true }
         }
         helloGone(ids)
-        if (changed) { touched(); listener.onChanged() }
+        if (changed) { noteUnseen(); touched(); listener.onChanged() }
     }
 
     fun onPayloadFailed(payloadId: Long) {
         pendingPayloads.remove(payloadId)
+        // A lost roles frame: they were not told after all, so their next inventory has the set sent again.
+        rolesPayloads.remove(payloadId)?.let { rolesTold.remove(it) }
         fillPayloads.remove(payloadId)?.let { linkId ->
             links[linkId]?.let { it.fillInFlight = maxOf(0, it.fillInFlight - 1); pumpFill(it) }
         }
@@ -279,6 +316,12 @@ class Router(
                 val n = frame.optInt("n", 1).coerceIn(1, MAX_INV_PARTS)
                 val i = frame.optInt("i", 0)
                 if (i !in 0 until n) return
+                if (i == 0) {
+                    // A phone that knows about admins says what role set it holds; a 2.4 phone says nothing.
+                    val rd = frame.optString("rd", "")
+                    link.rolesAware = ROLE_DIGEST.matches(rd)
+                    if (link.rolesAware == true) { markRolesAware(link); link.peerRd = rd; rolesSync(link) }
+                }
                 // A new round starts at part 0; a lost part must not let two rounds mix forever.
                 if (i == 0 || link.invN != n) { link.invN = n; link.invGot.clear(); link.invIds = HashSet() }
                 val ids = frame.optJSONArray("ids") ?: JSONArray()
@@ -309,6 +352,19 @@ class Router(
                 if (!link.authed) return
                 val e = frame.optJSONObject("e") ?: return
                 receive(link, Envelope(e), fill = false)
+            }
+            "roles" -> {
+                if (!link.authed) return   // before the handshake: ignored (and anything over MAX_FRAME_BEFORE_AUTH already dropped the link)
+                markRolesAware(link)
+                // A set may come in several frames: its ops wait here until the frame that ends it, then go in at once, so
+                // nothing — no line, no late post, no change of the composer — is decided by a state only part of it gave.
+                for (op in readOps(frame.optJSONArray("ops"), MAX_FRAME_OPS)) if (link.rolesIn.size < MAX_SET_IN) link.rolesIn.putIfAbsent(op.id, op)
+                // The last frame of a set says what the sender holds now: everyone else hears of the change once, after the whole set.
+                val rd = frame.optString("rd", "").takeIf { ROLE_DIGEST.matches(it) } ?: return
+                val ops = link.rolesIn.values.toList(); link.rolesIn.clear()
+                takeRoles(ops, live = true)
+                link.peerRd = rd
+                for (l in links.values.toList()) rolesSync(l)
             }
         }
     }
@@ -375,6 +431,7 @@ class Router(
         listener.onLog("dropping link ${link.id}: $why")
         links.remove(link.id)
         fillPayloads.entries.removeAll { it.value == link.id }
+        if (rolesPayloads.entries.removeAll { it.value == link.nodeId }) rolesTold.remove(link.nodeId)
         transport.disconnect(link.id)
         refreshDirect()
     }
@@ -400,7 +457,9 @@ class Router(
         }
         if (parts.size < MAX_INV_PARTS) parts.add(part)
         for ((p, ids) in parts.withIndex()) {
-            sendFrame(link, JSONObject().put("t", "inv").put("n", parts.size).put("i", p).put("ids", ids))
+            val f = JSONObject().put("t", "inv").put("n", parts.size).put("i", p).put("ids", ids)
+            if (p == 0) f.put("rd", roles.digest)          // 2.4 ignores it; an empty set has its own digest, never ""
+            sendFrame(link, f)
         }
     }
 
@@ -412,7 +471,7 @@ class Router(
         var changed = false
         for (m in messages) if (m.from == me.id && m.status == Message.QUEUED && m.id in theyHave) { m.status = Message.SENT; changed = true }
         helloGone(theyHave)
-        if (changed) { touched(); listener.onChanged() }
+        if (changed) { noteUnseen(); touched(); listener.onChanged() }
     }
 
     private fun fillGaps(link: Link, theyHave: Set<String>) {
@@ -444,7 +503,7 @@ class Router(
         // the radio confirms delivery — a phone with a 48h photo backlog must not dump it all
         // into one link-up.
         val queued = HashSet(link.fillQueue)
-        for (id in chunks.ids()) if (id !in theyHave && id !in queued) link.fillQueue.addLast(id)
+        for (id in chunks.ids()) if (id !in theyHave && id !in queued && !unsentPiece(id)) link.fillQueue.addLast(id)
         pumpFill(link)
         if (link.fillQueue.isNotEmpty() || link.fillInFlight > 0) sent += link.fillQueue.size + link.fillInFlight
         if (sent > 0) listener.onLog("filling $sent for ${link.id}")
@@ -455,6 +514,7 @@ class Router(
         while (link.fillInFlight < FILL_WINDOW && link.fillQueue.isNotEmpty()) {
             val id = link.fillQueue.removeFirst()
             val env = chunks.get(id) ?: continue
+            if (unsentPiece(id)) continue
             // Only a piece in today's sealed form goes on the air (an older version's pieces on disk were plain).
             if (!wellFormed(env, env.bytes().size)) continue
             val copy = env.copy()   // backlog hand-off, not a routing hop — don't spend the hop budget
@@ -463,6 +523,59 @@ class Router(
             link.fillInFlight++
             fillPayloads[pid] = link.id
         }
+    }
+
+    /** A piece of a file of mine whose message never left this phone and isn't carried any more (withdrawn, or let go): nobody could ever put it together. */
+    private fun unsentPiece(id: String): Boolean {
+        val fid = pieceOf(id, me.id)?.first ?: return false
+        val m = filesByFid[fid] ?: return false
+        return m.from == me.id && m.status == Message.QUEUED && !carry.containsKey(m.id)
+    }
+
+    /**
+     * Hand [link] my whole role set when its digest differs from mine — once per (mine, theirs) pair per phone, and the
+     * same pair again only after [ROLES_AGAIN_MS]; a phone that holds nothing every time it says so. Asked at part 0 of
+     * every inventory, and after a set arrived in whole; never after a change of mine or a carrier, which flood by themselves.
+     */
+    private fun rolesSync(link: Link) {
+        if (!link.authed || roles.isEmpty) return
+        val theirs = link.peerRd ?: return                       // a 2.4 phone, or nothing heard yet
+        val mine = roles.digest
+        // In step: forget what they were told, so a phone that comes back without its roles (deleted and joined again,
+        // its state set aside or unreadable) is handed them again.
+        if (theirs == mine) { rolesTold.remove(link.nodeId); return }
+        val pair = "$mine|$theirs"
+        val told = rolesTold[link.nodeId]; val now = clock()
+        // Sent them exactly this lately, and they still hold the same — unless they hold nothing: an honest phone always
+        // takes a set, so one that says it has none again lost it (gone, or its state with it, before it said it agreed).
+        if (theirs != Roles.EMPTY_DIGEST && told != null && told.first == pair && now - told.second in 0 until ROLES_AGAIN_MS) return
+        rolesTold[link.nodeId] = pair to now
+        sendRoles(link)
+    }
+
+    /** The whole set, the founder first and then fold order, in frames of at most [ROLES_FRAME_BYTES]; the last one says what it adds up to ("rd"). */
+    private fun sendRoles(link: Link) {
+        val all = roles.wire()
+        var batch = JSONArray(); var size = 60                   // {"t":"roles","ops":[],"rd":"<22>"}
+        fun flush(last: Boolean) {
+            val f = JSONObject().put("t", "roles").put("ops", batch)
+            if (last) f.put("rd", roles.digest)
+            val pid = sendFrame(link, f)
+            if (pid >= 0) rolesPayloads[pid] = link.nodeId else rolesTold.remove(link.nodeId)   // refused: it never left, so they weren't told
+            batch = JSONArray(); size = 60
+        }
+        for ((i, op) in all.withIndex()) {
+            val j = op.toJson(); val n = j.toString().length + 1
+            if (size + n > ROLES_FRAME_BYTES && batch.length() > 0) flush(last = false)
+            batch.put(j); size += n
+            if (i == all.size - 1) flush(last = true)
+        }
+    }
+
+    /** [link]'s phone showed it knows about admins: remembered for the person too, whoever relays them later. */
+    private fun markRolesAware(link: Link) {
+        link.rolesAware = true
+        people[link.nodeId]?.let { if (!it.rolesAware) { it.rolesAware = true; touched() } }
     }
 
     // ---------------------------------------------------------------- receiving
@@ -676,7 +789,7 @@ class Router(
         putCarry(env, minOf(env.ts, now), size)
         if (!mine) return
         val m = messageById[id] ?: return rebuildMine(env)
-        if (m.from == me.id && m.status == Message.QUEUED) { m.status = Message.SENT; listener.onChanged() }
+        if (m.from == me.id && m.status == Message.QUEUED) { m.status = Message.SENT; noteUnseen(); listener.onChanged() }
     }
 
     /** See [carryAgain]: a group message or photo of mine, back from a friend, with no line here. Not notified. */
@@ -686,6 +799,7 @@ class Router(
         if (id in hidden || id in spilled || id in overflowIds) return
         val p = open(env) ?: return
         val m = if (env.kind == Envelope.CHAT) {
+            if (p.has("ro")) { takeRoles(readOps(p.optJSONArray("ro"), MAX_CARRIER_OPS), live = true); return }   // my carrier back: my ops, never a bubble
             // A rename, a goodbye or a hello of mine is no bubble: the chat already says it its own way.
             if (p.has("gn") || p.has("mb")) return
             Message(id, Envelope.CHAT, me.id, Names.clean(env.originName), null, p.optString("text").take(MAX_TEXT), env.ts,
@@ -699,6 +813,7 @@ class Router(
         m.status = Message.SENT
         if (addMessage(m) == null) return
         m.att?.let { ownFids.add(it.fid); filesByFid.putIfAbsent(it.fid, m); rebuiltFiles.add(it.fid); mineBack(it.fid) }
+        noteUnseen()
         listener.onLog("a message of mine came back and is in the chat again")
         listener.onChanged()
     }
@@ -786,6 +901,7 @@ class Router(
     /** ...and out through here. */
     private fun dropCarry(id: String) {
         if (carry.remove(id) == null) return
+        unhold(id)
         carryBorn.remove(id)
         carryBytes -= carrySizes.remove(id) ?: 0
     }
@@ -830,7 +946,10 @@ class Router(
         return att
     }
 
-    private fun process(env: Envelope, p: JSONObject) {
+    /** How a group post is being shown: as it arrives; late, because a change let it in (no receipt, no notification); or at restore (nothing on the air, no onMessage). */
+    private enum class Shown { LIVE, LATE, RESTORED }
+
+    private fun process(env: Envelope, p: JSONObject, how: Shown = Shown.LIVE) {
         val fromName = Names.clean(env.originName)
         when (env.kind) {
             Envelope.CHAT -> {
@@ -838,9 +957,14 @@ class Router(
                 if (renamed.isNotEmpty()) { applyRename(env, p, renamed, fromName); return }
                 // A goodbye or a hello is a line about the group, not a message: no receipt, no notification.
                 if (p.has("mb")) { applyMembership(env, p, fromName); return }
+                // A change of admins: its ops count (they check themselves); it is never a bubble, a receipt or a notification.
+                if (p.has("ro")) { takeRoles(readOps(p.optJSONArray("ro"), MAX_CARRIER_OPS), live = true); return }
+                // Written while only admins could send, by someone who isn't one: kept for the others, not shown here.
+                if (!roles.maySend(env.origin, env.ts)) { hold(env, ""); return }
                 val m = addMessage(Message(env.id, Envelope.CHAT, env.origin, fromName, null, p.optString("text").take(MAX_TEXT), env.ts,
                     loc = Loc.fromJson(p.optJSONObject("loc")), quote = Quote.fromJson(p.optJSONObject("re")),
                     mentions = Message.mentionsFromJson(p.optJSONArray("mn"))).also { it.arrivedAt = clock() }) ?: return
+                if (how != Shown.LIVE) return
                 // In a small group every phone confirms receipt ("reached 7 of 9"). In a crowd of
                 // hundreds that would be an N-squared flood, so big groups skip chat receipts.
                 if (activePeople() < RECEIPT_GROUP_LIMIT) sendReceipt(env.id, env.origin)
@@ -863,16 +987,22 @@ class Router(
             }
             Envelope.FILE -> {
                 val att = attachmentOf(env, p) ?: return
-                // One file, one message: a second message naming the same file is not shown.
-                if (filesByFid[att.fid]?.let { it.id != env.id } == true) { listener.onLog("a second message for one file dropped"); return }
+                // One file, one message (held ones too): a second message naming the same file is not shown.
+                if (filesByFid[att.fid]?.let { it.id != env.id } == true || (env.to == null && att.fid in heldFids && held[env.id] != att.fid)) {
+                    listener.onLog("a second message for one file dropped"); return
+                }
+                if (env.to == null && !roles.maySend(env.origin, env.ts)) { hold(env, att.fid); return }
                 val to = if (env.to != null) me.id else null
                 val m = Message(env.id, Envelope.FILE, env.origin, fromName, to, p.optString("text").take(MAX_CAPTION), env.ts, att,
                     quote = Quote.fromJson(p.optJSONObject("re")), mentions = Message.mentionsFromJson(p.optJSONArray("mn")))
                 m.arrivedAt = clock()
                 if (addMessage(m) == null) return
                 filesByFid[att.fid] = m
-                checkFileReady(att.fid)
-                listener.onMessage(m)
+                when (how) {
+                    Shown.LIVE -> { checkFileReady(att.fid); listener.onMessage(m) }
+                    Shown.LATE -> { quietFids.add(att.fid); checkFileReady(att.fid) }
+                    Shown.RESTORED -> quietFids.add(att.fid)     // Core.finishInterruptedFiles assembles what is complete
+                }
             }
             Envelope.REACT -> applyReactionEnvelope(env, p, live = true)
             Envelope.RECEIPT -> {
@@ -884,7 +1014,7 @@ class Router(
                 val by = env.origin
                 if (!m.reached.add(by) && m.status != Message.QUEUED) return
                 if (m.to != null && by == m.to) m.status = Message.DELIVERED
-                else if (m.status == Message.QUEUED) m.status = Message.SENT
+                else if (m.status == Message.QUEUED) { m.status = Message.SENT; noteUnseen() }
                 touched()
                 listener.onChanged()
             }
@@ -896,6 +1026,8 @@ class Router(
                 person.battery = p.optInt("bat", -1).coerceIn(-1, 100)
                 person.ev = p.optInt("ev", 0).coerceIn(0, 99)
                 person.cap = if (person.ev >= Errand.EV) p.optInt("cap", 0) and CAP_MASK else 0
+                // Their phone knows about admins, however many phones away it is. Never unlearned: an older beacon isn't read at all.
+                if (p.optInt("ra", 0) == 1 && !person.rolesAware) { person.rolesAware = true; touched() }
                 // Live location rides presence: present while they share, gone the beacon after they stop.
                 // Only ever move forward — floods can replay an older beacon after a newer one — but
                 // clamp the clock so a forged far-future beacon can't pin a position for hours.
@@ -1149,11 +1281,14 @@ class Router(
         else -> false
     }
 
-    /** An id of mine for [what] at [epoch]: the same every time it is asked for, and like [newId] mine alone. */
-    private fun ownId(what: String, epoch: Long): String {
-        val h = Crypto.sha256("hopline/v5/$what/${me.id}/$epoch")
-        return "${me.id}." + String(CharArray(10) { Crypto.ALPHABET[h[it].toInt() and 31] })
+    /** An id in [owner]'s space for [what] at [key]: the same on every phone that asks, and only [owner] can sign under it. */
+    private fun idIn(owner: String, what: String, key: String): String {
+        val h = Crypto.sha256("hopline/v5/$what/$owner/$key")
+        return "$owner." + String(CharArray(10) { Crypto.ALPHABET[h[it].toInt() and 31] })
     }
+
+    /** An id of mine for [what] at [epoch]: the same every time it is asked for, and like [newId] mine alone. */
+    private fun ownId(what: String, epoch: Long): String = idIn(me.id, what, epoch.toString())
 
     /**
      * Someone's goodbye or hello. The chat gets its line whenever it arrives — it is history, like
@@ -1191,6 +1326,320 @@ class Router(
         return true
     }
 
+    // ---------------------------------------------------------------- admins
+
+    /** Is [id] one of the group's admins (the founder always is)? A set lookup, cheap enough for a sort. */
+    fun isAdmin(id: String): Boolean = roles.isAdmin(id)
+    /** The founder first, then in the order each one last became an admin. */
+    fun admins(): List<String> = roles.admins
+    /** Who started the group, as far as this phone knows; null while nobody is known to have. */
+    fun founder(): String? = roles.founder
+    /** Only admins may send group messages now. */
+    fun onlyAdminsSend(): Boolean = roles.onlyAdmins
+
+    /**
+     * May this phone post in the group chat now? Everyone may, unless only admins may send and this phone isn't
+     * one (as far as it knows). Private chats, reactions, receipts, goodbyes, hellos, renames and internet requests never ask.
+     */
+    fun mayPost(): Boolean = roles.allowedFrom(me.id) != null
+
+    /**
+     * The stamp a group post of mine gets ([now] = clock()), or null when I may not post. The clock whenever the rules
+     * allow me at it — byte for byte today's stamp. Only when my clock falls in a spell that bars me (it runs behind
+     * the change that lets me post, or that change's phone runs ahead) is the post stamped just after that change,
+     * and after my own newest post stamped so: every phone that holds the change shows it, in the order I wrote.
+     */
+    private fun postStamp(now: Long): Long? {
+        val from = roles.allowedFrom(me.id) ?: return null
+        if (roles.maySend(me.id, now)) return now
+        var newest = from
+        for (e in carry.values) if (e.origin == me.id && e.to == null && (e.kind == Envelope.CHAT || e.kind == Envelope.FILE)) newest = maxOf(newest, e.ts)
+        return newest + 1
+    }
+
+    /** A group post of mine that the rules, as this phone knows them, say nobody may show. */
+    fun postBarred(m: Message): Boolean = m.from == me.id && m.isGroup && m.isPersonal && roles.barredSince(me.id, m.ts) != null
+
+    /** Make [id] a group admin: something only an admin can do, for someone still in the group. */
+    fun grantAdmin(id: String): RoleChange = grantOp(id, CARRIER_SET_BYTES)
+
+    /** [grantAdmin], with a carrier that embeds at most [budget] bytes of the set. */
+    private fun grantOp(id: String, budget: Int): RoleChange {
+        if (!roles.isAdmin(me.id)) return RoleChange.NOT_ADMIN
+        if (roles.isAdmin(id)) return RoleChange.UNCHANGED
+        val p = people[id]
+        if (!Crypto.isNodeId(id) || p == null || p.left) return RoleChange.NOT_MEMBER
+        if (roles.full(me.id)) return RoleChange.FULL
+        val op = roles.grant(id, clock()) ?: return RoleChange.FULL
+        publish(op, budget); return RoleChange.DONE
+    }
+
+    /** Dismiss [id] as admin: any admin but the one who started the group, by any admin. */
+    fun dismissAdmin(id: String): RoleChange {
+        if (!roles.isAdmin(me.id)) return RoleChange.NOT_ADMIN
+        if (id == roles.founder) return RoleChange.CREATOR
+        if (!roles.isAdmin(id)) return RoleChange.UNCHANGED          // a left admin can be dismissed: no member check
+        if (roles.full(me.id)) return RoleChange.FULL
+        val op = roles.revoke(id, restrictStamp()) ?: return RoleChange.FULL
+        publish(op); return RoleChange.DONE
+    }
+
+    /** Let only admins send group messages ([on]), or everyone again. */
+    fun setOnlyAdmins(on: Boolean): RoleChange {
+        if (!roles.isAdmin(me.id)) return RoleChange.NOT_ADMIN
+        if (roles.onlyAdmins == on) return RoleChange.UNCHANGED
+        if (roles.full(me.id)) return RoleChange.FULL
+        val op = roles.setOnlyAdmins(on, if (on) restrictStamp() else clock()) ?: return RoleChange.FULL
+        publish(op); return RoleChange.DONE
+    }
+
+    /**
+     * When a change that bars someone takes effect: now — but never before the newest group post this phone
+     * shows, so a phone whose clock runs behind can't bar what it has already seen (and never more than
+     * [FUTURE_SLACK_MS] ahead of this phone's clock: a post from a fast clock can't push it far).
+     */
+    private fun restrictStamp(): Long {
+        val now = clock()
+        var newest = Long.MIN_VALUE
+        for (m in messages) if (m.isGroup && m.isPersonal) newest = maxOf(newest, m.ts)
+        return (if (newest == Long.MIN_VALUE) now else maxOf(now, newest + 1)).coerceAtMost(now + FUTURE_SLACK_MS)
+    }
+
+    /** One op of mine was just made: its carrier goes out on every link, and everything the roles decide is looked at again. */
+    private fun publish(op: RoleOp, budget: Int = CARRIER_SET_BYTES) {
+        originate(roleCarrier(op, budget))
+        rolesChanged(live = true)
+    }
+
+    /**
+     * Say this phone founded the group — once: nothing if an op of mine already is the founder. Stamped with
+     * the moment the group was saved here, which never changes, so saying it again (a state set aside) is the
+     * very same op. Goes on no envelope of its own: it changes nothing anyone sees, and travels with the
+     * group's role set (inventory digest, roles frames, every later change's carrier).
+     */
+    fun foundIfDue(sure: Boolean, ts: Long) {
+        if (roles.foundedBy(me.id)) return
+        roles.found(sure, ts) ?: return
+        rolesChanged(live = false)
+    }
+
+    /** Admins who can run the group now, as far as this phone knows: me, and any other heard from in the last two days who
+     *  hasn't left and has shown it knows about admins — by a beacon ("ra") or a link, over any number of hops. */
+    fun presentAdmins(): List<String> {
+        val now = clock()
+        return roles.admins.filter { id -> id == me.id ||
+            (people[id]?.let { !it.left && now - it.lastSeen < CARRY_MS && it.rolesAware } == true && !olderPhone(id)) }
+    }
+
+    /** I'm an admin, and no other admin who can run the group is around. */
+    fun soleAdmin(): Boolean = roles.isAdmin(me.id) && presentAdmins().all { it == me.id }
+
+    /** On an older Hopline, as far as this phone can tell: a beacon of theirs heard since this app started ([Person.ev]) never
+     *  said it knows about admins, or a link with them right now showed it doesn't. */
+    fun olderPhone(id: String): Boolean =
+        people[id]?.let { !it.rolesAware && it.ev > 0 } == true || links.values.any { it.authed && it.nodeId == id && it.rolesAware == false }
+
+    /** The links admin could be handed to on leaving: phones that showed they know about admins, aren't admins, and haven't left. */
+    private fun heirs(): List<Link> = authedLinks().filter { it.rolesAware == true && !roles.isAdmin(it.nodeId) && people[it.nodeId]?.left != true }
+
+    /** Who gets admin when I leave as the only admin around: the phone linked here longest that knows about admins and isn't one; ties by id. */
+    fun handoverPick(): String? = if (!soleAdmin()) null else heirs().minWithOrNull(compareBy<Link>({ it.since }, { it.nodeId }))?.nodeId
+
+    /**
+     * On the way out: [heir] (the one the question named) if it can still take it, else whoever the pick is now. The id
+     * made admin, or null. The carrier is the small one (pin + op): an heir that knows about admins holds the rest.
+     */
+    fun handOver(heir: String?): String? {
+        if (!soleAdmin()) return null
+        val id = heir?.takeIf { h -> heirs().any { it.nodeId == h } } ?: handoverPick() ?: return null
+        return id.takeIf { grantOp(it, budget = 0) == RoleChange.DONE }
+    }
+
+    /** The id of [op]'s carrier: any phone can work it out, so a 2.4-era bubble of it is found by id ([roleLines]). */
+    private fun carrierIdOf(op: RoleOp): String = idIn(op.author, "role-carrier", op.id)
+
+    /**
+     * [op] as a group message every phone carries for its 48 h: a phone with admins takes its ops, never a bubble;
+     * a 2.4 phone shows its words. It embeds the whole set while that fits [budget] bytes, else what lets a phone
+     * reached only through 2.4 phones check it (Roles.carrierOps), and never outgrows the radio.
+     */
+    private fun roleCarrier(op: RoleOp, budget: Int): Envelope {
+        fun build(ops: List<RoleOp>): Envelope = newEnvelope(Envelope.CHAT,
+            JSONObject().put("text", roleText(op)).put("ro", JSONArray(ops.map { it.toJson() })), ts = op.ts, id = carrierIdOf(op))
+        val env = build(roles.carrierOps(op, budget))
+        return if (env.bytes().size <= MAX_ENVELOPE_OUT) env else build(roles.carrierOps(op, 0))   // pin + op: always fits
+    }
+
+    /** What a 2.4 phone shows for [op], under its author's name: every one starts with [ROLE_MARK]. */
+    private fun roleText(op: RoleOp): String {
+        fun name(x: String?) = x?.let { Names.clean(people[it]?.name) }.orEmpty().ifEmpty { "someone" }
+        return ROLE_MARK + when (op.type) {
+            RoleOp.GRANT -> "made ${name(op.target)} a group admin"
+            RoleOp.REVOKE -> if (op.target == op.author) "stepped down as group admin" else "dismissed ${name(op.target)} as group admin"
+            RoleOp.SET -> if (op.value == RoleOp.ADMINS) ADMINS_ONLY_WORDS else "allowed everyone to send messages"
+            else -> "changed the group's admin settings"
+        }
+    }
+
+    /** Ops from a carrier or a frame: well-formed and new here, at most [max]. Not checked yet — Roles checks an op only once it counts for something. */
+    private fun readOps(a: JSONArray?, max: Int): List<RoleOp> {
+        if (a == null) return emptyList()
+        val out = ArrayList<RoleOp>()
+        for (i in 0 until minOf(a.length(), max)) {
+            val op = (a.opt(i) as? JSONObject)?.let { RoleOp.parse(it) }
+            if (op == null) { listener.onLog("malformed role op dropped"); continue }
+            if (!roles.knows(op.id)) out.add(op)
+        }
+        return out
+    }
+
+    /** Merge ops that arrived. [live]: not a restore. Never throws: a merge that fails leaves the roles as they were. */
+    private fun takeRoles(ops: List<RoleOp>, live: Boolean) {
+        if (ops.isEmpty()) return
+        val c = try { roles.accept(ops) } catch (e: Exception) { listener.onLog("role ops not taken in (${e.javaClass.simpleName})"); return }
+        if (c == Roles.Change.NONE) return
+        touched()
+        if (c == Roles.Change.FOLD) rolesChanged(live)
+    }
+
+    /**
+     * Who is an admin, or who may send, changed (an op arrived, or I made one): the chat's lines, my posts still
+     * waiting to leave, the note under mine that others won't show, and the held posts the change lets in.
+     */
+    private fun rolesChanged(live: Boolean) {
+        roleLines()
+        withdrawBarred()
+        noteUnseen()
+        showAllowed(restoring = !live)
+        touched()
+        if (live) listener.onChanged()
+    }
+
+    /**
+     * The chat says what changed, once: for each op the roles tell (Roles.told — it holds from its own stamp) that is
+     * mine or from after I joined, one line; for my own sure founding, "You started this group". A line whose op no
+     * longer counts is taken back while it is in the live chat; history is never rewritten, and no message is touched.
+     * A 2.4-era bubble of the same change (its carrier's id) becomes the line; one deleted or filed here gets none.
+     */
+    private fun roleLines() {
+        val want = LinkedHashMap<String, RoleOp>()
+        roles.pin?.takeIf { it.sure && it.author == me.id }?.let { want[it.id] = it }
+        for (op in roles.told) if (op.author == me.id || op.ts >= joinedAt - LINE_SLACK_MS) want[op.id] = op
+        for (opId in noticed.toList()) {
+            if (opId in want) continue
+            val m = messageById["role.$opId"] ?: continue            // filed, deleted, or never made: left as it is
+            messages.remove(m); messageById.remove(m.id); noticed.remove(opId); touched()
+        }
+        for ((opId, op) in want) {
+            if (opId in noticed) continue
+            noticed.add(opId); touched()
+            val line = lineOf(op)
+            if (op.type == RoleOp.FOUND) { addMessage(line); continue }
+            val cid = carrierIdOf(op)
+            val bubble = messageById[cid]?.takeIf { it.kind == Envelope.CHAT && it.from == op.author }
+            when {
+                bubble != null -> {
+                    val at = messages.indexOf(bubble)
+                    if (at >= 0) { line.arrivedAt = bubble.arrivedAt; messages[at] = line; messageById.remove(cid); messageById[line.id] = line }
+                }
+                cid in hidden || cid in spilled || cid in overflowIds -> { }
+                else -> addMessage(line)
+            }
+        }
+    }
+
+    /** The chat line of [op]: who did it, to whom ([Message.text]: the target's id, or "admins"/"all"), at the op's own stamp. */
+    private fun lineOf(op: RoleOp): Message {
+        val kind = when (op.type) { RoleOp.FOUND -> Message.ROLE_STARTED; RoleOp.GRANT -> Message.ROLE_ADMIN; RoleOp.REVOKE -> Message.ROLE_DISMISSED; else -> Message.ROLE_SEND }
+        val text = when (op.type) { RoleOp.GRANT, RoleOp.REVOKE -> op.target.orEmpty(); RoleOp.SET -> op.value.orEmpty(); else -> "" }
+        val name = if (op.author == me.id) me.name else Names.clean(people[op.author]?.name)
+        return Message("role.${op.id}", kind, op.author, name, null, text, op.ts).also { it.arrivedAt = clock() }
+    }
+
+    /** A file held back here: its pieces are kept as a known file's, not a stranger's (Blobs). */
+    fun holdsFile(fid: String): Boolean = fid in heldFids
+
+    private fun hold(env: Envelope, fid: String) {
+        if (!carry.containsKey(env.id)) return
+        held[env.id] = fid; if (fid.isNotEmpty()) heldFids.add(fid)
+        pendingReactions.remove(env.id)
+        touched()
+        listener.onLog("a post only admins may send was kept for the others, not shown")
+    }
+
+    private fun unhold(id: String) { val f = held.remove(id) ?: return; if (f.isNotEmpty()) heldFids.remove(f) }
+
+    /**
+     * Held posts the rules now let in: shown, in their place, each once, only while carried — never the other way (a
+     * post already shown stays, whatever changes). At most [SHOW_BATCH] per pass; the tick shows the rest. A post stamped
+     * in the last two minutes (one that raced its grant) arrives as any post does; an older one quietly — no receipt,
+     * no notification, counted unread. [restoring]: nothing on the air and no onMessage.
+     */
+    private fun showAllowed(restoring: Boolean) {
+        showDue = false
+        if (held.isEmpty()) return
+        var done = 0
+        val shown = HashSet<String>()
+        for (id in held.keys.toList()) {
+            val env = carry[id]
+            if (env == null) { unhold(id); continue }
+            if (!roles.maySend(env.origin, env.ts)) continue
+            if (done == SHOW_BATCH) { showDue = true; break }
+            done++
+            unhold(id)
+            val p = try { open(env) } catch (e: Exception) { null } ?: continue
+            val how = when { restoring -> Shown.RESTORED; clock() - env.ts < FRESH_POST_MS -> Shown.LIVE; else -> Shown.LATE }
+            try { process(env, p, how) } catch (e: Exception) { listener.onLog("a post let in late couldn't be read") }
+            if (messageById.containsKey(id)) shown.add(id)
+        }
+        if (shown.isNotEmpty()) { repointReactions(shown); touched() }
+    }
+
+    /** Carried reactions put on their messages again — the restore loop, reused; [only] narrows it to these targets. */
+    private fun repointReactions(only: Set<String>? = null) {
+        for (e in carry.values) if (e.kind == Envelope.REACT) try {
+            open(e)?.let { p -> if (only == null || p.optString("m") in only) applyReactionEnvelope(e, p, live = false) }
+        } catch (ex: Exception) { }
+    }
+
+    /**
+     * Mine, still waiting to leave this phone, that the rules — as every phone with them judges it, at the post's
+     * own stamp — say nobody may show: taken off the air here, so they read "Not sent" with the reason (Ui.notSent).
+     * Never "barred now": a post written before the change took effect still goes.
+     */
+    private fun withdrawBarred() {
+        var n = 0
+        for (m in messages) {
+            if (m.from != me.id || m.status != Message.QUEUED || m.to != null || !m.isPersonal) continue
+            if (m.kind != Envelope.CHAT && m.kind != Envelope.FILE) continue
+            if (!carry.containsKey(m.id) || roles.maySend(me.id, m.ts)) continue
+            dropCarry(m.id); n++
+        }
+        if (n > 0) { touched(); listener.onLog("$n of my posts not sent: only admins may send") }
+    }
+
+    /**
+     * Posts of mine that already left this phone, sent while (as I know now) only admins could send: phones that knew
+     * it don't show them. One line under the newest of each such spell says so ("role.unseen.<spell start>"), made
+     * once; it goes if a later change lets those posts in. Looked at again whenever the rules change, whenever a
+     * post of mine reads sent (one withdrawn here may have got out after all), and whenever one is deleted here.
+     */
+    private fun noteUnseen() {
+        val newest = HashMap<Long, Message>()
+        for (m in messages) {
+            if (m.from != me.id || !m.isGroup || !m.isPersonal || m.status == Message.QUEUED) continue
+            val since = roles.barredSince(me.id, m.ts) ?: continue
+            if (newest[since]?.let { it.sortKey > m.sortKey } != true) newest[since] = m
+        }
+        for (line in messages.filter { it.kind == Message.ROLE_UNSEEN }) {
+            val since = line.id.removePrefix("role.unseen.").toLongOrNull()
+            val under = since?.let { newest[it] }
+            if (under == null || line.ts != under.ts + 1) { messages.remove(line); messageById.remove(line.id); touched() }
+        }
+        for ((since, m) in newest) addMessage(Message("role.unseen.$since", Message.ROLE_UNSEEN, me.id, me.name, null, "", m.ts + 1)
+            .also { it.arrivedAt = m.arrivedAt })
+    }
+
     // ---------------------------------------------------------------- reactions
 
     /** Shared by live receive and restore: point a reaction ([p], its opened payload) at its message, or hold it. */
@@ -1199,8 +1648,9 @@ class Router(
         val emoji = p.optString("e", "").take(Message.MAX_EMOJI)
         val m = messageById[target]
         if (m == null) {
-            // Deleted here, or filed in the history: that message is never coming (back) to wait for.
-            if (target in hidden || target in spilled || target in overflowIds) return
+            // Deleted here, or filed in the history: that message is never coming (back) to wait for. Nor
+            // is a post held back here: if a change lets it in, its reactions are picked up from the carry then.
+            if (target in hidden || target in spilled || target in overflowIds || target in held) return
             // The message may still be hopping toward us — hold the reaction for it, bounded.
             val list = pendingReactions.getOrPut(target) { ArrayList() }
             if (list.size < 40) list.add(HeldReaction(env.origin, emoji, env.ts, env.isPrivate))
@@ -1255,8 +1705,8 @@ class Router(
         if (!fileComplete(att)) return
         fileReadyFired.add(fid)
         // The truthful moment for a file's ✓ is "the whole thing is on their phone", so the
-        // receipt waits for the last piece, not the first.
-        if (m.to == me.id || activePeople() < RECEIPT_GROUP_LIMIT) sendReceipt(m.id, m.from)
+        // receipt waits for the last piece, not the first. One shown quietly gets none.
+        if (fid !in quietFids && (m.to == me.id || activePeople() < RECEIPT_GROUP_LIMIT)) sendReceipt(m.id, m.from)
         listener.onFileReady(m)
     }
 
@@ -1275,19 +1725,22 @@ class Router(
      * Every piece is stored before anything is announced, and only a piece the store really holds
      * counts: a message whose pieces nobody has could never be completed by anyone. Null — and
      * nothing sent — when a piece can't be kept (storage full), when [to] has no key here yet or
-     * left the group ([canMessage]), or when the file isn't one this phone made.
+     * left the group ([canMessage]), when the file isn't one this phone made, or when it is for the
+     * group and only admins may send there ([mayPost]).
      */
     fun sendFile(att: Attachment, pieces: List<String>, caption: String, to: String? = null, quote: Quote? = null,
                  mentions: List<String> = emptyList()): Message? {
         if (!Attachment.ownedBy(att.fid, me.id) || !Attachment.sealable(att) || att.chunks !in 1..MAX_CHUNKS) return null
         if (pieces.size != att.chunks || pieces.any { it.isEmpty() || it.length > MAX_PIECE_B64 }) return null
+        val now = clock()
+        val ts = if (to == null) postStamp(now) ?: return null else now
         val mn = if (to == null) mentions.take(Message.MAX_MENTIONS) else emptyList()
         val text = caption.take(MAX_CAPTION)
         fun meta(a: Attachment): Envelope? {
             val p = JSONObject().put("text", text).put("att", a.json)
             quote?.let { p.put("re", it.toJson()) }
             if (mn.isNotEmpty()) p.put("mn", JSONArray(mn))
-            return if (to == null) newEnvelope(Envelope.FILE, p) else newPrivate(Envelope.FILE, p, to)
+            return if (to == null) newEnvelope(Envelope.FILE, p, ts = ts) else newPrivate(Envelope.FILE, p, to, ts)
         }
         var shown = att
         var meta = meta(shown) ?: return null
@@ -1308,7 +1761,7 @@ class Router(
             return null
         }
         val m = Message(meta.id, Envelope.FILE, me.id, me.name, to, text, meta.ts, shown, quote = quote, mentions = mn)
-            .also { it.status = Message.QUEUED }
+            .also { it.status = Message.QUEUED; it.arrivedAt = now }
         addMessage(m)
         filesByFid[att.fid] = m
         fileReadyFired.add(att.fid)   // the original is already on this phone
@@ -1386,15 +1839,18 @@ class Router(
         forward(env, null)
     }
 
-    fun sendChat(text: String, quote: Quote? = null, mentions: List<String> = emptyList()): Message {
+    /** A message to the whole group. Null — and nothing sent — when only admins may send and this phone isn't one ([mayPost]). */
+    fun sendChat(text: String, quote: Quote? = null, mentions: List<String> = emptyList()): Message? {
+        val now = clock()
+        val ts = postStamp(now) ?: run { listener.onLog("only admins may send in this group: not sent"); return null }
         val mn = mentions.take(Message.MAX_MENTIONS)
         val t = text.take(MAX_TEXT)
         val p = JSONObject().put("text", t)
         quote?.let { p.put("re", it.toJson()) }
         if (mn.isNotEmpty()) p.put("mn", JSONArray(mn))
-        val env = newEnvelope(Envelope.CHAT, p)
+        val env = newEnvelope(Envelope.CHAT, p, ts = ts)
         val m = Message(env.id, Envelope.CHAT, me.id, me.name, null, t, env.ts, quote = quote, mentions = mn)
-            .also { it.status = Message.QUEUED }
+            .also { it.status = Message.QUEUED; it.arrivedAt = now }
         addMessage(m); originate(env); listener.onChanged()
         return m
     }
@@ -1433,14 +1889,16 @@ class Router(
     /**
      * Share a place. It rides a normal chat/DM envelope — tiny, so it works at any crowd size —
      * with a maps link in the text, which is also what a copy of it shows. Null when a private
-     * one can't be sealed ([sendDm]).
+     * one can't be sealed ([sendDm]), or a group one may not be sent ([mayPost]).
      */
     fun sendLocation(loc: Loc, to: String? = null): Message? {
+        val now = clock()
+        val ts = if (to == null) postStamp(now) ?: return null else now
         val text = loc.fallbackText()
         val kind = if (to == null) Envelope.CHAT else Envelope.DM
         val p = JSONObject().put("text", text).put("loc", loc.toJson())
-        val env = (if (to == null) newEnvelope(kind, p) else newPrivate(kind, p, to)) ?: return null
-        val m = Message(env.id, kind, me.id, me.name, to, text, env.ts, loc = loc).also { it.status = Message.QUEUED }
+        val env = (if (to == null) newEnvelope(kind, p, ts = ts) else newPrivate(kind, p, to, ts)) ?: return null
+        val m = Message(env.id, kind, me.id, me.name, to, text, env.ts, loc = loc).also { it.status = Message.QUEUED; it.arrivedAt = now }
         addMessage(m); originate(env); listener.onChanged()
         return m
     }
@@ -1473,9 +1931,10 @@ class Router(
 
     fun sendPresence() {
         // "net" keeps its 2.x meaning — "I can fetch for you" — so older askers route around a
-        // phone that is out of data budget or has sharing off.
+        // phone that is out of data budget or has sharing off. "ra": this phone knows about admins,
+        // which phones beyond other phones learn from nothing else (2.4 doesn't read it).
         val p = JSONObject().put("n", me.name).put("net", myCaps and Errand.CAP_READ != 0).put("bat", battery)
-            .put("gn", group.name).put("ev", Errand.EV).put("q", nextQ())
+            .put("gn", group.name).put("ev", Errand.EV).put("ra", 1).put("q", nextQ())
         if (myCaps != 0) p.put("cap", myCaps)
         if (group.nameAt > 0) { p.put("gt", group.nameAt); p.put("ga", (clock() - group.nameAt).coerceAtLeast(0L)) }
         if (group.nameV > 0) p.put("gv", group.nameV)
@@ -1498,10 +1957,14 @@ class Router(
             messages.remove(m)
             hidden[id] = now
             gone.add(m)
-            m.att?.let { filesByFid.remove(it.fid) }
+            m.att?.let { filesByFid.remove(it.fid); quietFids.remove(it.fid) }
             if (m.from == me.id && m.status == Message.QUEUED) dropCarry(id)
         }
-        if (gone.isNotEmpty()) { touched(); listener.onChanged() }
+        if (gone.isNotEmpty()) {
+            // A post of mine may have been the one a "phones that knew won't show it" line sat under: it moves up, or goes.
+            if (gone.any { it.from == me.id && it.isGroup && it.isPersonal }) noteUnseen()
+            touched(); listener.onChanged()
+        }
         return gone
     }
 
@@ -1939,6 +2402,9 @@ class Router(
                     summary = if (title.isEmpty()) text else "$title\n$text")
             } else { if (e.isOpen) e.status = Errand.DONE; stopWork(e) }
         }
+        // From someone who may not post in the group now: the request is answered all the same, but the
+        // chat gets no line (since 2.4 only a modified app sends these, so they aren't held for later).
+        if (!roles.maySend(env.origin, env.ts)) return
         // Two helpers raced on a 2.x request: one answer in the chat is enough.
         if (!firstAnswer && messages.any { it.errandId == eid }) return
         val m = addMessage(Message(env.id, Message.SYSTEM, env.origin, fromName, null,
@@ -2262,6 +2728,8 @@ class Router(
         pruneErrands()
         expire(now)
         refreshDirect()
+        // Held posts a change let in that the last pass had no room for.
+        if (showDue) showAllowed(restoring = false)
         listener.onChanged()
     }
 
@@ -2381,8 +2849,8 @@ class Router(
             if (overflow.isNotEmpty() && overflow[overflow.size - 1].sortKey > m.sortKey) inOrder = false
             overflow.add(m); overflowIds.add(m.id)
             messageById.remove(m.id)
-            // A file is found (and marked ready) through its live message; with that gone, neither holds.
-            m.att?.let { if (filesByFid[it.fid] === m) { filesByFid.remove(it.fid); fileReadyFired.remove(it.fid) } }
+            // A file is found (and marked ready, or quiet) through its live message; with that gone, none of it holds.
+            m.att?.let { if (filesByFid[it.fid] === m) { filesByFid.remove(it.fid); fileReadyFired.remove(it.fid); quietFids.remove(it.fid) } }
         }
         if (kept.size == n) return
         messages.clear(); messages.addAll(kept)
@@ -2526,6 +2994,11 @@ class Router(
         if (spilled.isNotEmpty()) put("spilled", JSONObject().also { s -> for ((id, t) in spilled) s.put(id, t) })
         put("shareInternet", shareInternet)
         if (group.nameV > 0) put("group", JSONObject().put("n", group.name).put("v", group.nameV))
+        if (!roles.isEmpty) put("roles", roles.toJson().also { r ->
+            val keep = noticed.filter { roles.knows(it) }
+            if (keep.isNotEmpty()) r.put("noticed", JSONArray(keep))
+        })
+        if (held.isNotEmpty()) put("held", JSONObject().also { h -> for ((id, f) in held) if (id in carry) h.put(id, f) })
         if (said.isNotEmpty()) put("said", JSONObject().put("k", said).put("at", saidAt).also { if (said == MB_JOINED && helloEpoch != 0L) it.put("e", helloEpoch) })
     }
 
@@ -2583,9 +3056,26 @@ class Router(
             for (i in 0 until a.length()) try { val p = Person.fromJson(a.getJSONObject(i)); if (p.id != me.id) people[p.id] = p }
             catch (e: Exception) { }
         }
+        // The group's roles before anything they judge: the reactions re-pointed below must know which posts are held.
+        try {
+            j.optJSONObject("roles")?.let { o ->
+                roles.restore(o)
+                o.optJSONArray("noticed")?.let { a -> for (i in 0 until a.length()) a.optString(i).takeIf { it.isNotEmpty() }?.let { noticed.add(it) } }
+            }
+            // Posts held back here: only others' group posts still carried — anything else in the list was never one.
+            j.optJSONObject("held")?.let { h -> for (id in h.keys()) {
+                val e = carry[id] ?: continue
+                if (e.origin == me.id || e.to != null || (e.kind != Envelope.CHAT && e.kind != Envelope.FILE)) continue
+                val f = h.optString(id, ""); held[id] = f; if (f.isNotEmpty()) heldFids.add(f)
+            } }
+        } catch (e: Exception) {
+            // One bad record never costs the chat: no roles here until any updated phone hands them back.
+            roles.clear(); noticed.clear(); held.clear(); heldFids.clear()
+            listener.onLog("saved roles couldn't be read; starting without them")
+        }
         // A reaction whose message hadn't arrived before the restart is still in carry — re-point
         // it so it lands the moment the message hops in (applyReaction dedupes ones already shown).
-        for (e in carry.values) if (e.kind == Envelope.REACT) try { open(e)?.let { applyReactionEnvelope(e, it, live = false) } } catch (ex: Exception) { }
+        repointReactions()
         // A goodbye or hello that came while this phone was on 2.4 was kept as a message, its words
         // and all, and its sender was never counted out (or back in). It becomes the line it is,
         // and counts, as it would have then — for as long as it is still carried.
@@ -2600,6 +3090,14 @@ class Router(
             val line = Message(e.id, kind, e.origin, old.fromName, null, "", old.ts).also { it.arrivedAt = old.arrivedAt }
             messages[at] = line; messageById[e.id] = line
             counts(e.origin, kind, p)
+        } catch (ex: Exception) { }
+        // A change of admins that came while this phone was on 2.4 was kept as a message, its words and all. While
+        // its envelope is still carried its ops count now; roleLines (below) puts its line in the bubble's place.
+        // Only a message starting with ROLE_MARK is opened, as the conversion above opens only the exact BYE/HELLO words.
+        for (e in carry.values) if (e.kind == Envelope.CHAT && e.origin != me.id && e.to == null) try {
+            messageById[e.id]?.takeIf { it.kind == Envelope.CHAT && it.text.startsWith(ROLE_MARK) } ?: continue
+            val p = open(e)?.takeIf { it.has("ro") } ?: continue
+            roles.accept(readOps(p.optJSONArray("ro"), MAX_CARRIER_OPS))
         } catch (ex: Exception) { }
         // Saved ahead of anything sent before (see [qSaved]): the next counter is above all of them.
         lastQ = maxOf(lastQ, j.optLong("lastQ", 0))
@@ -2643,6 +3141,8 @@ class Router(
             saidAt = if (said.isEmpty()) 0L else s.optLong("at", 0)
             helloEpoch = if (said == MB_JOINED) s.optLong("e", 0) else 0L
         }
+        // The chat as the roles have it: lines, and the bubbles of 2.4-era changes made lines. Nothing on the air, nothing notified.
+        try { rolesChanged(live = false) } catch (e: Exception) { listener.onLog("roles couldn't be applied to the chat (${e.javaClass.simpleName})") }
         dirty = false
     }
 
@@ -2731,6 +3231,28 @@ class Router(
         const val HELLO_TEXT = "👋 joined the group"
         /** Requests a goodbye lists as given back, at most: a phone runs a handful at a time. */
         const val MAX_DECLINED = 20
+        /** One roles frame, like a fill batch: under the radio payload. */
+        const val ROLES_FRAME_BYTES = 24_000
+        /** Ops read from one roles frame. */
+        const val MAX_FRAME_OPS = 128
+        /** Ops of one set waiting for its last frame, per link (512 stored + the founder's, and room). */
+        const val MAX_SET_IN = 640
+        /** The same set to the same phone that still differs: again only after this. */
+        const val ROLES_AGAIN_MS = 10 * 60_000L
+        /** Ops read from one carrier. */
+        const val MAX_CARRIER_OPS = 80
+        /** The whole set rides a carrier up to this; the sealed envelope stays ≈ 20.8 KB. */
+        const val CARRIER_SET_BYTES = 15_000
+        /** A change this close before joining still gets its line. */
+        const val LINE_SLACK_MS = 120_000L
+        /** Every carrier's words start with it: how a 2.4-era bubble of one is known on upgrade. */
+        const val ROLE_MARK = "👑 "
+        /** What a 2.4 phone shows, after [ROLE_MARK], when only admins may send: what its owner's posts will do from now on. */
+        const val ADMINS_ONLY_WORDS = "allowed only admins to send messages. Phones with the latest Hopline won't show group messages from anyone else; private chats still work."
+        /** Held posts a change lets in, shown in one pass at most: the tick shows the rest. */
+        const val SHOW_BATCH = 200
+        /** A held post let in within this of its stamp arrives as any post does (receipt, notification); an older one quietly. */
+        const val FRESH_POST_MS = 120_000L
         /** Two renames' times closer than this are a dead heat (settled by the name). */
         const val SAME_TIME_MS = 10_000L
         /** Renames counted, at most (a crafted huge count could otherwise freeze the name). */
@@ -2813,6 +3335,8 @@ class Router(
         const val MAX_MY_ERRANDS = 60
 
         private val ENVELOPE_ID = Regex("^[A-Za-z0-9._-]{1,64}$")
+        /** A role set's digest, as an inventory or the last roles frame says it. */
+        private val ROLE_DIGEST = Regex("^[A-Za-z0-9_-]{22}$")
         /** A message id a receipt or a reaction can name. */
         private val MESSAGE_ID = Regex("^[A-Za-z0-9._-]+$")
         private const val MAX_MESSAGE_ID = 40

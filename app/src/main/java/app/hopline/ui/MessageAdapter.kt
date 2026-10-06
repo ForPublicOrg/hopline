@@ -153,6 +153,11 @@ class MessageAdapter(
                 dividerDue = false; prev = null
             }
             if (m.isNotice) {
+                // A line about the group's admins, worded for this phone — or not shown at all, never as a rename.
+                if (m.isRole) {
+                    Ui.roleLine(ctx, router, m) { id, fb -> nameFor(id, fb) }?.let { rows.add(Row.Chip(m.id, it, CHIP_NOTICE)) }
+                    prev = null; continue
+                }
                 // Only a rename is worded "… renamed the group to …". This phone's own "left" /
                 // "rejoined" notes carry no name, and must never be dressed up as a rename.
                 val label = when {

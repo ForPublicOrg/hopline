@@ -274,11 +274,13 @@ class ReaderActivity : AppCompatActivity() {
         b.copy.isVisible = hasText
         val more = e.status == Errand.DONE && e.type == Errand.READ && e.part < e.parts
         val again = !e.isOpen && e.status != Errand.DONE
+        // Only admins may send in the group now, and this phone isn't one: Copy stays, sharing to the group goes.
+        val canShare = Core.mayPost()
         when {
             more -> {
                 b.primary.text = getString(R.string.net_reader_more, e.part + 1, e.parts)
                 b.primary.setOnClickListener { readMore(e.id) }
-                b.share.isVisible = hasText
+                b.share.isVisible = hasText && canShare
             }
             again -> {
                 b.primary.text = getString(R.string.net_ask_again)
@@ -286,13 +288,15 @@ class ReaderActivity : AppCompatActivity() {
                 b.share.isVisible = false
             }
             hasText -> {
-                b.primary.text = getString(R.string.net_reader_share)
-                b.primary.setOnClickListener { confirmShare() }
+                if (canShare) {
+                    b.primary.text = getString(R.string.net_reader_share)
+                    b.primary.setOnClickListener { confirmShare() }
+                }
                 b.share.isVisible = false
             }
             else -> b.bar.isVisible = false
         }
-        b.primary.isVisible = more || again || hasText
+        b.primary.isVisible = more || again || (hasText && canShare)
     }
 
     // ------------------------------------------------------------------ actions
@@ -318,6 +322,7 @@ class ReaderActivity : AppCompatActivity() {
 
     /** Posts a normal chat message every version can read — after the person says yes. */
     private fun confirmShare() {
+        if (!Core.mayPost()) { Snackbar.make(b.root, R.string.chat_admins_only_not_sent, Snackbar.LENGTH_LONG).show(); return }
         val (r, e) = currentErrand() ?: return
         val message = shareMessage(r, e)
         if (!alive()) return
@@ -327,7 +332,10 @@ class ReaderActivity : AppCompatActivity() {
             .setMessage(message.take(SHARE_PREVIEW) + if (message.length > SHARE_PREVIEW) "…" else "")
             .setPositiveButton(R.string.net_reader_share) { _, _ ->
                 if (Core.router !== r) return@setPositiveButton   // switched groups meanwhile
-                r.sendChat(message.take(Router.MAX_TEXT))
+                // Only admins came to be able to send while the question stood: nothing went.
+                if (r.sendChat(message.take(Router.MAX_TEXT)) == null) {
+                    Snackbar.make(b.root, R.string.chat_admins_only_not_sent, Snackbar.LENGTH_LONG).show(); return@setPositiveButton
+                }
                 Core.saveNow()
                 Core.changed()
                 NetText.confirmHaptic(b.root)

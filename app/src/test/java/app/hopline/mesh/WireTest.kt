@@ -88,7 +88,7 @@ class WireTest {
     @Test fun `a member cannot forge another member's chat, receipt, reaction, presence, piece or file`() {
         val net = FakeNet(); net.line("A", "B", "M")
         val a = net.nodes["A"]!!.router; val b = net.nodes["B"]!!
-        val mine = net.nodes["B"]!!.router.sendChat("did everyone get this?"); net.pump()
+        val mine = net.nodes["B"]!!.router.sendChat("did everyone get this?")!!; net.pump()
         val toM = net.nodes["B"]!!.router.sendDm(net.id("M"), "just for M")!!; net.pump()
         val shownBefore = b.rec.shown.size
         val (att, pieces) = FakeNet.makeFile(a, ByteArray(5_000) { it.toByte() })
@@ -124,7 +124,7 @@ class WireTest {
         // A isn't in range yet: M gets there first
         val net = FakeNet(); net.node("A"); net.line("B", "M")
         val a = net.nodes["A"]!!.router; val b = net.nodes["B"]!!.router
-        val asked = b.sendChat("who has it?"); net.pump()
+        val asked = b.sendChat("who has it?")!!; net.pump()
         // M signs with its own key, honestly as itself — but takes ids that are A's to make
         val chatId = FakeNet.newId("A")
         val receiptId = "r.${asked.id}.${net.id("A")}"
@@ -156,7 +156,7 @@ class WireTest {
         val tag = FakeNet.group().airTag
         val a = net.id("A"); val bId = net.id("B")
         val asked = b.router.requestErrand(Errand.READ, JSONObject().put("url", "https://example.org")); net.pump()
-        val mine = b.router.sendChat("did everyone get this?"); net.pump()
+        val mine = b.router.sendChat("did everyone get this?")!!; net.pump()
         val (att, pieces) = FakeNet.makeFile(net.nodes["A"]!!.router, ByteArray(5_000) { it.toByte() })
         val chat = FakeNet.envelope("A", Envelope.CHAT, JSONObject().put("text", "A's own words"), net.now)
         val receipt = FakeNet.envelope("A", Envelope.RECEIPT, JSONObject().put("m", mine.id).put("by", a), net.now, id = "r.${mine.id}.$a", to = bId)
@@ -208,7 +208,7 @@ class WireTest {
         // C asked the group for something: B carries the request, open
         val theirs = net.nodes["C"]!!.router.requestErrand(Errand.READ, JSONObject().put("url", "https://example.org")); net.pump()
         assertTrue(b.router.errands[theirs.id]!!.isOpen)
-        val mine = b.router.sendChat("hello"); net.pump()
+        val mine = b.router.sendChat("hello")!!; net.pump()
         val (att, pieces) = FakeNet.makeFile(net.nodes["A"]!!.router, ByteArray(2_000) { 1 })
         // A's envelopes as A's phone makes them, not sent yet
         val chat = FakeNet.envelope("A", Envelope.CHAT, JSONObject().put("text", "plain words"), net.now)
@@ -261,7 +261,7 @@ class WireTest {
         assertTrue(dm.reactions.isEmpty()); assertTrue(b.router.message(dm.id)!!.reactions.isEmpty())
         assertTrue(a.rec.reactions.isEmpty())
         // a reaction sealed for one person is no more a group message's than a group one is a private chat's
-        val chat = a.router.sendChat("for everyone"); net.pump()
+        val chat = a.router.sendChat("for everyone")!!; net.pump()
         b.router.onBytes("B>M", FakeNet.frame(reaction(chat.id, to = net.id("B")))); net.pump()
         assertTrue(b.router.message(chat.id)!!.reactions.isEmpty())
         // one that comes before its message is held — and checked the same way when the message lands
@@ -550,7 +550,7 @@ class WireTest {
     @Test fun `a message of mine my phone lost is put back, as sent, when a friend hands it back`() {
         val net = FakeNet(); net.line("A", "B")
         val a = net.nodes["A"]!!
-        val said = a.router.sendChat("said just before the crash"); net.pump()
+        val said = a.router.sendChat("said just before the crash")!!; net.pump()
         a.router.renameGroup("New camp"); net.pump()
         net.know("A", "C"); a.router.sendDm(net.id("C"), "private, also lost")!!; net.pump()
         // the app died before it saved: its state has none of it
@@ -564,6 +564,25 @@ class WireTest {
         assertEquals(said.ts, back.ts); assertEquals(a2.router.me.id, back.from)
         assertTrue("not news to me", a2.rec.shown.isEmpty())
         assertEquals("a rename and a private message stay as they are", 1, a2.router.messages.size)
+    }
+
+    @Test fun `a lost own role carrier is rebuilt as ops, not a message`() {
+        val net = FakeNet(); net.line("A", "B")
+        val a = net.nodes["A"]!!
+        a.router.foundIfDue(sure = true, ts = net.now)
+        assertEquals(RoleChange.DONE, a.router.grantAdmin(net.id("B"))); net.pump()
+        // the app died before it saved any of it: no line, no carrier, no roles
+        val state = JSONObject(a.router.snapshot().toString()).put("messages", JSONArray()).put("carry", JSONArray()).put("born", JSONObject())
+        state.remove("roles")
+        net.disconnect("A", "B")
+        val a2 = net.node("A"); a2.router.restore(state)
+        assertNull(a2.router.founder())
+        net.connect("A", "B")
+        assertEquals(a2.id, a2.router.founder())
+        assertTrue(a2.router.isAdmin(net.id("B")))
+        assertTrue("its carrier is carried again", a2.router.snapshot().getJSONArray("carry").length() == 1)
+        assertTrue("never a bubble", a2.router.messages.none { it.kind == Envelope.CHAT })
+        assertTrue("not news to me", a2.rec.shown.isEmpty())
     }
 
     @Test fun `a photo of mine my phone lost is put together again once a friend hands its pieces back`() {
@@ -601,7 +620,7 @@ class WireTest {
         assertTrue(a.router.canSendFiles())
         assertTrue(a.router.legacyHelpers().isEmpty()); assertTrue(a.router.helpers().isEmpty())
         // and B's words get A's receipt, as in any small group
-        val said = net.nodes["B"]!!.router.sendChat("hello"); net.pump()
+        val said = net.nodes["B"]!!.router.sendChat("hello")!!; net.pump()
         assertEquals(setOf(net.id("A")), said.reached)
     }
 
