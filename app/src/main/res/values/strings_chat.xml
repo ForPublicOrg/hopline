@@ -77,6 +77,10 @@
     <string name="chat_notice_renamed_you">You renamed the group to “%1$s”</string>
     <string name="chat_notice_left">You left</string>
     <string name="chat_notice_rejoined">You rejoined</string>
+    <!-- Someone told the group they left it, or joined it (again) -->
+    <string name="chat_notice_member_left">%1$s left</string>
+    <string name="chat_notice_member_joined">%1$s joined</string>
+    <string name="chat_notice_joined_you">You joined</string>
     <string name="chat_system_via">🌐 Shared internet — via %1$s\'s phone</string>
     <string name="chat_system_via_you">🌐 Shared internet — via your phone</string>
     <!-- The one line at the top of a chat: never saved, never a message -->
@@ -86,6 +90,7 @@
     <!-- A private chat nothing can be sealed for: this line instead of the composer -->
     <string name="chat_cant_write_old">This chat is from before the update. To keep talking, open %1$s from People.</string>
     <string name="chat_cant_write_unseen">%1$s hasn\'t been seen for a while. You can write once their phone has been in range.</string>
+    <string name="chat_cant_write_left">%1$s left the group. You can write again if they rejoin.</string>
     <!-- Words that were waiting to be sent in a chat from before the update (its composer never comes back): copied out, they go -->
     <string name="chat_name_before_update">%1$s · before the update</string>
     <string name="chat_old_draft">Not sent: “%1$s”</string>
@@ -119,6 +124,8 @@
     <string name="chat_tick_not_delivered">Not delivered</string>
     <string name="chat_tick_not_delivered_desc">Not delivered — tap the message for details</string>
     <string name="chat_status_not_sent">Not sent — no phone came in range within 48 hours, so it stopped trying. Tap Send again to try once more.</string>
+    <string name="chat_status_dm_left">%1$s left the group. It reaches them only if they rejoin within 48 hours of when you sent it.</string>
+    <string name="chat_status_dm_left_gave_up">Not delivered — %1$s left the group.</string>
     <string name="chat_status_dm_not_delivered">Not delivered — %1$s\'s phone didn\'t confirm within 48 hours, and the phones carrying it have let it go. Tap Send again to try once more.</string>
     <!-- The same two, in a private chat that can't be written in (from before the update): no "Send again" there -->
     <string name="chat_status_not_sent_final">Not sent — no phone came in range within 48 hours, so it stopped trying.</string>
@@ -155,6 +162,7 @@
         <item quantity="other">In range · %d phones away</item>
     </plurals>
     <string name="chat_status_out_of_range">Out of range · last heard %1$s</string>
+    <string name="chat_status_left_group">Left the group</string>
     <string name="chat_status_battery">%1$s · battery %2$d%%</string>
     <string name="chat_status_live">📡 Live location · %1$s</string>
 

@@ -47,26 +47,40 @@ class ChatRulesTest {
     // ---------------------------------------------------------------- where the composer is
 
     @Test fun theGroupChatAlwaysHasItsComposer() {
-        assertEquals(Bottom.COMPOSER, ChatRules.bottom(readOnly = false, peer = null, canWrite = false))
+        assertEquals(Bottom.COMPOSER, ChatRules.bottom(readOnly = false, peer = null, canWrite = false, peerLeft = false))
     }
 
     @Test fun aPrivateChatThatCanBeSealedForHasItsComposer() {
-        assertEquals(Bottom.COMPOSER, ChatRules.bottom(readOnly = false, peer = asha, canWrite = true))
+        assertEquals(Bottom.COMPOSER, ChatRules.bottom(readOnly = false, peer = asha, canWrite = true, peerLeft = false))
     }
 
     @Test fun aChatFromBeforeTheUpdateSaysSoInsteadOfAComposer() {
-        assertEquals(Bottom.FROM_BEFORE, ChatRules.bottom(readOnly = false, peer = old, canWrite = false))
+        assertEquals(Bottom.FROM_BEFORE, ChatRules.bottom(readOnly = false, peer = old, canWrite = false, peerLeft = false))
     }
 
     @Test fun someoneWhoseKeyNeverArrivedCanBeWrittenToOnceTheirPhoneHasBeenInRange() {
-        assertEquals(Bottom.NOT_SEEN, ChatRules.bottom(readOnly = false, peer = asha, canWrite = false))
+        assertEquals(Bottom.NOT_SEEN, ChatRules.bottom(readOnly = false, peer = asha, canWrite = false, peerLeft = false))
         // …and the composer comes back the moment it can.
-        assertEquals(Bottom.COMPOSER, ChatRules.bottom(readOnly = false, peer = asha, canWrite = true))
+        assertEquals(Bottom.COMPOSER, ChatRules.bottom(readOnly = false, peer = asha, canWrite = true, peerLeft = false))
+    }
+
+    @Test fun someoneWhoLeftTheGroupHasTheirOwnLineInsteadOfAComposer() {
+        // Their key is known (an answer to their request could still be sealed), yet nothing written reaches them.
+        assertEquals(Bottom.PEER_LEFT, ChatRules.bottom(readOnly = false, peer = asha, canWrite = true, peerLeft = true))
+        // Never "hasn't been seen for a while": it is not that they are away.
+        assertEquals(Bottom.PEER_LEFT, ChatRules.bottom(readOnly = false, peer = asha, canWrite = false, peerLeft = true))
+        // Their hello brings the composer back.
+        assertEquals(Bottom.COMPOSER, ChatRules.bottom(readOnly = false, peer = asha, canWrite = true, peerLeft = false))
+    }
+
+    @Test fun theGroupChatKeepsItsComposerWhoeverLeftAndAChatFromBeforeStaysFromBefore() {
+        assertEquals(Bottom.COMPOSER, ChatRules.bottom(readOnly = false, peer = null, canWrite = true, peerLeft = true))
+        assertEquals(Bottom.FROM_BEFORE, ChatRules.bottom(readOnly = false, peer = old, canWrite = false, peerLeft = true))
     }
 
     @Test fun aLeftGroupsChatHasItsOwnLineWhateverTheChat() {
-        for (peer in listOf(null, asha, old)) for (canWrite in listOf(false, true))
-            assertEquals(Bottom.LEFT, ChatRules.bottom(readOnly = true, peer = peer, canWrite = canWrite))
+        for (peer in listOf(null, asha, old)) for (canWrite in listOf(false, true)) for (peerLeft in listOf(false, true))
+            assertEquals(Bottom.LEFT, ChatRules.bottom(readOnly = true, peer = peer, canWrite = canWrite, peerLeft = peerLeft))
     }
 
     // ---------------------------------------------------------------- what is offered
@@ -80,14 +94,21 @@ class ChatRulesTest {
     }
 
     @Test fun replyPrivatelyNeverOpensAChatThatCanNeverBeWrittenIn() {
-        assertTrue(ChatRules.replyPrivately(asha))
-        assertFalse(ChatRules.replyPrivately(old))
+        assertTrue(ChatRules.replyPrivately(asha, left = false))
+        assertFalse(ChatRules.replyPrivately(old, left = false))
+        assertFalse("they left the group", ChatRules.replyPrivately(asha, left = true))
     }
 
     @Test fun listsOfPeopleToPickHoldOnlyTheNewIds() {
         assertTrue(ChatRules.listed(asha))
         assertFalse(ChatRules.listed(old))
         assertFalse(ChatRules.listed(""))
+    }
+
+    @Test fun nobodyWhoLeftTheGroupIsOfferedForAMention() {
+        assertTrue(ChatRules.mentionable(asha, left = false))
+        assertFalse(ChatRules.mentionable(asha, left = true))
+        assertFalse(ChatRules.mentionable(old, left = false))
     }
 
     // ---------------------------------------------------------------- files

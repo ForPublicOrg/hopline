@@ -227,6 +227,7 @@ class Router(
             val m = messageById[id] ?: continue
             if (m.from == me.id && m.status == Message.QUEUED) { m.status = Message.SENT; changed = true }
         }
+        helloGone(ids)
         if (changed) { touched(); listener.onChanged() }
     }
 
@@ -256,9 +257,13 @@ class Router(
             listener.onLog("bad frame dropped (too deep)")
         }
         // Requests that landed in this frame start only now, after the whole frame — a gap-fill
-        // batch that carries both a request and its answer must not start the request.
-        if (claims.isNotEmpty()) pollErrands()
+        // batch that carries both a request and its answer must not start the request. So does
+        // the hand-on a goodbye asked for ([onGone]).
+        if (claims.isNotEmpty() || pollDue) { pollDue = false; pollErrands() }
     }
+
+    /** Something in the frame being read asks for the request timers to run once it is all read. */
+    private var pollDue = false
 
     private fun onFrame(link: Link, frame: JSONObject) {
         link.lastHeardAt = clock()
@@ -406,6 +411,7 @@ class Router(
     private fun leftMyPhone(theyHave: Set<String>) {
         var changed = false
         for (m in messages) if (m.from == me.id && m.status == Message.QUEUED && m.id in theyHave) { m.status = Message.SENT; changed = true }
+        helloGone(theyHave)
         if (changed) { touched(); listener.onChanged() }
     }
 
@@ -529,7 +535,10 @@ class Router(
             // A beacon or a claim is about now: a copy recorded earlier and played again says nothing.
             val q = p.optLong("q", 0)
             if (q <= (people[env.origin]?.liveQ ?: 0L)) return
-            touchPerson(env.origin, env.originName, env.ts, seenAt, env.pk).liveQ = q
+            val who = touchPerson(env.origin, env.originName, env.ts, seenAt, env.pk)
+            who.liveQ = q
+            // Counted after their goodbye: they are on this group's radio again.
+            if (who.left) { who.leftQ = 0; touched() }
         } else touchPerson(env.origin, env.originName, env.ts, seenAt, env.pk)
         process(env, p)
     }
@@ -677,7 +686,8 @@ class Router(
         if (id in hidden || id in spilled || id in overflowIds) return
         val p = open(env) ?: return
         val m = if (env.kind == Envelope.CHAT) {
-            if (p.has("gn")) return
+            // A rename, a goodbye or a hello of mine is no bubble: the chat already says it its own way.
+            if (p.has("gn") || p.has("mb")) return
             Message(id, Envelope.CHAT, me.id, Names.clean(env.originName), null, p.optString("text").take(MAX_TEXT), env.ts,
                 loc = Loc.fromJson(p.optJSONObject("loc")), quote = Quote.fromJson(p.optJSONObject("re")),
                 mentions = Message.mentionsFromJson(p.optJSONArray("mn")))
@@ -826,6 +836,8 @@ class Router(
             Envelope.CHAT -> {
                 val renamed = p.optString("gn", "")
                 if (renamed.isNotEmpty()) { applyRename(env, p, renamed, fromName); return }
+                // A goodbye or a hello is a line about the group, not a message: no receipt, no notification.
+                if (p.has("mb")) { applyMembership(env, p, fromName); return }
                 val m = addMessage(Message(env.id, Envelope.CHAT, env.origin, fromName, null, p.optString("text").take(MAX_TEXT), env.ts,
                     loc = Loc.fromJson(p.optJSONObject("loc")), quote = Quote.fromJson(p.optJSONObject("re")),
                     mentions = Message.mentionsFromJson(p.optJSONArray("mn"))).also { it.arrivedAt = clock() }) ?: return
@@ -1005,6 +1017,180 @@ class Router(
         return true
     }
 
+    // ---------------------------------------------------------------- joining and leaving
+
+    /**
+     * What this phone last told the group about itself: [MB_LEFT] (its goodbye), [MB_JOINED] (its
+     * hello), or nothing yet — a group joined before goodbyes existed, or one left with nobody
+     * around to tell. Kept with the chat, a left group's too, so a rejoin knows to say hello.
+     */
+    var said: String = ""
+        private set
+    /** When [said] was said, by this phone's clock: the goodbye's time names the joining that answers it. */
+    var saidAt: Long = 0
+        private set
+
+    /**
+     * Tell the group this phone is leaving it, just before its radio stops. A goodbye rides a
+     * carried group envelope — `{"mb":"left","q":…}`, with words a 2.4 phone shows as they are — so
+     * the phones linked now take it, and the group hands it on to everyone else, for 48 h, as it
+     * does any message: they see "Asha left", and stop counting this phone as one of theirs.
+     *
+     * Said only when a proven link is up to take it. With nobody linked it could never get off this
+     * phone — the radio goes with the leaving — and a goodbye nobody heard must not be answered by
+     * a hello on a rejoin either. True when it was said. [declined]: the requests this phone gave
+     * back on leaving, listed in the goodbye.
+     */
+    fun sayGoodbye(declined: Collection<String> = emptyList()): Boolean {
+        // The links the goodbye goes out on: none to a phone that said goodbye itself and is only finishing.
+        if (authedLinks().isEmpty()) { stayed(); return false }
+        // Counted above everything of mine still travelling. Its counter is never behind the clock,
+        // but a clock put back since something was stamped (pieces of a photo sent while it ran
+        // fast) would leave that thing stamped after the goodbye — and anything of theirs stamped
+        // after their goodbye says they are back ([touchPerson]).
+        var newest = 0L
+        for (e in carry.values) if (e.origin == me.id) { newest = maxOf(newest, e.ts); if (e.ts > lastQ) lastQ = e.ts }
+        // A hello still owed goes first (what was on its way was called off): on each link the goodbye then follows it.
+        if (helloEpoch != 0L) carry[ownId("hello", helloEpoch)]?.let { forward(it, null) }
+        val p = JSONObject().put("text", BYE_TEXT).put("mb", MB_LEFT).put("q", nextQ())
+        // The requests it just said "I can't" to ([declineForLeaving]): that word is live only, and
+        // may not reach everyone; the goodbye is carried, and says it again.
+        if (declined.isNotEmpty()) p.put("dn", JSONArray(declined.take(MAX_DECLINED)))
+        // Stamped after everything of mine still travelling — a hello before it above all — so the
+        // chat's order says it last, whatever the clock did since.
+        val env = newEnvelope(Envelope.CHAT, p, ts = maxOf(clock(), newest + 1))
+        // Its own time, now that it is said (not the moment it was noted): the hello that answers it is stamped after it.
+        said = MB_LEFT; saidAt = env.ts; beforeLeaving = null; helloEpoch = 0
+        originate(env)
+        touched()
+        return true
+    }
+
+    /** What [said] was before [aboutToLeave] noted the goodbye: put back if nothing is said after all. */
+    private var beforeLeaving: Pair<String, Long>? = null
+
+    /**
+     * The leave is about to happen, and the chat is about to be saved whole before it: the goodbye
+     * is noted now, so the saved chat already knows it ([said]) — a phone killed after the goodbye
+     * went out, or whose last save after the leave never landed, still answers it with a hello when
+     * it comes back. Only when there is someone to say it to; undone by [stayed] if the leave is
+     * refused, or by [sayGoodbye] if nobody is left to say it to by then.
+     */
+    fun aboutToLeave() {
+        if (authedLinks().isEmpty() || beforeLeaving != null) return
+        beforeLeaving = said to saidAt
+        said = MB_LEFT; saidAt = clock()
+        touched()
+    }
+
+    /** No goodbye after all (see [aboutToLeave]): what was said before stands. */
+    fun stayed() {
+        val was = beforeLeaving ?: return
+        beforeLeaving = null
+        said = was.first; saidAt = was.second
+        touched()
+    }
+
+    /**
+     * Tell the group this phone is in it: joined by its code, or back after its goodbye. The same
+     * kind of envelope as the goodbye, and it travels the same way — out to whoever is linked, the
+     * moment anyone is. [epoch] names this joining (when the phone joined, or when it said the
+     * goodbye this answers), and the envelope's id is made from it: saying it again for the same
+     * joining — the app killed before the state that says it was said reached the disk — gives the
+     * very same id, which no phone takes twice. False when that hello is already here.
+     */
+    fun sayHello(epoch: Long, notBefore: Long = 0): Boolean {
+        val id = ownId("hello", epoch)
+        if (carry.containsKey(id)) {
+            // Said, and still on its way out: it goes at the next link-up.
+            if (said != MB_JOINED || helloEpoch != epoch) { said = MB_JOINED; helloEpoch = epoch; touched() }
+            return false
+        }
+        if (seen.containsKey(id) || id in tombs) {
+            // Been and gone: back from a friend, or carried its whole time.
+            if (said != MB_JOINED || helloEpoch != 0L) { said = MB_JOINED; helloEpoch = 0; touched() }
+            return false
+        }
+        // Never before what it answers: a clock put right since the goodbye must not file "joined" above "left".
+        val env = newEnvelope(Envelope.CHAT, JSONObject().put("text", HELLO_TEXT).put("mb", MB_JOINED).put("q", nextQ()),
+            ts = maxOf(clock(), notBefore), id = id)
+        said = MB_JOINED; saidAt = env.ts; helloEpoch = epoch
+        originate(env)
+        touched()
+        listener.onChanged()
+        return true
+    }
+
+    /**
+     * The hello last said, while it has not been seen off this phone (a link took it, or a friend
+     * lists it): its epoch, else 0. A hello said with nobody around is owed until then — leaving
+     * again alone drops it from the kept chat, and the next start says the same one again.
+     */
+    private var helloEpoch = 0L
+
+    /** [ids] got off this phone (a payload went, or a friend lists them): the hello among them is said for good. */
+    private fun helloGone(ids: Collection<String>) {
+        if (helloEpoch == 0L || ownId("hello", helloEpoch) !in ids) return
+        helloEpoch = 0; touched()
+    }
+
+    /**
+     * Going on the radio: say hello if the group is owed one. Back after a goodbye — answered with
+     * the goodbye's time, whatever else is true. Or joined by code just now ([firstJoin], the
+     * joining made at [joinedAt]) and never announced: not a group this phone started (nobody to
+     * tell), not one it has been in since before goodbyes existed (nobody to tell either). True
+     * when a hello went out.
+     */
+    fun helloIfDue(firstJoin: Boolean, joinedAt: Long): Boolean = when {
+        said == MB_LEFT -> sayHello(saidAt, notBefore = saidAt + 1)
+        // Said, but never got off this phone: the same hello once more, if it isn't carried still.
+        said == MB_JOINED && helloEpoch != 0L -> sayHello(helloEpoch, notBefore = saidAt)
+        firstJoin && said.isEmpty() -> sayHello(joinedAt)
+        else -> false
+    }
+
+    /** An id of mine for [what] at [epoch]: the same every time it is asked for, and like [newId] mine alone. */
+    private fun ownId(what: String, epoch: Long): String {
+        val h = Crypto.sha256("hopline/v5/$what/${me.id}/$epoch")
+        return "${me.id}." + String(CharArray(10) { Crypto.ALPHABET[h[it].toInt() and 31] })
+    }
+
+    /**
+     * Someone's goodbye or hello. The chat gets its line whenever it arrives — it is history, like
+     * any message. Whether they are IN the group now goes by their counter, the one on their
+     * beacons ([Person.liveQ]): only a goodbye or hello newer than anything else of theirs heard
+     * here decides it. So a goodbye carried in late can't take out someone who has been back
+     * since, and a beacon recorded before the goodbye can't bring them back.
+     */
+    private fun applyMembership(env: Envelope, p: JSONObject, fromName: String) {
+        val kind = membershipKind(p) ?: return   // something a later version says about itself: nothing to show here
+        if (counts(env.origin, kind, p) && kind == Message.MEMBER_LEFT) {
+            val dn = p.optJSONArray("dn")
+            val declined = if (dn == null) emptySet() else (0 until minOf(dn.length(), MAX_DECLINED)).mapNotNullTo(HashSet()) { dn.optString(it).ifEmpty { null } }
+            onGone(env.origin, declined)
+        }
+        addMessage(Message(env.id, kind, env.origin, fromName, null, "", env.ts).also { it.arrivedAt = clock() })
+        listener.onChanged()
+    }
+
+    /** The line a goodbye or hello payload ([p]) makes, or null for one this version doesn't know. */
+    private fun membershipKind(p: JSONObject): String? = when (p.optString("mb")) {
+        MB_LEFT -> Message.MEMBER_LEFT
+        MB_JOINED -> Message.MEMBER_JOINED
+        else -> null
+    }
+
+    /** [origin]'s goodbye or hello ([kind]) decides whether they are in the group — if it is newer than anything else of theirs heard here. */
+    private fun counts(origin: String, kind: String, p: JSONObject): Boolean {
+        val q = p.optLong("q", 0)
+        val who = people[origin] ?: return false
+        if (q <= who.liveQ) return false
+        who.liveQ = q
+        who.leftQ = if (kind == Message.MEMBER_LEFT) q else 0L
+        touched()
+        return true
+    }
+
     // ---------------------------------------------------------------- reactions
 
     /** Shared by live receive and restore: point a reaction ([p], its opened payload) at its message, or hold it. */
@@ -1019,7 +1205,7 @@ class Router(
             val list = pendingReactions.getOrPut(target) { ArrayList() }
             if (list.size < 40) list.add(HeldReaction(env.origin, emoji, env.ts, env.isPrivate))
             while (pendingReactions.size > 500) pendingReactions.remove(pendingReactions.keys.first())
-        } else if (reactionFits(m, env.origin, env.isPrivate) && m.applyReaction(env.origin, emoji, env.ts)) {
+        } else if (m.isPersonal && reactionFits(m, env.origin, env.isPrivate) && m.applyReaction(env.origin, emoji, env.ts)) {
             touched()
             if (live && m.from == me.id && env.origin != me.id) listener.onReaction(m, env.origin, emoji)
             listener.onChanged()
@@ -1088,8 +1274,8 @@ class Router(
      *
      * Every piece is stored before anything is announced, and only a piece the store really holds
      * counts: a message whose pieces nobody has could never be completed by anyone. Null — and
-     * nothing sent — when a piece can't be kept (storage full), when [to] has no key here yet, or
-     * when the file isn't one this phone made.
+     * nothing sent — when a piece can't be kept (storage full), when [to] has no key here yet or
+     * left the group ([canMessage]), or when the file isn't one this phone made.
      */
     fun sendFile(att: Attachment, pieces: List<String>, caption: String, to: String? = null, quote: Quote? = null,
                  mentions: List<String> = emptyList()): Message? {
@@ -1142,8 +1328,10 @@ class Router(
         val frame = JSONObject().put("t", "env").put("e", out.json)
         for (link in links.values) {
             // A phone whose last inventory listed it has it already (backlog both sides were filled
-            // with); one that didn't gets it at once, however it reached this phone.
-            if (!link.authed || link === except || env.id in link.has) continue
+            // with); one that didn't gets it at once, however it reached this phone. A phone that
+            // said goodbye is only finishing on its way out: it takes nothing in any more, and
+            // whatever went to it would read "sent" with nobody in the group having it.
+            if (!link.authed || link === except || env.id in link.has || people[link.nodeId]?.left == true) continue
             val pid = sendFrame(link, frame)
             if (pid >= 0) pendingPayloads[pid] = listOf(env.id)
         }
@@ -1164,18 +1352,29 @@ class Router(
     fun keyOf(id: String): String? = people[id]?.pk?.ifEmpty { null }
 
     /**
-     * Can something private be written to [id] now? Only to a 2.4 phone whose key this phone has
-     * seen; there is no sending in the clear, and no queue to wait for a key in.
+     * Can something private be sealed for [id] now? Only for a 2.4 phone whose key this phone has
+     * seen; there is no sending in the clear, and no queue to wait for a key in. This is all an
+     * answer to their request needs: one asked before they left the group is still owed (Archive).
      */
     fun canWriteTo(id: String): Boolean = id != me.id && Crypto.isNodeId(id) && keyOf(id)?.let { Crypto.decodePub(it) } != null
+
+    /**
+     * Can a private message, reaction, place or file be written to [id] now? Only when something can
+     * be sealed for them ([canWriteTo]) and they haven't left the group: their phone no longer
+     * hears it, so nothing would ever reach them — until their hello says they are back.
+     */
+    fun canMessage(id: String): Boolean = canWriteTo(id) && people[id]?.left != true
 
     /** An envelope of mine sealed for the whole group ([to] only says who a receipt is for). */
     private fun newEnvelope(kind: String, payload: JSONObject, to: String? = null, ts: Long = clock(), id: String = newId()): Envelope =
         Envelope.seal(group, me, kind, payload, id, ts, to)!!
 
-    /** An envelope of mine sealed for [to] alone, or null when this phone has no key for them. */
+    /**
+     * An envelope of mine sealed for [to] alone, or null when this phone has no key for them — or,
+     * for anything but the answer to their request ([er]), when they left the group ([canMessage]).
+     */
     private fun newPrivate(kind: String, payload: JSONObject, to: String, ts: Long = clock(), er: JSONObject? = null): Envelope? {
-        if (!canWriteTo(to)) return null
+        if (if (er == null) !canMessage(to) else !canWriteTo(to)) return null
         return Envelope.seal(group, me, kind, payload, newId(), ts, to, Crypto.decodePub(keyOf(to)!!), er)
     }
 
@@ -1200,7 +1399,7 @@ class Router(
         return m
     }
 
-    /** A private message, sealed for [to] alone. Null — and nothing sent — when this phone has no key for them ([canWriteTo]). */
+    /** A private message, sealed for [to] alone. Null — and nothing sent — when this phone has no key for them, or they left the group ([canMessage]). */
     fun sendDm(to: String, text: String, quote: Quote? = null): Message? {
         val t = text.take(MAX_TEXT)
         val p = JSONObject().put("text", t)
@@ -1216,7 +1415,7 @@ class Router(
      * React to a message; an empty emoji takes mine back. A reaction is its own tiny envelope —
      * carried and gap-filled like chat, so late joiners see it — and a private chat's reactions
      * are sealed for its other person alone. False — and nothing changes — when that person's key
-     * isn't known here.
+     * isn't known here, or they left the group ([canMessage]).
      */
     fun sendReaction(target: Message, emoji: String): Boolean {
         val e = emoji.take(Message.MAX_EMOJI)
@@ -1538,6 +1737,63 @@ class Router(
         else sendLegacyResult(e, ok, title, body.optString("t"))
         listener.onChanged()
         return true
+    }
+
+    /**
+     * This phone is leaving the group: someone else's request it was on goes back to the group now,
+     * while the radio is still up — "I can't", so the next phone takes it at once instead of when
+     * the lease runs out. Not a text whose messaging app was opened: it may have gone, and only its
+     * asker hands that on (the goodbye tells them, [onGone]). Called before the goodbye: an "I
+     * can't" counted after it would put this phone back in the group on every phone that hears it.
+     *
+     * Every one of them is done with here, given back or not: the group carries them on, and a
+     * rejoin must not take one up again — a text opened before leaving would go twice. Returns the
+     * ones given back, for the goodbye to list.
+     */
+    fun declineForLeaving(): List<String> {
+        val declined = ArrayList<String>()
+        for (eid in running.toList()) {
+            val e = errands[eid] ?: continue
+            if (e.from == me.id) continue
+            if (eid !in sendOpened) { declineErrand(eid, "left"); declined.add(eid) }
+            markDone(eid)
+        }
+        return declined
+    }
+
+    /**
+     * [id] said goodbye: a request they had claimed, they will not finish. One they listed as given
+     * back ([declined]) goes to the next phone now, text or not — they said they couldn't. Any other
+     * is as if their lease ran out this moment, the usual hand-on on the asker's phone and everyone
+     * else's: a fetch is opened up to the next phone; a text waits for its asker to choose ("went
+     * quiet"), since its person may have sent it before leaving. Only for a goodbye newer than
+     * anything else of theirs ([applyMembership]): one replayed after a rejoin takes no claim away.
+     * The timers run once the frame is read ([pollDue]), as for anything else that arrives.
+     */
+    private fun onGone(id: String, declined: Set<String>) {
+        val now = clock()
+        var any = false
+        for (e in errands.values.toList()) {
+            if (!e.isOpen || e.helper != id) continue
+            if (e.id in declined) { handOn(e, id); any = true }
+            else if (e.status == Errand.CLAIMED && e.leaseUntil !in 1..now) { e.leaseUntil = now; pollDue = true; any = true }
+        }
+        if (any) touched()
+    }
+
+    /** [e] goes back to the group, [by] having given it up: the next phone may take it now. */
+    private fun handOn(e: Errand, by: String) {
+        // A text it had "gone quiet" on is someone else's to take now — and their going quiet is news again.
+        e.tried.add(by); e.helper = null; e.leaseUntil = 0; e.why = ""
+        if (e.from == me.id) {
+            val capable = capableHelpers(e)
+            e.pick = capable.take(3).map { it.id }
+            e.status = if (capable.isEmpty()) Errand.WAITING else Errand.ASKED
+            dispatch(e)
+        } else {
+            e.status = Errand.ASKED
+            maybeScheduleClaim(e)
+        }
     }
 
     /** This phone can't do it after all (no signal any more, out of budget, a limit). Someone else may. */
@@ -2185,7 +2441,8 @@ class Router(
         messages.add(i, m)
         // reactions that beat their message here have been waiting for it
         pendingReactions.remove(m.id)?.let { held ->
-            for (r in held) if (reactionFits(m, r.origin, r.isPrivate)) m.applyReaction(r.origin, r.emoji, r.ts)
+            // Not on a line about the chat (what a 2.4 phone showed as a bubble, and let people react to).
+            if (m.isPersonal) for (r in held) if (reactionFits(m, r.origin, r.isPrivate)) m.applyReaction(r.origin, r.emoji, r.ts)
         }
         touched()
         return m
@@ -2206,11 +2463,16 @@ class Router(
         if (name.isNotEmpty() && name != p.name && (t >= p.nameAt || p.name.isEmpty())) { p.name = name; touched() }
         if (name.isNotEmpty() && t > p.nameAt) p.nameAt = t
         if (seenAt > p.lastSeen) p.lastSeen = seenAt
+        // Signed after their goodbye — a goodbye's counter is never behind its phone's clock, and
+        // nothing this phone sends after it is stamped earlier — so they are back in the group,
+        // whether or not their hello (or a beacon) has reached this phone yet.
+        if (p.left && at > p.leftQ) { p.leftQ = 0; touched() }
         return p
     }
 
     fun message(id: String): Message? = messageById[id]
-    fun isInRange(p: Person): Boolean = clock() - p.lastSeen < maxOf(IN_RANGE_MS, presenceInterval() * 2 + 30_000L)
+    /** Heard from lately — and still in the group: someone who said goodbye is never "in range", whatever relays their old words. */
+    fun isInRange(p: Person): Boolean = !p.left && clock() - p.lastSeen < maxOf(IN_RANGE_MS, presenceInterval() * 2 + 30_000L)
 
     /** A person's live position — only while they're in range and the beacon is believably fresh. */
     fun liveLocOf(p: Person): Loc? {
@@ -2220,9 +2482,11 @@ class Router(
         return loc
     }
     fun peopleInRange(): Int = people.values.count { onAir(it) && isInRange(it) }
-    /** People heard from within the carry window — the group as it is now, not everyone ever. */
-    fun activePeople(): Int { val now = clock(); return people.values.count { onAir(it) && now - it.lastSeen < CARRY_MS } }
-    fun activePeopleList(): List<Person> { val now = clock(); return people.values.filter { onAir(it) && now - it.lastSeen < CARRY_MS } }
+    /** People heard from within the carry window — the group as it is now, not everyone ever, and not who left it. */
+    fun activePeople(): Int { val now = clock(); return people.values.count { onAir(it) && !it.left && now - it.lastSeen < CARRY_MS } }
+    fun activePeopleList(): List<Person> { val now = clock(); return people.values.filter { onAir(it) && !it.left && now - it.lastSeen < CARRY_MS } }
+    /** Everyone heard from within the carry window, whoever has left since: a name is told apart from all of these. */
+    fun recentPeopleList(): List<Person> { val now = clock(); return people.values.filter { onAir(it) && now - it.lastSeen < CARRY_MS } }
 
     /**
      * Someone who can be on the air now. A person kept under an id from before 2.4 is only a name in
@@ -2230,7 +2494,9 @@ class Router(
      * size (receipts and photos switch off at a size) for two days after an update.
      */
     private fun onAir(p: Person): Boolean = Crypto.isNodeId(p.id)
-    fun authedLinks(): List<Link> = links.values.filter { it.authed }
+    /** Proven links to phones in the group — not one that said goodbye and is only finishing on its way out. */
+    fun authedLinks(): List<Link> = links.values.filter { it.authed && people[it.nodeId]?.left != true }
+
     fun carrySize(): Int = carry.size
     /** How many bytes the carried envelopes take, as sent. */
     fun carriedBytes(): Long = carryBytes
@@ -2260,6 +2526,7 @@ class Router(
         if (spilled.isNotEmpty()) put("spilled", JSONObject().also { s -> for ((id, t) in spilled) s.put(id, t) })
         put("shareInternet", shareInternet)
         if (group.nameV > 0) put("group", JSONObject().put("n", group.name).put("v", group.nameV))
+        if (said.isNotEmpty()) put("said", JSONObject().put("k", said).put("at", saidAt).also { if (said == MB_JOINED && helloEpoch != 0L) it.put("e", helloEpoch) })
     }
 
     /**
@@ -2319,6 +2586,21 @@ class Router(
         // A reaction whose message hadn't arrived before the restart is still in carry — re-point
         // it so it lands the moment the message hops in (applyReaction dedupes ones already shown).
         for (e in carry.values) if (e.kind == Envelope.REACT) try { open(e)?.let { applyReactionEnvelope(e, it, live = false) } } catch (ex: Exception) { }
+        // A goodbye or hello that came while this phone was on 2.4 was kept as a message, its words
+        // and all, and its sender was never counted out (or back in). It becomes the line it is,
+        // and counts, as it would have then — for as long as it is still carried.
+        for (e in carry.values) if (e.kind == Envelope.CHAT && e.origin != me.id) try {
+            val old = messageById[e.id]?.takeIf { it.kind == Envelope.CHAT } ?: continue
+            // Only a message with exactly those words can be one: nothing else is opened, at every start.
+            if (old.text != BYE_TEXT && old.text != HELLO_TEXT) continue
+            val p = open(e)?.takeIf { it.has("mb") } ?: continue
+            val kind = membershipKind(p) ?: continue
+            val at = messages.indexOf(old)
+            if (at < 0) continue
+            val line = Message(e.id, kind, e.origin, old.fromName, null, "", old.ts).also { it.arrivedAt = old.arrivedAt }
+            messages[at] = line; messageById[e.id] = line
+            counts(e.origin, kind, p)
+        } catch (ex: Exception) { }
         // Saved ahead of anything sent before (see [qSaved]): the next counter is above all of them.
         lastQ = maxOf(lastQ, j.optLong("lastQ", 0))
         qSaved = maxOf(qSaved, lastQ)
@@ -2356,6 +2638,11 @@ class Router(
         shareInternet = j.optBoolean("shareInternet", true)
         // The rename count goes with the name it belongs to (the store may know a newer name).
         j.optJSONObject("group")?.let { g -> if (g.optString("n") == group.name) group.nameV = g.optInt("v", 0).coerceIn(0, MAX_NAME_V) }
+        j.optJSONObject("said")?.let { s ->
+            said = s.optString("k", "").takeIf { it == MB_LEFT || it == MB_JOINED } ?: ""
+            saidAt = if (said.isEmpty()) 0L else s.optLong("at", 0)
+            helloEpoch = if (said == MB_JOINED) s.optLong("e", 0) else 0L
+        }
         dirty = false
     }
 
@@ -2437,6 +2724,13 @@ class Router(
         const val MAX_THUMB_B64 = 12_000
         /** How far ahead of our clock a peer's timestamp may be before it is clamped. */
         const val FUTURE_SLACK_MS = 5 * 60_000L
+        /** What a goodbye or a hello says about its sender ("mb"), and the words a phone that can't read it shows. */
+        const val MB_LEFT = "left"
+        const val MB_JOINED = "joined"
+        const val BYE_TEXT = "👋 left the group"
+        const val HELLO_TEXT = "👋 joined the group"
+        /** Requests a goodbye lists as given back, at most: a phone runs a handful at a time. */
+        const val MAX_DECLINED = 20
         /** Two renames' times closer than this are a dead heat (settled by the name). */
         const val SAME_TIME_MS = 10_000L
         /** Renames counted, at most (a crafted huge count could otherwise freeze the name). */

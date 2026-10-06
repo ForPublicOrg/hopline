@@ -84,7 +84,7 @@ object Ui {
         val sameLength = lower.length == text.length
         val claimed = ArrayList<IntRange>()
         val out = LinkedHashSet<String>()
-        val byName = r.people.values.filter { it.name.isNotEmpty() && ChatRules.listed(it.id) }.groupBy { it.name.lowercase(Locale.ROOT) }
+        val byName = r.people.values.filter { it.name.isNotEmpty() && ChatRules.mentionable(it.id, it.left) }.groupBy { it.name.lowercase(Locale.ROOT) }
         for ((nameLower, persons) in byName.entries.sortedByDescending { it.key.length }) {
             val needle = "@" + (if (sameLength) nameLower else persons[0].name)
             val hay = if (sameLength) lower else text
@@ -110,13 +110,14 @@ object Ui {
      * add a short, stable tag from their phone's id ("Sam · 3f2a") so nobody can hide behind a
      * namesake. Not for an id from before the update: it can't be on the air any more, so it is
      * nobody's namesake — and the same person's new id, with the same name, must not make every
-     * message they wrote before the update look like someone else's.
+     * message they wrote before the update look like someone else's. Someone who just left still
+     * counts: a new "Sam" must not pass for the one whose goodbye is right there in the chat.
      */
     fun uniqueName(r: Router, id: String, fallback: String = ""): String {
         val name = nameOf(r, id, fallback)
         if (!ChatRules.listed(id)) return name
         val lower = name.lowercase(Locale.ROOT)
-        val clash = (r.activePeopleList().filter { it.id != id }.any { it.name.lowercase(Locale.ROOT) == lower }) ||
+        val clash = (r.recentPeopleList().filter { it.id != id }.any { it.name.lowercase(Locale.ROOT) == lower }) ||
             (id != r.me.id && r.me.name.lowercase(Locale.ROOT) == lower)
         return if (clash) "$name · ${id.takeLast(4)}" else name
     }
@@ -139,6 +140,8 @@ object Ui {
     }
 
     fun personStatus(r: Router, p: Person): String {
+        // Whatever their phone last said, it is not on this group's radio any more.
+        if (p.left) return res.getString(R.string.chat_status_left_group)
         val inRange = r.isInRange(p)
         val base = when {
             !inRange -> res.getString(R.string.chat_status_out_of_range, ago(p.lastSeen))
@@ -252,9 +255,12 @@ object Ui {
             return ctx.getString(if (settled) R.string.chat_status_sent else R.string.chat_status_left_sent) +
                 if (got.isEmpty()) "" else "\n\n" + ctx.getString(R.string.chat_status_got, got.joinToString(", "))
         }
+        // A private message to someone who left the group since: whatever else, that is what it waits on.
+        if (m.to != null && m.status != Message.DELIVERED && r.people[m.to]?.left == true)
+            return ctx.getString(if (gaveUp(r, m, now)) R.string.chat_status_dm_left_gave_up else R.string.chat_status_dm_left, nameOf(r, m.to))
         if (gaveUp(r, m, now)) {
             // A private message to someone nothing can be sealed for has no "Send again" to point at.
-            val again = ChatRules.sendAgain(gaveUp = true, to = m.to, canWrite = m.to?.let { r.canWriteTo(it) } ?: true)
+            val again = ChatRules.sendAgain(gaveUp = true, to = m.to, canWrite = m.to?.let { r.canMessage(it) } ?: true)
             if (m.status != Message.QUEUED) return ctx.getString(if (again) R.string.chat_status_dm_not_delivered else R.string.chat_status_dm_not_delivered_final,
                 nameOf(r, m.to ?: ""))
             return when (notSent(r, m, now)) {
@@ -319,8 +325,9 @@ object Ui {
      */
     fun cantWriteLine(r: Router, id: String, fallback: String = ""): String? {
         val name = nameOf(r, id, fallback.ifEmpty { r.messages.lastOrNull { it.from == id }?.fromName.orEmpty() })
-        return when (ChatRules.bottom(readOnly = false, peer = id, canWrite = r.canWriteTo(id))) {
+        return when (ChatRules.bottom(readOnly = false, peer = id, canWrite = r.canWriteTo(id), peerLeft = r.people[id]?.left == true)) {
             ChatRules.Bottom.FROM_BEFORE -> res.getString(R.string.chat_cant_write_old, name)
+            ChatRules.Bottom.PEER_LEFT -> res.getString(R.string.chat_cant_write_left, name)
             ChatRules.Bottom.NOT_SEEN -> res.getString(R.string.chat_cant_write_unseen, name)
             else -> null
         }

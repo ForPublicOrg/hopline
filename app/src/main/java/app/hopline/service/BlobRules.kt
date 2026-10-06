@@ -199,7 +199,7 @@ object BlobRules {
         class Ok(val m: Message) : Sent()
         /** No room on this phone for its copy or its pieces: nothing went out. */
         object NoRoom : Sent()
-        /** Nothing can be sealed for [to] yet (Router.canWriteTo): nothing went out. */
+        /** Nothing can be written to [to] (Router.canMessage): nothing went out. */
         class CantWrite(val to: String) : Sent()
     }
 
@@ -211,7 +211,7 @@ object BlobRules {
      */
     fun send(r: Router, att: Attachment, kept: Boolean, pieces: List<String>, caption: String, to: String?,
              quote: Quote?, mentions: List<String>): Sent = when {
-        to != null && !r.canWriteTo(to) -> Sent.CantWrite(to)
+        to != null && !r.canMessage(to) -> Sent.CantWrite(to)
         !kept -> Sent.NoRoom
         else -> r.sendFile(att, pieces, caption, to, quote, mentions)?.let { Sent.Ok(it) } ?: Sent.NoRoom
     }

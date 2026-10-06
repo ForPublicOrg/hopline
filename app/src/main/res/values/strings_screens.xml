@@ -45,6 +45,7 @@
     <string name="menu_rejoin_group">Rejoin group</string>
     <string name="menu_delete_group">Delete group</string>
     <string name="action_read_chat">read the saved chat</string>
+    <string name="action_open_chat">open your chat with them</string>
     <string name="action_rejoin_or_delete">rejoin or delete</string>
     <string name="muted_desc">Muted</string>
     <string name="in_range_desc">In range</string>
@@ -127,6 +128,7 @@
     </plurals>
     <string name="members_header">%1$s · %2$d in range</string>
     <string name="only_you">Nobody else has joined yet. Share the code so friends can join.</string>
+    <string name="everyone_left">Everyone else has left the group. Share the code to bring people back in.</string>
     <string name="nobody_lately">Nobody else has been heard from in the last two days. They\'ll show up here when their phones are near.</string>
     <string name="view_all">See everyone (%1$d)</string>
     <string name="renamed_by">%1$s renamed the group · %2$s</string>

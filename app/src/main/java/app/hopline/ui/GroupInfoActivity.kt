@@ -177,8 +177,14 @@ class GroupInfoActivity : AppCompatActivity() {
         bindMe(rows[0])
         shown.forEachIndexed { i, p -> PeopleActivity.bindPerson(rows[i + 1], r, p, onVerify = { verify(r, p) }) { openChat(p) } }
         // A group that has been quiet for two days (every rejoin starts this way) isn't a group
-        // nobody joined: its people are in the chat, just not heard from lately.
-        b.membersNote.text = getString(if (Ui.othersKnown(r)) R.string.nobody_lately else R.string.only_you)
+        // nobody joined: its people are in the chat, just not heard from lately — unless every one
+        // of them said goodbye.
+        val known = r.people.values.filter { it.id != r.me.id && ChatRules.listed(it.id) }
+        b.membersNote.text = getString(when {
+            !Ui.othersKnown(r) -> R.string.only_you
+            known.isNotEmpty() && known.all { it.left } -> R.string.everyone_left
+            else -> R.string.nobody_lately
+        })
         b.membersNote.visibility = if (others.isEmpty()) View.VISIBLE else View.GONE
         b.viewAll.text = getString(R.string.view_all, total)
         b.viewAll.visibility = if (sorted.size > shown.size) View.VISIBLE else View.GONE

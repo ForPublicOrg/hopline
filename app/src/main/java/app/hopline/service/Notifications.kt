@@ -91,6 +91,9 @@ object Notifications {
             // This phone's own notes in a chat carry no text: Home's row says what they mean.
             m.kind == Message.LEFT -> ctx.getString(R.string.chat_notice_left)
             m.kind == Message.REJOINED -> ctx.getString(R.string.chat_notice_rejoined)
+            // Someone's goodbye or hello: worded with their name where the name is known (Home).
+            m.kind == Message.MEMBER_LEFT -> ctx.getString(R.string.notice_left_short)
+            m.kind == Message.MEMBER_JOINED -> ctx.getString(R.string.notice_joined_short)
             m.loc != null -> ctx.getString(R.string.location_label) + if (m.loc.label.isNotEmpty()) " — ${m.loc.label}" else ""
             att == null -> m.text
             att.isAudio && att.dur > 0 -> ctx.getString(R.string.voice_label) + " (${att.dur / 60}:${"%02d".format(att.dur % 60)})"
@@ -286,7 +289,9 @@ object Notifications {
         val title = when {
             e.status == Errand.DONE -> ctx.getString(R.string.answer_ready, Errands.titleFor(e))
             e.status == Errand.EXPIRED -> ctx.getString(R.string.answer_expired, Errands.titleFor(e))
-            e.isOpen && e.why == "quiet" -> ctx.getString(R.string.answer_quiet, e.helperName.ifEmpty { ctx.getString(R.string.someone) })
+            e.isOpen && e.why == "quiet" -> ctx.getString(
+                if (e.helper?.let { Core.router?.people?.get(it)?.left } == true) R.string.answer_quiet_left else R.string.answer_quiet,
+                e.helperName.ifEmpty { ctx.getString(R.string.someone) })
             else -> ctx.getString(R.string.answer_failed, Errands.titleFor(e))
         }
         val body = (if (e.title.isNotEmpty() && e.status == Errand.DONE) e.title + " · " else "") +
@@ -430,7 +435,7 @@ object Notifications {
                     }
                     val mine = if (chat == Core.GROUP) r.sendChat(text, mentions = app.hopline.ui.Ui.mentionsIn(r, text)) else r.sendDm(chat, text)
                     if (mine == null) {
-                        // A private chat nothing can be sealed for (Router.canWriteTo): nothing went, so nothing
+                        // A private chat nothing can be written to (Router.canMessage): nothing went, so nothing
                         // shows as sent; the words wait in that chat (Core.keepAsDraft), the notification is
                         // put back as it was, and the chat's own line says why (the same one its screen shows).
                         Core.keepAsDraft(fp, chat, text)

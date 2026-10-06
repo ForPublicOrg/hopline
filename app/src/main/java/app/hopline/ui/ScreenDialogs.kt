@@ -271,7 +271,8 @@ object Asks {
         // Sharing a name is allowed (two Rahuls happen), but say what everyone will see.
         val r = Core.router ?: return
         val me = r.me.name.lowercase(Locale.ROOT)
-        if (r.activePeopleList().any { it.id != r.me.id && it.name.lowercase(Locale.ROOT) == me })
+        // The same people Ui.uniqueName tells apart: who left lately included.
+        if (r.recentPeopleList().any { it.id != r.me.id && it.name.lowercase(Locale.ROOT) == me })
             toast(a, a.getString(R.string.name_shared_warning, r.me.name), long = true)
     }
 
@@ -309,15 +310,19 @@ object Asks {
 
     /**
      * Leave a group this phone is in: the one on the radio, or a paused one (without waking it
-     * first). Leaving keeps the chat, and the question says so; when the radio will move on to
-     * another group, it says which.
+     * first). Leaving keeps the chat, and the question says so; it says whether the group will hear
+     * of it (only phones linked now can take the goodbye — Core.leaveGroup); and when the radio
+     * will move on to another group, it says which.
      */
     fun leave(a: AppCompatActivity, g: SavedGroup) {
         if (g.left) return
         val store = Core.store
         val next = if (g.code != store.activeCode) null
             else GroupRules.nextActive(store.allGroups(), excluding = g.code)?.let { code -> store.groups().firstOrNull { it.code == code } }
-        val body = listOfNotNull(a.getString(R.string.leave_confirm), next?.let { a.getString(R.string.leave_confirm_next, groupLabel(it)) })
+        val heard = Core.router?.takeIf { it.group.code == g.code }?.authedLinks()?.isNotEmpty() == true
+        val body = listOfNotNull(a.getString(R.string.leave_confirm),
+            a.getString(if (heard) R.string.leave_confirm_told else R.string.leave_confirm_untold),
+            next?.let { a.getString(R.string.leave_confirm_next, groupLabel(it)) })
             .joinToString("\n\n")
         ScreenDialog.confirm(a, LEAVE, a.getString(R.string.leave_title, groupLabel(g)), body, a.getString(R.string.leave),
             danger = true, data = bundleOf(CODE to g.code))
@@ -331,7 +336,8 @@ object Asks {
         // still on this phone" for a leave that would have cost the latest messages.
         if (!Core.leaveGroup(g.code)) { toast(a, a.getString(R.string.leave_not_saved), long = true); return }
         if (!Core.store.isLeft(g.code)) return
-        toast(a, a.getString(R.string.left_toast, groupLabel(g)), long = true)
+        // Whatever the question said when it was asked: links come and go while it stands.
+        toast(a, a.getString(if (Core.toldLeaving) R.string.left_toast else R.string.left_toast_untold, groupLabel(g)), long = true)
         // Every screen under this one belonged to the group on the radio. A paused group has none: Home just redraws.
         if (wasActive) goHome(a)
     }

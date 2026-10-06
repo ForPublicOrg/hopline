@@ -158,6 +158,11 @@ class MessageAdapter(
                 val label = when {
                     m.kind == Message.LEFT -> ctx.getString(R.string.chat_notice_left)
                     m.kind == Message.REJOINED -> ctx.getString(R.string.chat_notice_rejoined)
+                    // Who came or went, told apart from a namesake who didn't.
+                    m.kind == Message.MEMBER_LEFT -> if (m.from == me) ctx.getString(R.string.chat_notice_left)
+                        else ctx.getString(R.string.chat_notice_member_left, nameFor(m.from, m.fromName))
+                    m.kind == Message.MEMBER_JOINED -> if (m.from == me) ctx.getString(R.string.chat_notice_joined_you)
+                        else ctx.getString(R.string.chat_notice_member_joined, nameFor(m.from, m.fromName))
                     m.from == me -> ctx.getString(R.string.chat_notice_renamed_you, m.text)
                     else -> ctx.getString(R.string.chat_notice_renamed, Ui.nameOf(router, m.from, m.fromName), m.text)
                 }
@@ -270,7 +275,9 @@ class MessageAdapter(
     private fun quoteFor(m: Message, nameFor: (String, String) -> String): QuoteLine? {
         if (!m.isPersonal) return null
         val travelled = m.quote ?: return null
-        val orig = router.message(travelled.id)
+        // A line about the chat (a rename, a goodbye — what a 2.4 phone shows as a bubble, and lets
+        // people reply to) has no words of its own here: the snippet that came with the reply says it.
+        val orig = router.message(travelled.id)?.takeIf { it.isPersonal }
         val q = orig?.let { Quote.of(it, Ui.nameOf(router, it.from, it.fromName)) } ?: travelled
         val author = orig?.from ?: travelled.origin.ifEmpty { null }
         val isMe = if (author != null) author == router.me.id else q.name.isNotEmpty() && q.name == router.me.name

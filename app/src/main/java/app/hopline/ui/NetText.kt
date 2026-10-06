@@ -87,7 +87,8 @@ object NetText {
             val name = h?.let { Ui.nameOf(r, it, e.helperName) } ?: e.helperName.ifEmpty { someone(ctx) }
             when {
                 h == r.me.id -> ctx.getString(R.string.net_st_running_here)
-                isQuiet(e) -> ctx.getString(R.string.net_st_quiet, name)
+                // Gone quiet because they left the group: said as it is.
+                isQuiet(e) -> ctx.getString(if (h != null && r.people[h]?.left == true) R.string.net_st_quiet_left else R.string.net_st_quiet, name)
                 e.type == Errand.SEND -> ctx.getString(if (Errand.isEmailTarget(e.args)) R.string.net_st_sending_mail else R.string.net_st_sending, name)
                 h != null && h in e.legacyAsked -> ctx.getString(R.string.net_st_public_asked, name)
                 else -> ctx.getString(R.string.net_st_on_it, name)

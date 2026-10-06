@@ -179,9 +179,12 @@
     <string name="leave_group">Leave group</string>
     <string name="leave_title">Leave “%1$s”?</string>
     <string name="leave_confirm">You\'ll stop getting this group\'s messages, and your phone will stop passing them along. The chat stays on this phone until you delete it.</string>
+    <string name="leave_confirm_told">The group will see that you left.</string>
+    <string name="leave_confirm_untold">Nobody from the group is connected right now, so they won\'t be told that you left.</string>
     <string name="leave_confirm_next">Hopline will connect to “%1$s” instead.</string>
     <string name="leave">Leave</string>
     <string name="left_toast">You left “%1$s”. Its chat is still on this phone.</string>
+    <string name="left_toast_untold">You left “%1$s”. Nobody from it was connected, so they weren\'t told. Its chat is still on this phone.</string>
     <!-- Leaving was refused: the chat must be safely saved before the phone lets go of the group -->
     <string name="leave_not_saved">Couldn\'t leave — storage may be full. Nothing was changed.</string>
     <string name="cancel">Cancel</string>
@@ -220,12 +223,15 @@
 
     <!-- Notifications (2.2) -->
     <string name="notice_renamed_short">renamed the group to “%1$s”</string>
+    <string name="notice_left_short">left the group</string>
+    <string name="notice_joined_short">joined the group</string>
     <string name="reacted_line">Reacted %1$s to “%2$s”</string>
     <string name="n_new">%1$d new</string>
     <string name="mark_read">Mark as read</string>
     <string name="answer_ready">Answer ready: %1$s</string>
     <string name="answer_expired">Nobody had signal in time: %1$s</string>
     <string name="answer_quiet">%1$s\'s phone went quiet — your text may not have gone yet</string>
+    <string name="answer_quiet_left">%1$s left the group — your text may not have gone yet</string>
     <string name="answer_failed">Couldn\'t be done: %1$s</string>
     <string name="via_phone">via %1$s\'s phone</string>
     <string name="errand_mail_title">%1$s asks you to email %2$s</string>

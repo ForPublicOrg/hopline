@@ -1037,8 +1037,9 @@ class ChatActivity : AppCompatActivity() {
         val r = Core.router
         val open = if (r == null || chatFp == null || readOnly) null else openMention()
         // People on 2.4 or later only: an old id's entry is kept for its old messages' names, nobody to call out.
+        // Nor anyone who left the group: they would never hear it.
         val matches = if (r == null || open == null) emptyList()
-        else r.people.values.filter { ChatRules.listed(it.id) && it.name.isNotEmpty() && it.name.startsWith(open.second, ignoreCase = true) }
+        else r.people.values.filter { ChatRules.mentionable(it.id, it.left) && it.name.isNotEmpty() && it.name.startsWith(open.second, ignoreCase = true) }
             .sortedWith(compareBy<Person>({ !r.isInRange(it) }, { it.name.lowercase(Locale.ROOT) })).take(6)
         if (r == null || matches.isEmpty()) { b.mentionBar.isVisible = false; mentionKey = ""; return }
         b.mentionBar.isVisible = true
@@ -1233,7 +1234,7 @@ class ChatActivity : AppCompatActivity() {
         if (readOnly) return   // nothing is sent from a group this phone left
         val r = Core.router ?: return
         val old = find(r, m.id) ?: return
-        // A private message goes again only to a phone whose key is known here (Router.canWriteTo):
+        // A private message goes again only to a phone whose key is known here, still in the group (Router.canMessage):
         // "Send again" isn't offered otherwise (canSendAgain), and the old one stays "not sent".
         if (!canSendAgain(r, old)) return
         val att = old.att
@@ -1263,7 +1264,7 @@ class ChatActivity : AppCompatActivity() {
 
     /** "Send again" for [m]: one of mine that stopped trying, in a chat of the radio's group that can still be written to. */
     private fun canSendAgain(r: Router, m: Message): Boolean =
-        !readOnly && ChatRules.sendAgain(Ui.gaveUp(r, m), m.to, m.to?.let { r.canWriteTo(it) } ?: true)
+        !readOnly && ChatRules.sendAgain(Ui.gaveUp(r, m), m.to, m.to?.let { r.canMessage(it) } ?: true)
 
     /** The stale copy of a message that was sent again goes — from the chat, and from the earlier ones on screen. */
     private fun forget(id: String) {
@@ -1967,26 +1968,29 @@ class ChatActivity : AppCompatActivity() {
 
     /**
      * Can the chat on screen be written in? Not a left group's, and not a private chat nothing can be
-     * sealed for (ChatRules.bottom). While the group is still starting there is nothing to ask yet:
-     * the composer stays, and a send waits for it.
+     * written to (ChatRules.bottom) — one whose person left the group among them (Router.canMessage).
+     * While the group is still starting there is nothing to ask yet: the composer stays, and a send
+     * waits for it.
      */
     private fun writable(): Boolean {
         if (readOnly) return false
         val to = peer ?: return true
         val r = Core.router ?: return true
-        return r.canWriteTo(to)
+        return r.canMessage(to)
     }
 
     /**
      * In a private chat nothing can be sealed for, one line takes the composer's place, saying why —
      * and nothing else is offered to write, attach, record or react with. Looked at on every redraw:
-     * the person's key can arrive at any moment, and the composer comes back then, with whatever
-     * words were waiting in it (a reply typed into a notification, say).
+     * the person's key can arrive at any moment (or their hello, after they left the group), and
+     * the composer comes back then, with whatever words were waiting in it (a reply typed into a
+     * notification, say).
      */
     private fun renderBottom(r: Router) {
         if (readOnly) { b.cantWriteBar.isVisible = false; return }
         val to = peer
-        val bottom = ChatRules.bottom(readOnly = false, peer = to, canWrite = to == null || r.canWriteTo(to))
+        val bottom = ChatRules.bottom(readOnly = false, peer = to, canWrite = to == null || r.canWriteTo(to),
+            peerLeft = to != null && r.people[to]?.left == true)
         val shut = bottom != ChatRules.Bottom.COMPOSER
         if (shut && to != null) {
             b.cantWriteText.text = Ui.cantWriteLine(r, to).orEmpty()
@@ -2109,7 +2113,7 @@ class ChatActivity : AppCompatActivity() {
             val away = p == null || !r.isInRange(p)
             val waiting = shown.any { it.from == r.me.id && it.isPersonal && it.status != Message.DELIVERED && !Ui.gaveUp(r, it) }
             // Not in a chat that can't be written in: the line in the composer's place says it all.
-            b.awayBanner.isVisible = away && (shown.isEmpty() || waiting) && r.canWriteTo(to)
+            b.awayBanner.isVisible = away && (shown.isEmpty() || waiting) && r.canMessage(to)
             if (b.awayBanner.isVisible) b.awayBanner.text = getString(R.string.out_of_range_dm, Ui.nameOf(r, to))
         }
     }
@@ -2299,8 +2303,8 @@ class ChatActivity : AppCompatActivity() {
         // A left group's chat keeps what works without the radio: copy, save, share, details, delete.
         // So does a private chat that can't be written in — nothing in it can be answered.
         if (m.isPersonal && writable()) out.add(MessageMenu.Action(R.drawable.ic_reply, getString(R.string.reply)) { startReply(m) })
-        // Privately only to someone on 2.4 or later: an old id's private chat could never be written in.
-        if (m.isPersonal && m.isGroup && !mine && !readOnly && ChatRules.replyPrivately(m.from))
+        // Privately only to someone on 2.4 or later, still in the group: any other private chat could never be written in.
+        if (m.isPersonal && m.isGroup && !mine && !readOnly && ChatRules.replyPrivately(m.from, r.people[m.from]?.left == true))
             out.add(MessageMenu.Action(R.drawable.ic_chat_private, getString(R.string.chat_reply_privately)) { replyPrivately(m) })
         if (m.text.isNotEmpty()) out.add(MessageMenu.Action(R.drawable.ic_copy, getString(R.string.copy)) { copy(m) })
         if (fileOnPhone(r, m)) {

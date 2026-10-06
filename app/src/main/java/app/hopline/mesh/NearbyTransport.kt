@@ -71,6 +71,12 @@ class NearbyTransport(context: Context, private val group: Group, private val me
     }
 
     private val endpoints = HashMap<String, Endpoint>()
+    /**
+     * Payloads handed to the radio that haven't gone (or failed) yet, and the link each went on:
+     * what [finish] waits for. A link that goes takes its own with it; bounded all the same, in
+     * case the radio never says what became of one.
+     */
+    private val inFlight = LinkedHashMap<Long, String>()
     @Volatile var running = false; private set
     /** Bumped on every start/stop: callbacks from an earlier session are ignored. */
     private var generation = 0
@@ -128,15 +134,96 @@ class NearbyTransport(context: Context, private val group: Group, private val me
     }
 
     fun stop() {
+        if (finishing) hangUpAll()
         running = false
         generation++
         handler.removeCallbacksAndMessages(null)
-        try { client.stopAllEndpoints(); client.stopAdvertising(); client.stopDiscovery() } catch (e: Exception) { }
+        // The radio's client is the app's: while an earlier group's radio is still getting its
+        // goodbye out ([finish]), only this one's own links go.
+        try {
+            if (lingering == 0) client.stopAllEndpoints() else for (id in endpoints.keys) if (id !in held) client.disconnectFromEndpoint(id)
+            client.stopAdvertising(); client.stopDiscovery()
+        } catch (e: Exception) { }
         advertising = false; discovering = false
         for (id in endpoints.filterValues { it.state == CONNECTED }.keys.toList()) events?.onLinkDown(id)
         endpoints.clear()
         otherGroups.clear()
         olderPhones.clear()
+        inFlight.clear()
+    }
+
+    /**
+     * Leaving the group: everything handed to the radio that hasn't gone yet is called off — so
+     * what is said on the way out, sent next, doesn't wait behind a photo's pieces or a backlog,
+     * and get cut off by [finish]'s limit (Nearby sends a link's payloads in turn). Just what a
+     * leave always did to them: the group carries its backlog anyway, and a message of mine still
+     * on its way reads "Not sent" in the kept chat — truly, as nothing would ever say it went.
+     */
+    fun callOff() {
+        for (pid in inFlight.keys.toList()) {
+            inFlight.remove(pid)
+            try { client.cancelPayload(pid) } catch (e: Exception) { }
+        }
+    }
+
+    /**
+     * Stop, but let what was just handed to the radio get out first — leaving the group, whose
+     * goodbye ([Router.sayGoodbye]) is the last thing sent. Nothing new is looked for or let in from
+     * now on and nothing reaches the router any more ([events] go); the links that are up stay up
+     * until every payload sent on them has gone or failed, [ms] at most, and are then let go one by
+     * one, by their own ids. Never [stop]'s stopAllEndpoints: the radio's client is the app's, and
+     * the group the radio moves on to may already be using it by then.
+     */
+    fun finish(ms: Long) {
+        if (!running) { stop(); return }
+        running = false
+        generation++
+        handler.removeCallbacksAndMessages(null)
+        events = null
+        try { client.stopAdvertising(); client.stopDiscovery() } catch (e: Exception) { }
+        advertising = false; discovering = false
+        otherGroups.clear()
+        olderPhones.clear()
+        // Connections still being made carry nothing of ours: they go now.
+        for (ep in endpoints.values.filter { it.state != CONNECTED }) hangUp(ep.id)
+        if (inFlight.isEmpty() || endpoints.isEmpty()) { hangUpAll(); return }
+        finishing = true
+        lingering++
+        holding.addAll(endpoints.keys); held.addAll(holding)
+        val gen = generation
+        handler.postDelayed({ if (gen == generation) hangUpAll() }, ms)
+    }
+
+    /** Set by [finish]: the last payloads are on their way, and the links go once they have. */
+    private var finishing = false
+    /** The links [finish] keeps up meanwhile (listed in [held] too, for the next group's radio to leave alone). */
+    private val holding = HashSet<String>()
+
+    /** A payload is done (gone or failed): if it was the last one [finish] was waiting for, the links go. */
+    private fun sent(payloadId: Long) {
+        if (inFlight.remove(payloadId) != null) doneWaiting()
+    }
+
+    /** [link] is gone: nothing more will be heard of what was sent on it. */
+    private fun forget(link: String) {
+        if (inFlight.values.removeAll { it == link }) doneWaiting()
+    }
+
+    private fun doneWaiting() { if (finishing && inFlight.isEmpty()) hangUpAll() }
+
+    private fun hangUp(id: String) {
+        endpoints.remove(id)?.deadline?.let { handler.removeCallbacks(it) }
+        try { client.disconnectFromEndpoint(id) } catch (e: Exception) { }
+        inFlight.values.removeAll { it == id }
+    }
+
+    private fun hangUpAll() {
+        if (finishing) lingering--
+        finishing = false
+        handler.removeCallbacksAndMessages(null)
+        for (id in endpoints.keys.toList()) hangUp(id)
+        held.removeAll(holding); holding.clear()
+        inFlight.clear()
     }
 
     /** Bluetooth stacks wedge. When nothing has linked for a long while despite phones being visible, bounce it. */
@@ -282,6 +369,7 @@ class NearbyTransport(context: Context, private val group: Group, private val me
         endpoints.remove(ep.id)
         ep.deadline?.let { handler.removeCallbacks(it) }
         try { client.disconnectFromEndpoint(ep.id) } catch (e: Exception) { }
+        forget(ep.id)
         if (ep.state == CONNECTED) events?.onLinkDown(ep.id)
         connectWaiting()
     }
@@ -324,8 +412,10 @@ class NearbyTransport(context: Context, private val group: Group, private val me
                 when (code) {
                     ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT -> {
                         // We lost track of a live session: drop it and start clean rather than
-                        // sit on a half-link the router never heard about.
-                        try { client.disconnectFromEndpoint(ep.id) } catch (x: Exception) { }
+                        // sit on a half-link the router never heard about — unless it is the link
+                        // an earlier radio of this phone is getting a goodbye out on: that one goes
+                        // by itself in a moment.
+                        if (ep.id !in held) try { client.disconnectFromEndpoint(ep.id) } catch (x: Exception) { }
                         ep.state = FOUND
                         handler.postDelayed({ if (gen == generation) maybeConnect(ep) }, 3_000)
                         return@addOnFailureListener
@@ -362,7 +452,11 @@ class NearbyTransport(context: Context, private val group: Group, private val me
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
-            val ep = endpoints[endpointId] ?: return
+            val ep = endpoints[endpointId] ?: run {
+                // Asked for before this radio stopped, made after: nobody here wants it any more.
+                if (!running && result.status.statusCode == ConnectionsStatusCodes.STATUS_OK) try { client.disconnectFromEndpoint(endpointId) } catch (e: Exception) { }
+                return
+            }
             if (result.status.statusCode == ConnectionsStatusCodes.STATUS_OK) {
                 ep.state = CONNECTED; ep.attempts = 0; ep.lost = false; lastLinkAt = System.currentTimeMillis()
                 Log.i(TAG, "linked ${ep.nodeId}")
@@ -381,6 +475,7 @@ class NearbyTransport(context: Context, private val group: Group, private val me
             val ep = endpoints.remove(endpointId)
             ep?.deadline?.let { handler.removeCallbacks(it) }
             Log.i(TAG, "unlinked ${ep?.nodeId}")
+            forget(endpointId)
             events?.onLinkDown(endpointId)
             connectWaiting()
         }
@@ -395,8 +490,8 @@ class NearbyTransport(context: Context, private val group: Group, private val me
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
             when (update.status) {
-                PayloadTransferUpdate.Status.SUCCESS -> events?.onPayloadSent(update.payloadId)
-                PayloadTransferUpdate.Status.FAILURE, PayloadTransferUpdate.Status.CANCELED -> events?.onPayloadFailed(update.payloadId)
+                PayloadTransferUpdate.Status.SUCCESS -> { sent(update.payloadId); events?.onPayloadSent(update.payloadId) }
+                PayloadTransferUpdate.Status.FAILURE, PayloadTransferUpdate.Status.CANCELED -> { sent(update.payloadId); events?.onPayloadFailed(update.payloadId) }
                 else -> {}
             }
         }
@@ -408,7 +503,10 @@ class NearbyTransport(context: Context, private val group: Group, private val me
         val ep = endpoints[linkId]
         if (ep == null || ep.state != CONNECTED) return -1
         val p = Payload.fromBytes(bytes)
+        inFlight[p.id] = linkId
+        while (inFlight.size > MAX_IN_FLIGHT) inFlight.remove(inFlight.keys.first())
         client.sendPayload(linkId, p).addOnFailureListener { e ->
+            sent(p.id)
             events?.onPayloadFailed(p.id)
             // The session died without a disconnect callback (e.g. Play services restarted):
             // treat the link as gone so the router stops counting it and we can re-link.
@@ -417,6 +515,7 @@ class NearbyTransport(context: Context, private val group: Group, private val me
                 endpoints[linkId] === ep) {
                 endpoints.remove(linkId)
                 try { client.disconnectFromEndpoint(linkId) } catch (x: Exception) { }
+                forget(linkId)
                 events?.onLinkDown(linkId)
             }
         }
@@ -427,6 +526,7 @@ class NearbyTransport(context: Context, private val group: Group, private val me
     override fun disconnect(linkId: String) {
         endpoints.remove(linkId)?.deadline?.let { handler.removeCallbacks(it) }
         try { client.disconnectFromEndpoint(linkId) } catch (e: Exception) { }
+        forget(linkId)
         // Nearby says nothing about a disconnect asked for here: without this, a phone waiting for
         // a slot would wait for the next discovery round.
         connectWaiting()
@@ -462,6 +562,11 @@ class NearbyTransport(context: Context, private val group: Group, private val me
         private const val TAG = "Hopline/Nearby"
         const val SERVICE_ID = "app.hopline.mesh.v1"
         private const val OTHER_GROUP_MS = 120_000L
+        /** Payloads remembered as on their way, at most (see [inFlight]): far more than a few links ever have. */
+        private const val MAX_IN_FLIGHT = 2_000
+        /** Radios still getting a goodbye out ([finish]), and the links they hold. Main thread only. */
+        private var lingering = 0
+        private val held = HashSet<String>()
         private const val MAX_ATTEMPTS = 6
         private const val RETRY_REST_MS = 5 * 60_000L
         private const val FOUND = 0

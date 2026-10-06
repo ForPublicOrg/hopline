@@ -72,7 +72,8 @@ class PeopleActivity : AppCompatActivity() {
 
         val q = query.lowercase(Locale.getDefault())
         val matches = if (q.isEmpty()) others else others.filter { Ui.uniqueName(r, it.id, it.name).lowercase(Locale.getDefault()).contains(q) }
-        val sorted = matches.sortedWith(compareByDescending<Person> { r.isInRange(it) }.thenBy { it.hops }
+        // Who left the group stays listed — their chat is still here — but last, and saying so.
+        val sorted = matches.sortedWith(compareBy<Person> { it.left }.thenByDescending { r.isInRange(it) }.thenBy { it.hops }
             .thenBy { Ui.nameOf(r, it.id, it.name).lowercase(Locale.getDefault()) })
         if (q.isEmpty() || Core.store.name.lowercase(Locale.getDefault()).contains(q)) rows += PeopleAdapter.Row.Me
         sorted.forEach { rows += PeopleAdapter.Row.P(it) }
@@ -139,8 +140,9 @@ class PeopleActivity : AppCompatActivity() {
             h.badge.visibility = if (p.hasInternet && inRange) View.VISIBLE else View.GONE
             h.root.setOnClickListener { onClick() }
             h.root.setOnLongClickListener { onVerify(); true }
+            // Someone who left can't be written to: their chat is only there to read.
             ViewCompat.replaceAccessibilityAction(h.root, androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK,
-                ctx.getString(R.string.action_private_chat), null)
+                ctx.getString(if (p.left) R.string.action_open_chat else R.string.action_private_chat), null)
             ViewCompat.replaceAccessibilityAction(h.root, androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_LONG_CLICK,
                 ctx.getString(R.string.action_verify), null)
         }

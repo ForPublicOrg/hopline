@@ -382,10 +382,12 @@ class Message(
     /** True for a group-chat-visible message (not a DM). */
     val isGroup: Boolean get() = to == null
     /** A centred line about the chat itself ("Asha renamed the group", "You left"), not something someone said. */
-    val isNotice: Boolean get() = kind == NOTICE || kind == LEFT || kind == REJOINED
+    val isNotice: Boolean get() = kind == NOTICE || kind == LEFT || kind == REJOINED || isMembership
     /** The one notice that came over the air: a group rename, with the new name as its text.
      *  [LEFT] and [REJOINED] are this phone's own notes and carry no text. */
     val isRename: Boolean get() = kind == NOTICE
+    /** "Asha left" / "Asha joined": what someone told the group about themselves. No text. */
+    val isMembership: Boolean get() = kind == MEMBER_LEFT || kind == MEMBER_JOINED
     /** Internet answers and notices: no reply, no reactions, no ticks, no unread badge for notices. */
     val isPersonal: Boolean get() = kind != SYSTEM && !isNotice
 
@@ -465,6 +467,10 @@ class Message(
          *  gap in the history explains itself. They have no envelope — nothing can put them on the air. */
         const val LEFT = "left"
         const val REJOINED = "rejoined"
+        /** Someone told the group they left it, or joined it (again): their goodbye or hello, which
+         *  came over the air like any group message — the line's id is that envelope's. */
+        const val MEMBER_LEFT = "member_left"
+        const val MEMBER_JOINED = "member_joined"
         /** The chat key of the group chat (a private chat's key is the other person's id). */
         const val GROUP_CHAT = "*"
         const val QUEUED = "queued"        // nobody has taken it off my phone yet
@@ -533,6 +539,14 @@ class Person(val id: String) {
      * location — and is not read. Persisted, so a restart doesn't open that door again.
      */
     var liveQ: Long = 0
+    /**
+     * Above 0: they told the group they left it, and that goodbye's counter is the newest of
+     * theirs this phone knows ([liveQ] holds it too). Their hello, or a beacon, counted after it
+     * puts them back; nothing counted before it can. Persisted.
+     */
+    var leftQ: Long = 0
+    /** They left the group, as far as this phone knows: not a member, never "in range", nobody to write to. */
+    val left: Boolean get() = leftQ > 0
     /** Shared-internet protocol and what their phone can do right now (bitmask of Errand.CAP_*).
      *  From presence only — a capability from before a restart is stale, so not persisted. */
     var ev: Int = 0
@@ -543,6 +557,7 @@ class Person(val id: String) {
         put("hops", hops); put("battery", battery)
         if (pk.isNotEmpty()) put("pk", pk)
         if (liveQ > 0) put("liveQ", liveQ)
+        if (leftQ > 0) put("leftQ", leftQ)
         if (locAt > 0) put("locAt", locAt)
     }
     companion object {
@@ -552,6 +567,8 @@ class Person(val id: String) {
             it.battery = j.optInt("battery", -1)
             it.pk = j.optString("pk", "")
             it.liveQ = j.optLong("liveQ", 0)
+            // Never ahead of the counter it was the newest of: a goodbye a later beacon outdated is no goodbye.
+            it.leftQ = j.optLong("leftQ", 0).takeIf { q -> q in 1..it.liveQ } ?: 0L
             it.locAt = j.optLong("locAt", 0)
         }
     }

@@ -89,6 +89,7 @@
     <string name="net_st_sending">%1$s is sending your text</string>
     <string name="net_st_sending_mail">%1$s is sending your email</string>
     <string name="net_st_quiet">%1$s\'s phone went quiet — they may already have sent it</string>
+    <string name="net_st_quiet_left">%1$s left the group — they may already have sent it</string>
     <string name="net_st_done">✓ Answered via %1$s · %2$s</string>
     <string name="net_st_done_here">✓ Answered on your phone · %1$s</string>
     <string name="net_st_done_public">✓ Answered via %1$s · %2$s · also in the group chat</string>

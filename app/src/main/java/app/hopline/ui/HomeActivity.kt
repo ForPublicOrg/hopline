@@ -319,6 +319,11 @@ class HomeActivity : AppCompatActivity() {
         return when {
             m.isRename -> if (m.from == r.me.id) getString(R.string.notice_renamed_by_you, m.text)
                 else getString(R.string.notice_renamed_by, Ui.uniqueName(r, m.from, m.fromName), m.text)
+            // Who left or joined the group, told apart from a namesake who didn't.
+            m.kind == Message.MEMBER_LEFT -> if (m.from == r.me.id) getString(R.string.chat_notice_left)
+                else getString(R.string.chat_notice_member_left, Ui.uniqueName(r, m.from, m.fromName))
+            m.kind == Message.MEMBER_JOINED -> if (m.from == r.me.id) getString(R.string.chat_notice_joined_you)
+                else getString(R.string.chat_notice_member_joined, Ui.uniqueName(r, m.from, m.fromName))
             // This phone's own "left" / "rejoined" notes: not a rename, and nobody "said" them.
             m.isNotice -> body
             m.kind == Message.SYSTEM -> body

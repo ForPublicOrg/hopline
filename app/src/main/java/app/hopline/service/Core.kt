@@ -212,6 +212,13 @@ object Core {
         }
         // Back in a group this phone had left: "You rejoined", once, under the "You left" in its chat.
         Archive.rejoined(r)
+        // The group hears that this phone is in it, if it is owed a hello: a group joined by code
+        // just now and starting for the first time (no state yet — a started group is saved with
+        // its name's time, a joined one without; and a member's state set aside as unreadable starts
+        // empty too, but long after joining), or one this phone said goodbye to. After the counters
+        // are raised (above), so the hello outranks that goodbye everywhere.
+        r.helloIfDue(firstJoin = read.state == null && saved.nameAt == 0L && System.currentTimeMillis() - saved.joinedAt in 0..FIRST_JOIN_MS,
+            joinedAt = saved.joinedAt)
         r.shareInternet = store.shareInternet
         t.events = object : NearbyTransport.Events {
             override fun onLinkUp(linkId: String, nodeId: String, name: String, token: String) { if (transport === t) { r.onLinkUp(linkId, nodeId, name, token); changed() } }
@@ -311,7 +318,7 @@ object Core {
     /**
      * Replies typed into a notification while the group was still starting (Store.keepReply): they
      * go now that its router is up, and are forgotten once the state that holds them is on disk.
-     * One for a private chat nothing can be sealed for (Router.canWriteTo) is not lost either: it
+     * One for a private chat nothing can be written to (Router.canMessage) is not lost either: it
      * waits in that chat ([keepAsDraft]).
      */
     private fun sendKeptReplies(r: Router) {
@@ -584,8 +591,10 @@ object Core {
      * the next start strips it ([reconcile]). The other way round, a kill would leave a group this
      * phone is still in with its unsent messages robbed of their envelopes.
      *
-     * Nothing is said on the radio: the transport stops at once, so a goodbye would not get out,
-     * and the group needs none — to everyone else this phone has simply walked away.
+     * The group on the radio is told: a goodbye ([Router.sayGoodbye]) goes to the phones linked
+     * now, the radio staying up a few seconds more for it ([NearbyTransport.finish]), and the group
+     * carries it on to everyone else — they see "Asha left", and stop counting this phone. With
+     * nobody linked, or for a paused group, nobody can be told: to them this phone has walked away.
      *
      * False — and nothing at all has changed — when the group on the radio could not be saved
      * first ([StateRules.leave]): its router holds the only whole copy of the chat, and is not let
@@ -594,8 +603,14 @@ object Core {
     fun leaveGroup(code: String): Boolean {
         val g = store.allGroups().firstOrNull { it.code == Words.normalise(code) && !it.left } ?: return false
         val r = router?.takeIf { it.group.fingerprint == g.fingerprint }
+        // The goodbye is noted before the chat is saved whole, so the saved chat knows it was said.
+        r?.aboutToLeave()
         // A paused group's chat is on disk already, as its router saved it when the radio moved off.
-        return StateRules.leave(saveWhole = { r == null || savedNow(r) }) { letGo(g, r) }
+        val left = StateRules.leave(saveWhole = { r == null || savedNow(r) }) { letGo(g, r) }
+        // Refused: no goodbye after all — and the chat on disk must stop saying there was one, now
+        // rather than at the next save (a kill in between would have the next start say hello).
+        if (!left && r != null) { r.stayed(); if (router === r) flushSave() }
+        return left
     }
 
     /**
@@ -613,26 +628,41 @@ object Core {
         return saved
     }
 
+    /** Whether the last group left was told so (Router.sayGoodbye): a paused one never is, nor one with nobody linked. */
+    var toldLeaving = false; private set
+
     /** The leaving itself, once the chat is safely on disk ([r] is null for a paused group). */
     private fun letGo(g: SavedGroup, r: Router?) {
         val fp = g.fingerprint
         val now = System.currentTimeMillis()
         val wasActive = r != null || store.activeCode == g.code
         if (r != null) {
+            // What is still on its way is called off, so what is said on the way out (below) isn't
+            // stuck behind a photo's pieces or a backlog, as a leave always cut those short.
+            transport?.callOff()
             stopLiveLocation()   // while the radio is still up, so the beacon that clears my pin goes out
             for (e in r.errands.values) stopFetch(e.id)
+            // Requests this phone was on for others go back to the group at once ...
+            val declined = r.declineForLeaving()
+            // ... and the group hears that this phone is leaving — from the phones linked now, and
+            // through them everyone else — while the radio is still up. Last of all that it sends:
+            // anything numbered after the goodbye would put it back in the group. Its state
+            // remembers it said so, and a rejoin answers it with a hello. (A paused group's radio
+            // is off: there is nobody to tell.)
+            toldLeaving = r.sayGoodbye(declined)
             handler.removeCallbacks(saveRunnable); savePosted = false
-        }
+        } else toldLeaving = false
         val full = r?.snapshot()
         // Files whose every piece is here but which were never put together: now is their last
         // chance, before the pieces go.
         val complete = if (r == null) emptyList() else r.messages.mapNotNull { m -> m.att?.takeIf { r.fileComplete(it) }?.let { m.from to copyOf(it) } }
         if (r != null) {
             // Detached before the radio stops: the link-downs it ends with must not reach a router
-            // that has had its last word, nor queue another save of it.
+            // that has had its last word, nor queue another save of it. The radio itself stays up a
+            // moment more, until what was just sent on it — the goodbye — has gone.
             val t = transport
             router = null; transport = null; radioProblem = ""
-            t?.stop()
+            t?.finish(FAREWELL_MS)
         }
         dropArchive()
         turn(fp)
@@ -982,7 +1012,7 @@ object Core {
     fun sendImage(uri: Uri, caption: String, to: String?, quote: Quote? = null, mentions: List<String> = emptyList(),
                   cleanup: (() -> Unit)? = null, done: (String?) -> Unit) {
         val r0 = router ?: run { cleanup?.invoke(); return done("Hopline is starting — try again in a moment.") }
-        if (to != null && !r0.canWriteTo(to)) { cleanup?.invoke(); return done(cantWriteTo(r0, to)) }
+        if (to != null && !r0.canMessage(to)) { cleanup?.invoke(); return done(cantWriteTo(r0, to)) }
         val fp = r0.group.fingerprint
         val fid = r0.newFid()
         Thread {
@@ -1009,7 +1039,7 @@ object Core {
                       mentions: List<String> = emptyList(), done: (String?) -> Unit) {
         val r0 = router ?: return done("Hopline is starting — try again in a moment.")
         if (picked.bytes.isEmpty()) return done("That file is empty.")
-        if (to != null && !r0.canWriteTo(to)) return done(cantWriteTo(r0, to))
+        if (to != null && !r0.canMessage(to)) return done(cantWriteTo(r0, to))
         val fp = r0.group.fingerprint
         val fid = r0.newFid()
         Thread {
@@ -1033,7 +1063,7 @@ object Core {
     fun resendFile(old: Message, done: (String?) -> Unit) {
         val r0 = router ?: return done("Hopline is starting — try again in a moment.")
         val a = old.att ?: return done("That file isn't on this phone any more.")
-        old.to?.let { if (!r0.canWriteTo(it)) return done(cantWriteTo(r0, it)) }
+        old.to?.let { if (!r0.canMessage(it)) return done(cantWriteTo(r0, it)) }
         val fp = r0.group.fingerprint
         val src = Blobs.fileFor(app, fp, a)
         val fid = r0.newFid()
@@ -1067,10 +1097,12 @@ object Core {
 
     private const val NO_ROOM = "Not enough free space on this phone — not sent."
 
-    /** Why nothing can be sent to [to] (Router.canWriteTo), in the words the chat uses for it. */
-    private fun cantWriteTo(r: Router, to: String): String =
-        if (!Crypto.isNodeId(to)) "This chat is from before the update — not sent. To keep talking, open them from People."
-        else "${Ui.nameOf(r, to)} hasn't been seen for a while — not sent. You can send once their phone has been in range."
+    /** Why nothing can be sent to [to] (Router.canMessage), in the words the chat uses for it. */
+    private fun cantWriteTo(r: Router, to: String): String = when {
+        !Crypto.isNodeId(to) -> "This chat is from before the update — not sent. To keep talking, open them from People."
+        r.people[to]?.left == true -> "${Ui.nameOf(r, to)} left the group — not sent. You can send again if they rejoin."
+        else -> "${Ui.nameOf(r, to)} hasn't been seen for a while — not sent. You can send once their phone has been in range."
+    }
 
     /** The copy of a file of mine that never went out: in the background, with the other file chores. */
     private fun dropOwnCopy(fp: String, att: Attachment) {
@@ -1859,7 +1891,9 @@ object Core {
             return "Looking for your group's phones…"
         }
         return when {
-            inRange <= 1 -> "1 person in range"
+            // Linked, yet nobody in range: the one linked phone just left the group (its radio goes in a moment).
+            inRange == 0 -> "Looking for your group's phones…"
+            inRange == 1 -> "1 person in range"
             else -> "$inRange people in range"
         }
     }
@@ -1867,5 +1901,9 @@ object Core {
     const val MIN_BUDGET_BYTES = 60_000L
     /** How long the main thread will wait for the writer to reach it, at most. */
     private const val WRITER_WAIT_S = 5L
+    /** How long a group's radio stays up after leaving it, at most, for the goodbye to get out. */
+    private const val FAREWELL_MS = 5_000L
+    /** A group with no saved chat this long after it was joined is no new join, and says no hello. */
+    private const val FIRST_JOIN_MS = 24 * 3_600_000L
     val isTiramisu get() = Build.VERSION.SDK_INT >= 33
 }

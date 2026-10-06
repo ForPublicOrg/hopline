@@ -10,9 +10,11 @@ import app.hopline.mesh.Attachment
  * Since 2.4 a private chat is sealed for the other phone's own key. A chat whose other phone this
  * one has no key for can't be written in at all — nothing would go out — so the screen never
  * pretends it can: no composer, no attach, no voice, no place, no reactions, no "Send again",
- * just one line saying why. Two reasons, two lines:
+ * just one line saying why. Three reasons, three lines:
  *  - the chat is from before the update: its other person had an 8-letter id, which no phone has
  *    any more (they came back with a new one, and nothing proves which), so it is history only;
+ *  - the person told the group they left it: their phone no longer hears the group, so nothing
+ *    reaches them — if they join again, their hello brings the composer back;
  *  - the person is from after the update, but their key never reached this phone (they haven't
  *    been heard from since this phone learned of them) — once their phone has been in range, it
  *    can be written in.
@@ -34,16 +36,20 @@ object ChatRules {
         else -> Chip.NONE
     }
 
-    enum class Bottom { COMPOSER, LEFT, FROM_BEFORE, NOT_SEEN }
+    /** [LEFT]: this phone left the group (its kept chat). [PEER_LEFT]: the other person of a private chat did. */
+    enum class Bottom { COMPOSER, LEFT, FROM_BEFORE, NOT_SEEN, PEER_LEFT }
 
     /**
      * What sits where the composer would be. [canWrite]: the router can seal for [peer]
-     * (Router.canWriteTo); for the group chat it is not asked.
+     * (Router.canWriteTo); for the group chat it is not asked. [peerLeft]: [peer] told the group
+     * they left it — said in so many words, not as "hasn't been seen", whatever [canWrite] says.
      */
-    fun bottom(readOnly: Boolean, peer: String?, canWrite: Boolean): Bottom = when {
+    fun bottom(readOnly: Boolean, peer: String?, canWrite: Boolean, peerLeft: Boolean): Bottom = when {
         readOnly -> Bottom.LEFT
-        peer == null || canWrite -> Bottom.COMPOSER
+        peer == null -> Bottom.COMPOSER
         !Crypto.isNodeId(peer) -> Bottom.FROM_BEFORE
+        peerLeft -> Bottom.PEER_LEFT
+        canWrite -> Bottom.COMPOSER
         else -> Bottom.NOT_SEEN
     }
 
@@ -54,13 +60,16 @@ object ChatRules {
     fun sendAgain(gaveUp: Boolean, to: String?, canWrite: Boolean): Boolean = gaveUp && (to == null || canWrite)
 
     /**
-     * Is "Reply privately" worth offering on a group message from [from]? Only for a 2.4 id: a
-     * message from someone's old id would open a private chat that can never be written in.
+     * Is "Reply privately" worth offering on a group message from [from]? Only for a 2.4 id, and
+     * not once they left the group ([left]): either would open a private chat that can't be written in.
      */
-    fun replyPrivately(from: String): Boolean = Crypto.isNodeId(from)
+    fun replyPrivately(from: String, left: Boolean): Boolean = Crypto.isNodeId(from) && !left
 
     /** Who belongs in a list of people to pick (People, the members, the @ picker): 2.4 ids only. */
     fun listed(id: String): Boolean = Crypto.isNodeId(id)
+
+    /** Who can be called out with @: someone [listed] who hasn't left the group ([left]) — nobody there would hear it. */
+    fun mentionable(id: String, left: Boolean): Boolean = listed(id) && !left
 
     /**
      * A file from before the update that isn't on this phone: it has no key of its own (every file
